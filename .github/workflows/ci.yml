@@ -207,3 +207,39 @@ jobs:
             --input examples/cache-key-diagnosis/bundle/inputs/diagnosis-request.json
           uv run --isolated --no-project --with dist/itself_sdk-*.whl \
             itself bundle validate "${{ runner.temp }}/itself-evidence-bundle"
+
+      - name: Smoke-test built-wheel CI cookbook
+        run: |
+          approved="${{ runner.temp }}/itself-cookbook-approved"
+          rejected="${{ runner.temp }}/itself-cookbook-rejected"
+
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            python cookbook/agent-change-gate/run.py \
+            --assertion cookbook/fixtures/model-assertion.json \
+            --output "$approved" \
+            --source-revision "${{ github.sha }}" \
+            --check-name "built-wheel positive check" \
+            --model-actor-id cookbook-fixture-agent \
+            -- python -c 'raise SystemExit(0)'
+
+          set +e
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            python cookbook/agent-change-gate/run.py \
+            --assertion cookbook/fixtures/model-assertion.json \
+            --output "$rejected" \
+            --source-revision "${{ github.sha }}" \
+            --check-name "built-wheel negative check" \
+            --model-actor-id cookbook-fixture-agent \
+            -- python -c 'raise SystemExit(7)'
+          rejected_status=$?
+          set -e
+
+          if [[ "$rejected_status" -ne 1 ]]; then
+            echo "negative cookbook gate returned $rejected_status instead of 1" >&2
+            exit 1
+          fi
+
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            itself bundle validate "$approved/bundle"
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            itself bundle validate "$rejected/bundle"
