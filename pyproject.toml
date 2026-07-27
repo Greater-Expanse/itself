@@ -63,13 +63,29 @@ pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.mypy]
-files = ["evaluations", "examples", "experiments", "src", "tests", "typing_tests"]
+files = [
+  "cookbook",
+  "evaluations",
+  "examples",
+  "experiments",
+  "src",
+  "tests",
+  "typing_tests",
+]
 python_version = "3.11"
 strict = true
 warn_unused_configs = true
 
 [tool.pyright]
-include = ["evaluations", "examples", "experiments", "src", "tests", "typing_tests"]
+include = [
+  "cookbook",
+  "evaluations",
+  "examples",
+  "experiments",
+  "src",
+  "tests",
+  "typing_tests",
+]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
 

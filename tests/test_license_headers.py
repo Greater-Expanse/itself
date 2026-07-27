@@ -12,6 +12,7 @@ ROOT: Final = Path(__file__).resolve().parents[1]
 PYTHON_SOURCE_ROOTS: Final[tuple[Path, ...]] = tuple(
     ROOT / directory
     for directory in (
+        "cookbook",
         "evaluations",
         "examples",
         "experiments",
