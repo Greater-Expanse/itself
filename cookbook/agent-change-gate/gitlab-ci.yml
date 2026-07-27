@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Greater Expanse LLC
 
 variables:
-  ITSELF_VERSION: "0.1.0a7"
+  ITSELF_INSTALL_SPEC: "."
 
 agent-change-assurance:
   image: python:3.13-slim
@@ -12,7 +12,7 @@ agent-change-assurance:
   before_script:
     - >-
       python -m pip install
-      "itself-sdk==$ITSELF_VERSION"
+      "$ITSELF_INSTALL_SPEC"
       "pytest>=8,<9"
   script:
     - |

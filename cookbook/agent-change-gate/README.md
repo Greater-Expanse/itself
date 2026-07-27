@@ -25,6 +25,10 @@ choose one platform wrapper:
 - [GitHub Actions](github-actions.yml)
 - [GitLab CI](gitlab-ci.yml)
 
+The checked-in wrappers use `ITSELF_INSTALL_SPEC: "."` to run against an
+Itself source checkout. In a consuming repository, change that value to the
+immutable Itself version or locked VCS revision used by the project.
+
 Then replace two example inputs:
 
 - `cookbook/fixtures/model-assertion.json` with the structured output produced

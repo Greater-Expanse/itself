@@ -3,7 +3,7 @@
 
 variables:
   ASSURANCE_LEDGER: examples/cache-key-diagnosis/bundle/ledger.jsonl
-  ITSELF_VERSION: "0.1.0a7"
+  ITSELF_INSTALL_SPEC: "."
 
 publish-reasoning-receipt:
   image: python:3.13-slim
@@ -12,7 +12,7 @@ publish-reasoning-receipt:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
   before_script:
-    - python -m pip install "itself-sdk==$ITSELF_VERSION"
+    - python -m pip install "$ITSELF_INSTALL_SPEC"
   script:
     - mkdir -p .itself/reasoning-receipt
     - >-

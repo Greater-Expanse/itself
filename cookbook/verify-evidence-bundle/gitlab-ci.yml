@@ -3,7 +3,7 @@
 
 variables:
   ASSURANCE_BUNDLE: examples/cache-key-diagnosis/bundle
-  ITSELF_VERSION: "0.1.0a7"
+  ITSELF_INSTALL_SPEC: "."
 
 verify-evidence-bundle:
   image: python:3.13-slim
@@ -12,7 +12,7 @@ verify-evidence-bundle:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
   before_script:
-    - python -m pip install "itself-sdk==$ITSELF_VERSION"
+    - python -m pip install "$ITSELF_INSTALL_SPEC"
   script:
     - mkdir -p .itself/bundle-verification
     - >-

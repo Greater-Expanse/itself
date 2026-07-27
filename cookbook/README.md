@@ -9,6 +9,11 @@ The recipes use the same Itself CLI and bundle formats on GitHub Actions,
 GitLab CI, and a local shell. The platform files are thin wrappers. The
 assurance logic remains portable.
 
+The checked-in wrappers install `.` so they can be exercised from this source
+checkout. When copying one into another repository, set
+`ITSELF_INSTALL_SPEC` to an immutable package version or locked VCS revision
+available to that runner. Do not install assurance code from a moving branch.
+
 ## Choose a recipe
 
 | Goal | Recipe | Result |

@@ -4,13 +4,10 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
-from typing import Final, cast
+from typing import Final
 
 import pytest
-
-from itself import JsonObject
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 COOKBOOK: Final = ROOT / "cookbook"
@@ -25,15 +22,6 @@ def _case_id(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
 
 
-def _distribution_version() -> str:
-    document = cast(
-        JsonObject,
-        tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8")),
-    )
-    project = cast(JsonObject, document["project"])
-    return cast(str, project["version"])
-
-
 @pytest.mark.parametrize("workflow", GITHUB_WORKFLOWS, ids=_case_id)
 def test_github_recipe_uses_read_only_permissions_and_immutable_actions(
     workflow: Path,
@@ -45,7 +33,8 @@ def test_github_recipe_uses_read_only_permissions_and_immutable_actions(
     action_revisions = USES.findall(content)
     assert action_revisions
     assert all(FULL_SHA.fullmatch(revision) for revision in action_revisions)
-    assert f'ITSELF_VERSION: "{_distribution_version()}"' in content
+    assert 'ITSELF_INSTALL_SPEC: "."' in content
+    assert "@main" not in content
 
 
 @pytest.mark.parametrize("workflow", GITLAB_WORKFLOWS, ids=_case_id)
@@ -59,7 +48,8 @@ def test_gitlab_recipe_retains_outputs_and_declares_pipeline_rules(
     assert "when: always" in content
     assert "expire_in: 14 days" in content
     assert "expose_as:" in content
-    assert f'ITSELF_VERSION: "{_distribution_version()}"' in content
+    assert 'ITSELF_INSTALL_SPEC: "."' in content
+    assert "@main" not in content
 
 
 def test_cookbook_has_one_wrapper_per_recipe_and_platform() -> None:

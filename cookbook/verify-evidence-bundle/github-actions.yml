@@ -11,7 +11,7 @@ permissions:
 
 env:
   ASSURANCE_BUNDLE: examples/cache-key-diagnosis/bundle
-  ITSELF_VERSION: "0.1.0a7"
+  ITSELF_INSTALL_SPEC: "."
 
 jobs:
   verify-evidence-bundle:
@@ -31,7 +31,7 @@ jobs:
           cache: pip
 
       - name: Install Itself
-        run: python -m pip install "itself-sdk==$ITSELF_VERSION"
+        run: python -m pip install "$ITSELF_INSTALL_SPEC"
 
       - name: Verify the closed bundle
         run: |
