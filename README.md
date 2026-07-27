@@ -1,5 +1,7 @@
 # Itself SDK
 
+*Knowledge itself is the question.*
+
 **Make model assertions testable before software acts on them.**
 
 Itself is an open-source, provider-neutral assurance SDK for AI agents and
