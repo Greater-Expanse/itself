@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (C) 2026 Greater Expanse LLC
+
+variables:
+  ASSURANCE_BUNDLE: examples/cache-key-diagnosis/bundle
+  ITSELF_VERSION: "0.1.0a7"
+
+verify-evidence-bundle:
+  image: python:3.13-slim
+  timeout: 10m
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  before_script:
+    - python -m pip install "itself-sdk==$ITSELF_VERSION"
+  script:
+    - mkdir -p .itself/bundle-verification
+    - >-
+      itself bundle validate "$ASSURANCE_BUNDLE"
+      | tee .itself/bundle-verification/verification.txt
+    - >-
+      itself receipt validate
+      "$ASSURANCE_BUNDLE/reasoning-receipt.json"
+      --ledger "$ASSURANCE_BUNDLE/ledger.jsonl"
+      | tee -a .itself/bundle-verification/verification.txt
+    - >-
+      itself ledger summary "$ASSURANCE_BUNDLE/ledger.jsonl"
+      --format json
+      > .itself/bundle-verification/ledger-summary.json
+  artifacts:
+    name: "itself-bundle-verification-$CI_COMMIT_SHA"
+    when: always
+    expire_in: 14 days
+    expose_as: Itself bundle verification
+    paths:
+      - .itself/bundle-verification/

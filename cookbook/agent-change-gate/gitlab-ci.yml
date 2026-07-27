@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (C) 2026 Greater Expanse LLC
+
+variables:
+  ITSELF_VERSION: "0.1.0a7"
+
+agent-change-assurance:
+  image: python:3.13-slim
+  timeout: 20m
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  before_script:
+    - >-
+      python -m pip install
+      "itself-sdk==$ITSELF_VERSION"
+      "pytest>=8,<9"
+  script:
+    - |
+      set +e
+      python cookbook/agent-change-gate/run.py \
+        --assertion cookbook/fixtures/model-assertion.json \
+        --output .itself/agent-change \
+        --source-revision "$CI_COMMIT_SHA" \
+        --check-name "repository test suite" \
+        --model-actor-id coding-agent \
+        --model-implementation coding-agent@1 \
+        -- python -m pytest
+      gate_status=$?
+      set -e
+
+      if [ -f .itself/agent-change/summary.md ]; then
+        cat .itself/agent-change/summary.md
+      fi
+      exit "$gate_status"
+  artifacts:
+    name: "itself-agent-assurance-$CI_COMMIT_SHA"
+    when: always
+    expire_in: 14 days
+    expose_as: Itself agent assurance
+    paths:
+      - .itself/agent-change/

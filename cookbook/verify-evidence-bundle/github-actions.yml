@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (C) 2026 Greater Expanse LLC
+
+name: Verify Itself evidence bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ASSURANCE_BUNDLE: examples/cache-key-diagnosis/bundle
+  ITSELF_VERSION: "0.1.0a7"
+
+jobs:
+  verify-evidence-bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Itself
+        run: python -m pip install "itself-sdk==$ITSELF_VERSION"
+
+      - name: Verify the closed bundle
+        run: |
+          mkdir -p .itself/bundle-verification
+          itself bundle validate "$ASSURANCE_BUNDLE" \
+            | tee .itself/bundle-verification/verification.txt
+          itself receipt validate \
+            "$ASSURANCE_BUNDLE/reasoning-receipt.json" \
+            --ledger "$ASSURANCE_BUNDLE/ledger.jsonl" \
+            | tee -a .itself/bundle-verification/verification.txt
+          itself ledger summary "$ASSURANCE_BUNDLE/ledger.jsonl" \
+            --format json \
+            > .itself/bundle-verification/ledger-summary.json
+
+      - name: Retain the verification result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: itself-bundle-verification-${{ github.sha }}
+          path: .itself/bundle-verification/
+          if-no-files-found: error
+          retention-days: 14

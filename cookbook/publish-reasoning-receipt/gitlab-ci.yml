@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (C) 2026 Greater Expanse LLC
+
+variables:
+  ASSURANCE_LEDGER: examples/cache-key-diagnosis/bundle/ledger.jsonl
+  ITSELF_VERSION: "0.1.0a7"
+
+publish-reasoning-receipt:
+  image: python:3.13-slim
+  timeout: 10m
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  before_script:
+    - python -m pip install "itself-sdk==$ITSELF_VERSION"
+  script:
+    - mkdir -p .itself/reasoning-receipt
+    - >-
+      itself receipt generate "$ASSURANCE_LEDGER"
+      --output .itself/reasoning-receipt/reasoning-receipt.json
+    - >-
+      itself receipt validate
+      .itself/reasoning-receipt/reasoning-receipt.json
+      --ledger "$ASSURANCE_LEDGER"
+    - >-
+      itself ledger summary "$ASSURANCE_LEDGER"
+      --format json
+      > .itself/reasoning-receipt/ledger-summary.json
+    - itself ledger summary "$ASSURANCE_LEDGER"
+  artifacts:
+    name: "itself-reasoning-receipt-$CI_COMMIT_SHA"
+    when: always
+    expire_in: 14 days
+    expose_as: Itself reasoning receipt
+    paths:
+      - .itself/reasoning-receipt/

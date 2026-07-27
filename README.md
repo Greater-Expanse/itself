@@ -362,6 +362,9 @@ The [documentation index](docs/README.md) is the entry point for integration
 guides, protocol and schema references, evidence formats, evaluations, and
 controlled research. It groups the material by what a reader is trying to
 accomplish rather than presenting every document as an equal starting point.
+The [CI integration cookbook](cookbook/README.md) provides executable GitHub
+Actions and GitLab CI recipes for gating an agent change, verifying its
+evidence bundle, and publishing its reasoning receipt.
 
 Project changes are recorded in the [changelog](CHANGELOG.md). See
 [CONTRIBUTING.md](CONTRIBUTING.md) to participate and

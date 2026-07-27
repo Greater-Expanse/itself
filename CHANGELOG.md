@@ -8,6 +8,9 @@ Python distribution version.
 
 ### Added
 
+- A CI integration cookbook with a provider-free agent-change gate, independent
+  evidence-bundle verification, reasoning-receipt publication, and thin GitHub
+  Actions and GitLab CI wrappers.
 - A versioned, content-identified evaluation-report contract with canonical
   JSON output and derived Markdown rendering.
 - A deterministic offline SDK exercise covering the complete

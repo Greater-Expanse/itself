@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (C) 2026 Greater Expanse LLC
+
+name: Agent change assurance
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-assurance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ITSELF_VERSION: "0.1.0a7"
+
+jobs:
+  agent-change-assurance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the tested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install the assurance and test environments
+        run: >-
+          python -m pip install
+          "itself-sdk==$ITSELF_VERSION"
+          "pytest>=8,<9"
+
+      - name: Check the model assertion
+        id: assurance
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set +e
+          python cookbook/agent-change-gate/run.py \
+            --assertion cookbook/fixtures/model-assertion.json \
+            --output .itself/agent-change \
+            --source-revision "$SOURCE_REVISION" \
+            --check-name "repository test suite" \
+            --model-actor-id coding-agent \
+            --model-implementation coding-agent@1 \
+            -- python -m pytest
+          gate_status=$?
+          set -e
+          echo "gate_status=$gate_status" >> "$GITHUB_OUTPUT"
+
+      - name: Add the decision to the job summary
+        if: always()
+        run: |
+          if [[ -f .itself/agent-change/summary.md ]]; then
+            cat .itself/agent-change/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Retain the evidence bundle and receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: itself-agent-assurance-${{ github.sha }}
+          path: .itself/agent-change/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce the assurance decision
+        if: always()
+        env:
+          GATE_STATUS: ${{ steps.assurance.outputs.gate_status }}
+        run: |
+          if [[ -z "$GATE_STATUS" ]]; then
+            echo "The assurance runner did not report a gate status." >&2
+            exit 2
+          fi
+          exit "$GATE_STATUS"

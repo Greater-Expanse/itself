@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (C) 2026 Greater Expanse LLC
+
+name: Publish Itself reasoning receipt
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ASSURANCE_LEDGER: examples/cache-key-diagnosis/bundle/ledger.jsonl
+  ITSELF_VERSION: "0.1.0a7"
+
+jobs:
+  publish-reasoning-receipt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Itself
+        run: python -m pip install "itself-sdk==$ITSELF_VERSION"
+
+      - name: Generate and bind the receipt
+        run: |
+          mkdir -p .itself/reasoning-receipt
+          itself receipt generate "$ASSURANCE_LEDGER" \
+            --output .itself/reasoning-receipt/reasoning-receipt.json
+          itself receipt validate \
+            .itself/reasoning-receipt/reasoning-receipt.json \
+            --ledger "$ASSURANCE_LEDGER"
+          itself ledger summary "$ASSURANCE_LEDGER" \
+            --format json \
+            > .itself/reasoning-receipt/ledger-summary.json
+
+      - name: Add the ledger summary to the job
+        run: |
+          {
+            echo "### Itself ledger summary"
+            echo '```text'
+            itself ledger summary "$ASSURANCE_LEDGER"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain the receipt and summary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: itself-reasoning-receipt-${{ github.sha }}
+          path: .itself/reasoning-receipt/
+          if-no-files-found: error
+          retention-days: 14

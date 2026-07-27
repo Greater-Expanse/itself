@@ -17,6 +17,9 @@ Choose the path that matches what you are trying to do:
 
 ## Integrate the SDK
 
+- [CI integration cookbook](../cookbook/README.md) — adapt executable GitHub
+  Actions and GitLab CI recipes for gating an agent change, independently
+  verifying its evidence bundle, and publishing a reasoning receipt.
 - [Add assurance records](PROTOCOL_RECORDS.md) — capture agent assertions,
   expected outcomes, external checks, observed evidence, evaluations, and
   decisions with typed protocol constructors.
