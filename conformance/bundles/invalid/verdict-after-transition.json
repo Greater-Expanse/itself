@@ -1,0 +1,130 @@
+[
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "claim",
+    "id": "claim-future-verdict",
+    "created_at": "2026-07-22T12:00:00Z",
+    "created_by": {
+      "id": "model-1",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "proposition": "The cache caused the failure.",
+    "claim_type": "causal",
+    "status": "proposed",
+    "scope": {
+      "description": "Bundle conformance fixture"
+    }
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "status_transition",
+    "id": "transition-future-verdict-testable",
+    "created_at": "2026-07-22T12:00:10Z",
+    "created_by": {
+      "id": "model-1",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "subject_ref": "claim-future-verdict",
+    "from_status": "proposed",
+    "to_status": "testable",
+    "authorized_by": {
+      "id": "model-1",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "reason": "The assertion has a falsifiable test."
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "status_transition",
+    "id": "transition-future-verdict-under-test",
+    "created_at": "2026-07-22T12:00:20Z",
+    "created_by": {
+      "id": "runner-1",
+      "actor_type": "software",
+      "role": "operator"
+    },
+    "subject_ref": "claim-future-verdict",
+    "from_status": "testable",
+    "to_status": "under_test",
+    "authorized_by": {
+      "id": "runner-1",
+      "actor_type": "software",
+      "role": "operator"
+    },
+    "reason": "The declared test is running."
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "evidence",
+    "id": "evidence-before-transition",
+    "created_at": "2026-07-22T12:00:30Z",
+    "created_by": {
+      "id": "runner-1",
+      "actor_type": "software",
+      "role": "evaluator"
+    },
+    "evidence_type": "deterministic_test",
+    "relations": [
+      {
+        "subject_ref": "claim-future-verdict",
+        "relation": "supports"
+      }
+    ],
+    "authority": {
+      "authority_type": "deterministic_tool",
+      "actor_ref": "runner-1",
+      "basis": "Controlled intervention"
+    },
+    "scope": {
+      "description": "Bundle conformance fixture"
+    }
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "status_transition",
+    "id": "transition-before-verdict",
+    "created_at": "2026-07-22T12:01:00Z",
+    "created_by": {
+      "id": "policy-engine-1",
+      "actor_type": "software",
+      "role": "evaluator"
+    },
+    "subject_ref": "claim-future-verdict",
+    "from_status": "under_test",
+    "to_status": "supported",
+    "evidence_refs": ["evidence-before-transition"],
+    "verdict_ref": "verdict-created-later",
+    "authorized_by": {
+      "id": "policy-engine-1",
+      "actor_type": "software",
+      "role": "evaluator"
+    },
+    "reason": "The verdict did not exist at authorization time."
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "verdict",
+    "id": "verdict-created-later",
+    "created_at": "2026-07-22T12:02:00Z",
+    "created_by": {
+      "id": "runner-1",
+      "actor_type": "software",
+      "role": "evaluator"
+    },
+    "subject_ref": "claim-future-verdict",
+    "outcome": "supported",
+    "evidence_refs": ["evidence-before-transition"],
+    "authority": {
+      "authority_type": "deterministic_tool",
+      "actor_ref": "runner-1",
+      "basis": "Controlled intervention"
+    },
+    "scope": {
+      "description": "Bundle conformance fixture"
+    },
+    "public_rationale": "The observed result supports the claim."
+  }
+]

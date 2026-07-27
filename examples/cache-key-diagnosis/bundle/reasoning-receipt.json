@@ -1,0 +1,376 @@
+{
+  "artifacts": [
+    {
+      "digest": {
+        "algorithm": "sha256",
+        "value": "c9f58f84e974a85ca0e07dd7353de56a69ae8d6647f67abb442c1fe007cf982b"
+      },
+      "id": "artifact-diagnostician-output",
+      "media_type": "application/json",
+      "title": "Captured diagnostician output",
+      "uri": "artifacts/model-assertion.json"
+    }
+  ],
+  "assurance_basis": [
+    "protocol_schema_conformance",
+    "bundle_reference_integrity",
+    "deterministic_state_replay",
+    "canonical_ledger_digest"
+  ],
+  "decisions": [],
+  "evidence": [
+    {
+      "artifact_refs": [],
+      "authority": {
+        "actor_ref": "case-001-environment",
+        "authority_type": "deterministic_tool",
+        "basis": "Six deterministic unchanged replays from reset baseline state"
+      },
+      "evidence_type": "observation",
+      "id": "evidence-baseline-failures",
+      "relations": [
+        {
+          "public_note": "The repeated failure is compatible with this hypothesis.",
+          "relation": "contextualizes",
+          "subject_ref": "hypothesis-cache-key"
+        },
+        {
+          "public_note": "The repeated failure is compatible with this hypothesis.",
+          "relation": "contextualizes",
+          "subject_ref": "hypothesis-worker-source"
+        },
+        {
+          "public_note": "The repeated failure is compatible with this hypothesis.",
+          "relation": "contextualizes",
+          "subject_ref": "hypothesis-verifier-artifact"
+        }
+      ]
+    },
+    {
+      "artifact_refs": [],
+      "authority": {
+        "actor_ref": "case-001-environment",
+        "authority_type": "deterministic_tool",
+        "basis": "Reset-state controlled intervention bypass_caching_proxy",
+        "independent_of_subject": true
+      },
+      "evidence_type": "deterministic_test",
+      "id": "evidence-selected-intervention-run-1",
+      "relations": [
+        {
+          "public_note": "Observed revision B; predeclared prediction was B.",
+          "relation": "supports",
+          "subject_ref": "hypothesis-cache-key"
+        },
+        {
+          "public_note": "Observed revision B; predeclared prediction was A.",
+          "relation": "contradicts",
+          "subject_ref": "hypothesis-worker-source"
+        },
+        {
+          "public_note": "Observed revision B; predeclared prediction was A.",
+          "relation": "contradicts",
+          "subject_ref": "hypothesis-verifier-artifact"
+        }
+      ],
+      "test_ref": "test-selected-intervention-run-1"
+    }
+  ],
+  "limitations": [
+    "Structural integrity does not establish factual truth.",
+    "The receipt does not independently verify artifact contents or digests.",
+    "The receipt does not establish that an oracle or authority is correct."
+  ],
+  "receipt_id": "urn:sha256:1506be1be189673e3a11ae7092339800e16e9e4231d1e0d3362f07e7813357cc",
+  "receipt_version": "0.1.0-alpha.2",
+  "record_counts": {
+    "artifact_reference": 1,
+    "evidence": 2,
+    "hypothesis": 3,
+    "prediction": 3,
+    "status_transition": 9,
+    "test": 2,
+    "verdict": 3
+  },
+  "source_ledger": {
+    "canonicalization": "rfc8785-jsonl-v1",
+    "digest": {
+      "algorithm": "sha256",
+      "value": "1506be1be189673e3a11ae7092339800e16e9e4231d1e0d3362f07e7813357cc"
+    },
+    "protocol_versions": [
+      "0.1.0-alpha.3"
+    ],
+    "record_count": 23
+  },
+  "subjects": [
+    {
+      "current_status": "supported",
+      "initial_status": "proposed",
+      "kind": "hypothesis",
+      "scope_description": "Case 001, cache-key omission, replaceable diagnostician run",
+      "subject_id": "hypothesis-cache-key",
+      "text": "The caching proxy reuses revision A because its key omits source_revision.",
+      "transition_ids": [
+        "transition-cache_key_omits_source_revision-testable",
+        "transition-cache_key_omits_source_revision-under-test",
+        "transition-cache_key_omits_source_revision-supported"
+      ]
+    },
+    {
+      "current_status": "refuted",
+      "initial_status": "proposed",
+      "kind": "hypothesis",
+      "scope_description": "Case 001, cache-key omission, replaceable diagnostician run",
+      "subject_id": "hypothesis-worker-source",
+      "text": "The report worker reads a stale source-store view at revision A.",
+      "transition_ids": [
+        "transition-worker_reads_stale_source-testable",
+        "transition-worker_reads_stale_source-under-test",
+        "transition-worker_reads_stale_source-refuted"
+      ]
+    },
+    {
+      "current_status": "refuted",
+      "initial_status": "proposed",
+      "kind": "hypothesis",
+      "scope_description": "Case 001, cache-key omission, replaceable diagnostician run",
+      "subject_id": "hypothesis-verifier-artifact",
+      "text": "The verifier reads a previous artifact containing revision A.",
+      "transition_ids": [
+        "transition-verifier_reads_stale_artifact-testable",
+        "transition-verifier_reads_stale_artifact-under-test",
+        "transition-verifier_reads_stale_artifact-refuted"
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "design": "controlled_ablation",
+      "evidence_refs": [],
+      "id": "test-selected-intervention-plan",
+      "oracle": {
+        "adapter": "case-001-behavioral-oracle",
+        "authority_type": "deterministic_tool",
+        "declared_scope": "Equality of expected and observed report revisions",
+        "version": "1"
+      },
+      "prediction_refs": [
+        "prediction-cache_key_omits_source_revision-bypass_caching_proxy",
+        "prediction-worker_reads_stale_source-bypass_caching_proxy",
+        "prediction-verifier_reads_stale_artifact-bypass_caching_proxy"
+      ],
+      "status": "planned",
+      "subject_refs": [
+        "hypothesis-cache-key",
+        "hypothesis-worker-source",
+        "hypothesis-verifier-artifact"
+      ]
+    },
+    {
+      "cost": {
+        "human_minutes": 0,
+        "model_tokens": 0,
+        "wall_time_ms": 0
+      },
+      "design": "controlled_ablation",
+      "evidence_refs": [
+        "evidence-selected-intervention-run-1"
+      ],
+      "id": "test-selected-intervention-run-1",
+      "oracle": {
+        "adapter": "case-001-behavioral-oracle",
+        "authority_type": "deterministic_tool",
+        "declared_scope": "Equality of expected and observed report revisions",
+        "version": "1"
+      },
+      "plan_ref": "test-selected-intervention-plan",
+      "prediction_refs": [
+        "prediction-cache_key_omits_source_revision-bypass_caching_proxy",
+        "prediction-worker_reads_stale_source-bypass_caching_proxy",
+        "prediction-verifier_reads_stale_artifact-bypass_caching_proxy"
+      ],
+      "status": "completed",
+      "subject_refs": [
+        "hypothesis-cache-key",
+        "hypothesis-worker-source",
+        "hypothesis-verifier-artifact"
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-fixture-diagnostician",
+        "role": "proposer"
+      },
+      "evidence_refs": [],
+      "from_status": "proposed",
+      "id": "transition-cache_key_omits_source_revision-testable",
+      "reason": "The retained hypothesis has a falsifiable selected-test prediction.",
+      "subject_ref": "hypothesis-cache-key",
+      "to_status": "testable"
+    },
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-fixture-diagnostician",
+        "role": "proposer"
+      },
+      "evidence_refs": [],
+      "from_status": "proposed",
+      "id": "transition-worker_reads_stale_source-testable",
+      "reason": "The retained hypothesis has a falsifiable selected-test prediction.",
+      "subject_ref": "hypothesis-worker-source",
+      "to_status": "testable"
+    },
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-fixture-diagnostician",
+        "role": "proposer"
+      },
+      "evidence_refs": [],
+      "from_status": "proposed",
+      "id": "transition-verifier_reads_stale_artifact-testable",
+      "reason": "The retained hypothesis has a falsifiable selected-test prediction.",
+      "subject_ref": "hypothesis-verifier-artifact",
+      "to_status": "testable"
+    },
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-runner",
+        "role": "operator"
+      },
+      "evidence_refs": [],
+      "from_status": "testable",
+      "id": "transition-cache_key_omits_source_revision-under-test",
+      "reason": "The validated, predeclared intervention is starting.",
+      "subject_ref": "hypothesis-cache-key",
+      "to_status": "under_test"
+    },
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-runner",
+        "role": "operator"
+      },
+      "evidence_refs": [],
+      "from_status": "testable",
+      "id": "transition-worker_reads_stale_source-under-test",
+      "reason": "The validated, predeclared intervention is starting.",
+      "subject_ref": "hypothesis-worker-source",
+      "to_status": "under_test"
+    },
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-runner",
+        "role": "operator"
+      },
+      "evidence_refs": [],
+      "from_status": "testable",
+      "id": "transition-verifier_reads_stale_artifact-under-test",
+      "reason": "The validated, predeclared intervention is starting.",
+      "subject_ref": "hypothesis-verifier-artifact",
+      "to_status": "under_test"
+    },
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-promotion-policy",
+        "role": "evaluator"
+      },
+      "evidence_refs": [
+        "evidence-selected-intervention-run-1"
+      ],
+      "from_status": "under_test",
+      "id": "transition-cache_key_omits_source_revision-supported",
+      "reason": "The result was evaluated against preregistered predictions.",
+      "subject_ref": "hypothesis-cache-key",
+      "to_status": "supported",
+      "verdict_ref": "verdict-cache_key_omits_source_revision"
+    },
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-promotion-policy",
+        "role": "evaluator"
+      },
+      "evidence_refs": [
+        "evidence-selected-intervention-run-1"
+      ],
+      "from_status": "under_test",
+      "id": "transition-worker_reads_stale_source-refuted",
+      "reason": "The result was evaluated against preregistered predictions.",
+      "subject_ref": "hypothesis-worker-source",
+      "to_status": "refuted",
+      "verdict_ref": "verdict-worker_reads_stale_source"
+    },
+    {
+      "authorized_by": {
+        "actor_type": "software",
+        "id": "case-001-promotion-policy",
+        "role": "evaluator"
+      },
+      "evidence_refs": [
+        "evidence-selected-intervention-run-1"
+      ],
+      "from_status": "under_test",
+      "id": "transition-verifier_reads_stale_artifact-refuted",
+      "reason": "The result was evaluated against preregistered predictions.",
+      "subject_ref": "hypothesis-verifier-artifact",
+      "to_status": "refuted",
+      "verdict_ref": "verdict-verifier_reads_stale_artifact"
+    }
+  ],
+  "verdicts": [
+    {
+      "authority": {
+        "actor_ref": "case-001-causal-oracle",
+        "authority_type": "domain_evaluator",
+        "basis": "Preregistered intervention matrix for case 001",
+        "independent_of_subject": true
+      },
+      "evidence_refs": [
+        "evidence-selected-intervention-run-1"
+      ],
+      "id": "verdict-cache_key_omits_source_revision",
+      "outcome": "supported",
+      "public_rationale": "The result matches the predeclared prediction and uniquely isolates this hypothesis.",
+      "subject_ref": "hypothesis-cache-key"
+    },
+    {
+      "authority": {
+        "actor_ref": "case-001-causal-oracle",
+        "authority_type": "domain_evaluator",
+        "basis": "Preregistered intervention matrix for case 001",
+        "independent_of_subject": true
+      },
+      "evidence_refs": [
+        "evidence-selected-intervention-run-1"
+      ],
+      "id": "verdict-worker_reads_stale_source",
+      "outcome": "refuted",
+      "public_rationale": "The result is incompatible with this hypothesis under the controlled case oracle.",
+      "subject_ref": "hypothesis-worker-source"
+    },
+    {
+      "authority": {
+        "actor_ref": "case-001-causal-oracle",
+        "authority_type": "domain_evaluator",
+        "basis": "Preregistered intervention matrix for case 001",
+        "independent_of_subject": true
+      },
+      "evidence_refs": [
+        "evidence-selected-intervention-run-1"
+      ],
+      "id": "verdict-verifier_reads_stale_artifact",
+      "outcome": "refuted",
+      "public_rationale": "The result is incompatible with this hypothesis under the controlled case oracle.",
+      "subject_ref": "hypothesis-verifier-artifact"
+    }
+  ]
+}

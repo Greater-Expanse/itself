@@ -1,0 +1,55 @@
+{
+  "bundle_id": "urn:sha256:b76cced905c1b9efd3a38b48746ef8ae2f12e10a54deeadb98e81cfea08511e4",
+  "bundle_version": "0.1.0-alpha.2",
+  "closed_artifacts": true,
+  "created_at": "2026-07-23T12:00:00Z",
+  "files": [
+    {
+      "digest": {
+        "algorithm": "sha256",
+        "value": "6fd41923649d7243e2fc3cfcc9ca712ff4d9158eb03c2cac2a09c57884af7852"
+      },
+      "media_type": "application/json",
+      "path": "inputs/diagnosis-request.json",
+      "role": "input",
+      "size_bytes": 3302
+    },
+    {
+      "digest": {
+        "algorithm": "sha256",
+        "value": "c9f58f84e974a85ca0e07dd7353de56a69ae8d6647f67abb442c1fe007cf982b"
+      },
+      "media_type": "application/json",
+      "path": "artifacts/model-assertion.json",
+      "record_ref": "artifact-diagnostician-output",
+      "role": "artifact",
+      "size_bytes": 963
+    },
+    {
+      "digest": {
+        "algorithm": "sha256",
+        "value": "1506be1be189673e3a11ae7092339800e16e9e4231d1e0d3362f07e7813357cc"
+      },
+      "media_type": "application/x-ndjson",
+      "path": "ledger.jsonl",
+      "role": "ledger",
+      "size_bytes": 17229
+    },
+    {
+      "digest": {
+        "algorithm": "sha256",
+        "value": "a052e3bf8d9db79d3d5e5dd00e47fed6a0ad2a5a9de0872254a6813c98f5914b"
+      },
+      "media_type": "application/json",
+      "path": "reasoning-receipt.json",
+      "role": "reasoning_receipt",
+      "size_bytes": 12795
+    }
+  ],
+  "limitations": [
+    "The diagnostician is a deterministic software fixture, not a hosted model.",
+    "Structural integrity does not establish that a real-world claim is true.",
+    "The causal oracle is authoritative only within this controlled case."
+  ],
+  "title": "Deterministic cache-key causal diagnosis"
+}

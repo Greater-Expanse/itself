@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:diagnostician:v1:diagnosis-assertion",
+  "title": "Diagnostician Model Assertion v0.2.0",
+  "description": "The untrusted non-authoritative assertion a model emits. Execution provenance is added by the adapter.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "retained_hypothesis_ids",
+    "primary_hypothesis_id",
+    "predictions",
+    "selected_test_id",
+    "public_explanation",
+    "expressed_confidence"
+  ],
+  "properties": {
+    "retained_hypothesis_ids": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/identifier" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "primary_hypothesis_id": { "$ref": "#/$defs/identifier" },
+    "predictions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/prediction" },
+      "minItems": 1
+    },
+    "selected_test_id": { "$ref": "#/$defs/identifier" },
+    "public_explanation": { "$ref": "#/$defs/nonEmptyString" },
+    "expressed_confidence": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prediction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hypothesis_id",
+        "test_id",
+        "expected_observation",
+        "falsified_when"
+      ],
+      "properties": {
+        "hypothesis_id": { "$ref": "#/$defs/identifier" },
+        "test_id": { "$ref": "#/$defs/identifier" },
+        "expected_observation": { "$ref": "#/$defs/nonEmptyString" },
+        "falsified_when": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

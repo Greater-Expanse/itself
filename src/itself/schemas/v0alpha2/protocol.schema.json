@@ -1,0 +1,503 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://greaterexpanse.com/itself/schemas/v0alpha2/protocol.schema.json",
+  "title": "Claim and Evidence Protocol v0alpha2",
+  "description": "Provider-neutral records for externally inspectable epistemic state.",
+  "oneOf": [
+    { "$ref": "#/$defs/artifactReference" },
+    { "$ref": "#/$defs/claim" },
+    { "$ref": "#/$defs/hypothesis" },
+    { "$ref": "#/$defs/prediction" },
+    { "$ref": "#/$defs/test" },
+    { "$ref": "#/$defs/evidence" },
+    { "$ref": "#/$defs/verdict" },
+    { "$ref": "#/$defs/decision" },
+    { "$ref": "#/$defs/statusTransition" }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "iJsonNumber": {
+      "type": "number",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "iJsonScalar": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "string" },
+        { "$ref": "#/$defs/iJsonNumber" }
+      ]
+    },
+    "iJsonValue": {
+      "oneOf": [
+        { "$ref": "#/$defs/iJsonScalar" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/iJsonValue" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/iJsonValue" }
+        }
+      ]
+    },
+    "referenceList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/identifier" },
+      "uniqueItems": true
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "actor_type", "role"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "actor_type": {
+          "enum": ["human", "model", "software", "organization"]
+        },
+        "role": {
+          "enum": ["proposer", "evaluator", "reviewer", "authority", "operator"]
+        },
+        "implementation_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/iJsonScalar" }
+        },
+        "valid_from": { "type": "string", "format": "date-time" },
+        "valid_until": { "type": "string", "format": "date-time" }
+      }
+    },
+    "recordHeader": {
+      "type": "object",
+      "required": ["protocol_version", "id", "created_at", "created_by"],
+      "properties": {
+        "protocol_version": { "const": "0.1.0-alpha.3" },
+        "id": { "$ref": "#/$defs/identifier" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "created_by": { "$ref": "#/$defs/actor" }
+      }
+    },
+    "claimStatus": {
+      "enum": [
+        "proposed",
+        "testable",
+        "blocked",
+        "under_test",
+        "supported",
+        "refuted",
+        "inconclusive",
+        "mixed_evidence",
+        "corroborated_within_scope",
+        "stale",
+        "invalidated",
+        "withdrawn"
+      ]
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority_type", "actor_ref", "basis"],
+      "properties": {
+        "authority_type": {
+          "enum": [
+            "deterministic_tool",
+            "domain_evaluator",
+            "model_evaluator",
+            "human_reviewer",
+            "policy_engine",
+            "external_source"
+          ]
+        },
+        "actor_ref": { "$ref": "#/$defs/identifier" },
+        "basis": { "type": "string", "minLength": 1 },
+        "independent_of_subject": { "type": "boolean" }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "version", "authority_type"],
+      "properties": {
+        "adapter": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "authority_type": { "$ref": "#/$defs/authority/properties/authority_type" },
+        "declared_scope": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifactReference": {
+      "allOf": [
+        { "$ref": "#/$defs/recordHeader" },
+        {
+          "type": "object",
+          "required": ["kind", "uri", "media_type"],
+          "properties": {
+            "kind": { "const": "artifact_reference" },
+            "uri": { "type": "string", "format": "uri-reference" },
+            "media_type": { "type": "string", "minLength": 1 },
+            "title": { "type": "string", "minLength": 1 },
+            "digest": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["algorithm", "value"],
+              "properties": {
+                "algorithm": { "enum": ["sha256", "sha512", "blake3", "other"] },
+                "value": { "type": "string", "minLength": 1 }
+              }
+            },
+            "captured_at": { "type": "string", "format": "date-time" },
+            "derived_from_refs": { "$ref": "#/$defs/referenceList" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "claim": {
+      "allOf": [
+        { "$ref": "#/$defs/recordHeader" },
+        {
+          "type": "object",
+          "required": ["kind", "proposition", "claim_type", "status", "scope"],
+          "properties": {
+            "kind": { "const": "claim" },
+            "proposition": { "type": "string", "minLength": 1 },
+            "claim_type": {
+              "enum": ["factual", "causal", "predictive", "interpretive", "normative"]
+            },
+            "status": { "const": "proposed" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "evidence_refs": { "$ref": "#/$defs/referenceList" },
+            "contradicting_evidence_refs": { "$ref": "#/$defs/referenceList" },
+            "dependency_refs": { "$ref": "#/$defs/referenceList" },
+            "transition_refs": { "$ref": "#/$defs/referenceList" },
+            "invalidation_conditions": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "hypothesis": {
+      "allOf": [
+        { "$ref": "#/$defs/recordHeader" },
+        {
+          "type": "object",
+          "required": ["kind", "statement", "status", "scope"],
+          "properties": {
+            "kind": { "const": "hypothesis" },
+            "statement": { "type": "string", "minLength": 1 },
+            "status": { "const": "proposed" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "explains_evidence_refs": { "$ref": "#/$defs/referenceList" },
+            "alternative_hypothesis_refs": { "$ref": "#/$defs/referenceList" },
+            "prediction_refs": { "$ref": "#/$defs/referenceList" },
+            "dependency_refs": { "$ref": "#/$defs/referenceList" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "prediction": {
+      "allOf": [
+        { "$ref": "#/$defs/recordHeader" },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "hypothesis_ref",
+            "condition",
+            "expected_observation",
+            "scope"
+          ],
+          "properties": {
+            "kind": { "const": "prediction" },
+            "hypothesis_ref": { "$ref": "#/$defs/identifier" },
+            "condition": { "enum": ["hypothesis_true", "hypothesis_false"] },
+            "expected_observation": { "type": "string", "minLength": 1 },
+            "falsified_when": { "type": "string", "minLength": 1 },
+            "test_ref": { "$ref": "#/$defs/identifier" },
+            "scope": { "$ref": "#/$defs/scope" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "test": {
+      "allOf": [
+        { "$ref": "#/$defs/recordHeader" },
+        {
+          "type": "object",
+          "required": ["kind", "question", "design", "status", "oracle", "scope"],
+          "properties": {
+            "kind": { "const": "test" },
+            "question": { "type": "string", "minLength": 1 },
+            "design": {
+              "enum": [
+                "controlled_ablation",
+                "factorial",
+                "deterministic_check",
+                "replay",
+                "query",
+                "simulation",
+                "source_corroboration",
+                "human_review",
+                "other"
+              ]
+            },
+            "status": { "enum": ["planned", "running", "completed", "failed", "unavailable"] },
+            "subject_refs": { "$ref": "#/$defs/referenceList" },
+            "prediction_refs": { "$ref": "#/$defs/referenceList" },
+            "plan_ref": { "$ref": "#/$defs/identifier" },
+            "oracle": { "$ref": "#/$defs/oracle" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "evidence_refs": { "$ref": "#/$defs/referenceList" },
+            "cost": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "model_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "wall_time_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "human_minutes": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "completed" } },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["evidence_refs"],
+            "properties": { "evidence_refs": { "minItems": 1 } }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "evidenceRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_ref", "relation"],
+      "properties": {
+        "subject_ref": { "$ref": "#/$defs/identifier" },
+        "relation": { "enum": ["supports", "contradicts", "contextualizes"] },
+        "public_note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "evidence": {
+      "allOf": [
+        { "$ref": "#/$defs/recordHeader" },
+        {
+          "type": "object",
+          "required": ["kind", "evidence_type", "relations", "authority", "scope"],
+          "properties": {
+            "kind": { "const": "evidence" },
+            "evidence_type": {
+              "enum": [
+                "observation",
+                "deterministic_test",
+                "benchmark_result",
+                "calculation",
+                "database_query",
+                "simulation",
+                "source_record",
+                "model_evaluation",
+                "human_review",
+                "policy_check",
+                "other"
+              ]
+            },
+            "relations": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/evidenceRelation" },
+              "minItems": 1
+            },
+            "authority": { "$ref": "#/$defs/authority" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "artifact_refs": { "$ref": "#/$defs/referenceList" },
+            "test_ref": { "$ref": "#/$defs/identifier" },
+            "result": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/iJsonValue" }
+            },
+            "expires_at": { "type": "string", "format": "date-time" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "verdict": {
+      "allOf": [
+        { "$ref": "#/$defs/recordHeader" },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "subject_ref",
+            "outcome",
+            "evidence_refs",
+            "authority",
+            "scope",
+            "public_rationale"
+          ],
+          "properties": {
+            "kind": { "const": "verdict" },
+            "subject_ref": { "$ref": "#/$defs/identifier" },
+            "outcome": {
+              "enum": [
+                "supported",
+                "refuted",
+                "inconclusive",
+                "mixed_evidence",
+                "corroborated_within_scope"
+              ]
+            },
+            "evidence_refs": {
+              "allOf": [
+                { "$ref": "#/$defs/referenceList" },
+                { "minItems": 1 }
+              ]
+            },
+            "authority": { "$ref": "#/$defs/authority" },
+            "policy_ref": { "$ref": "#/$defs/identifier" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "public_rationale": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "if": {
+            "properties": { "outcome": { "const": "corroborated_within_scope" } },
+            "required": ["outcome"]
+          },
+          "then": { "required": ["policy_ref"] }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "decision": {
+      "allOf": [
+        { "$ref": "#/$defs/recordHeader" },
+        {
+          "type": "object",
+          "required": ["kind", "question", "disposition", "authorized_by", "scope"],
+          "properties": {
+            "kind": { "const": "decision" },
+            "question": { "type": "string", "minLength": 1 },
+            "disposition": { "enum": ["approved", "rejected", "deferred", "escalated", "executed"] },
+            "authorized_by": { "$ref": "#/$defs/actor" },
+            "policy_ref": { "$ref": "#/$defs/identifier" },
+            "scope": { "$ref": "#/$defs/scope" },
+            "relied_on_claim_refs": { "$ref": "#/$defs/referenceList" },
+            "unresolved_claim_refs": { "$ref": "#/$defs/referenceList" },
+            "reconsider_when": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            },
+            "public_rationale": { "type": "string", "minLength": 1 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "statusTransition": {
+      "allOf": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/recordHeader" },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "subject_ref",
+                "from_status",
+                "to_status",
+                "authorized_by",
+                "reason"
+              ],
+              "properties": {
+                "kind": { "const": "status_transition" },
+                "subject_ref": { "$ref": "#/$defs/identifier" },
+                "from_status": { "$ref": "#/$defs/claimStatus" },
+                "to_status": { "$ref": "#/$defs/claimStatus" },
+                "evidence_refs": { "$ref": "#/$defs/referenceList" },
+                "verdict_ref": { "$ref": "#/$defs/identifier" },
+                "authorized_by": { "$ref": "#/$defs/actor" },
+                "policy_ref": { "$ref": "#/$defs/identifier" },
+                "reason": { "type": "string", "minLength": 1 }
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": {
+              "to_status": {
+                "enum": [
+                  "supported",
+                  "refuted",
+                  "inconclusive",
+                  "mixed_evidence",
+                  "corroborated_within_scope"
+                ]
+              }
+            },
+            "required": ["to_status"]
+          },
+          "then": {
+            "required": ["evidence_refs", "verdict_ref"],
+            "properties": {
+              "evidence_refs": { "minItems": 1 },
+              "authorized_by": {
+                "properties": {
+                  "actor_type": {
+                    "enum": ["human", "software", "organization"]
+                  },
+                  "role": {
+                    "enum": ["evaluator", "reviewer", "authority"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "to_status": { "const": "corroborated_within_scope" } },
+            "required": ["to_status"]
+          },
+          "then": { "required": ["policy_ref"] }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

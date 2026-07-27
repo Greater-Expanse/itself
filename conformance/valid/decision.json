@@ -1,0 +1,29 @@
+{
+  "protocol_version": "0.1.0-alpha.3",
+  "kind": "decision",
+  "id": "decision-defer-release",
+  "created_at": "2026-07-22T12:12:00Z",
+  "created_by": {
+    "id": "human-reviewer-1",
+    "actor_type": "human",
+    "role": "reviewer"
+  },
+  "question": "Should the completion-flow change be released?",
+  "disposition": "deferred",
+  "authorized_by": {
+    "id": "human-reviewer-1",
+    "actor_type": "human",
+    "role": "authority"
+  },
+  "policy_ref": "release-policy-v0",
+  "scope": {
+    "description": "Release candidate abc123"
+  },
+  "relied_on_claim_refs": ["claim-completion-reset"],
+  "unresolved_claim_refs": ["claim-no-critical-regressions"],
+  "reconsider_when": [
+    "critical-regression suite completes",
+    "claim-no-critical-regressions receives evidence"
+  ],
+  "public_rationale": "The local mechanism is supported, but evidence about broader regressions remains incomplete."
+}

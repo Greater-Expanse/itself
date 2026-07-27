@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  javascript-conformance:
+    name: Conformance (JavaScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: conformance/javascript
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: conformance/javascript/package-lock.json
+
+      - name: Install conformance dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run independent conformance check
+        run: npm test
+
+      - name: Audit conformance dependencies
+        run: npm audit --audit-level=high
+
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          cache-suffix: tests-${{ matrix.python-version }}
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test environment
+        run: uv sync --locked --extra test
+
+      - name: Run tests
+        run: uv run --frozen --extra test pytest
+
+  evaluations:
+    name: Reproducible evaluations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          cache-suffix: evaluations-3.11
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install evaluation environment
+        run: uv sync --locked
+
+      - name: Exercise SDK guarantees and mutations
+        run: |
+          mkdir -p .itself/evaluations
+          uv run --frozen python -m evaluations.sdk_exercise \
+            --output .itself/evaluations/sdk-exercise \
+            --source-revision "${{ github.sha }}"
+
+      - name: Observe SDK capacity curve
+        run: |
+          uv run --frozen python -m evaluations.capacity_curve \
+            --output .itself/evaluations/capacity-curve \
+            --source-revision "${{ github.sha }}"
+
+      - name: Add reports to job summary
+        if: always()
+        run: |
+          if [[ -f .itself/evaluations/sdk-exercise/report.md ]]; then
+            cat .itself/evaluations/sdk-exercise/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ -f .itself/evaluations/capacity-curve/report.md ]]; then
+            cat .itself/evaluations/capacity-curve/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Retain evaluation reports and bundles
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: itself-evaluations-${{ github.sha }}
+          path: .itself/evaluations/
+          if-no-files-found: warn
+          retention-days: 14
+
+  quality:
+    name: Quality and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          cache-suffix: quality-3.11
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: Install quality environment
+        run: >-
+          uv sync --locked
+          --extra test
+          --extra typecheck
+          --extra lint
+          --extra release
+
+      - name: Audit locked Python dependencies
+        run: uv audit
+
+      - name: Lint
+        run: uv run --frozen --extra lint ruff check .
+
+      - name: Check formatting
+        run: uv run --frozen --extra lint ruff format --check .
+
+      - name: Run Mypy
+        run: uv run --frozen --extra typecheck mypy
+
+      - name: Run Pyright
+        run: uv run --frozen --extra typecheck pyright
+
+      - name: Verify public type completeness
+        run: uv run --frozen --extra typecheck pyright --verifytypes itself --ignoreexternal
+
+      - name: Verify source manifest
+        run: uv run --frozen --extra release check-manifest
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Verify distribution metadata
+        run: uv run --frozen --extra release twine check --strict dist/*
+
+      - name: Smoke-test built wheel
+        run: |
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            itself --version
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            itself validate conformance/valid/proposed-claim.json
+
+      - name: Smoke-test built-wheel schema export
+        run: |
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            itself schema export "${{ runner.temp }}/itself-schema-export"
+          cmp \
+            src/itself/schemas/v0alpha/protocol.schema.json \
+            "${{ runner.temp }}/itself-schema-export/itself/schemas/v0alpha/protocol.schema.json"
+          cmp \
+            src/itself/schemas/v0alpha2/protocol.schema.json \
+            "${{ runner.temp }}/itself-schema-export/itself/schemas/v0alpha2/protocol.schema.json"
+
+      - name: Smoke-test built-wheel bundle workflow
+        run: |
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            itself bundle create \
+            examples/cache-key-diagnosis/bundle/ledger.jsonl \
+            "${{ runner.temp }}/itself-evidence-bundle" \
+            --title "Built-wheel smoke test" \
+            --created-at 2026-07-23T12:00:00Z \
+            --artifact artifact-diagnostician-output=examples/cache-key-diagnosis/bundle/artifacts/model-assertion.json \
+            --input examples/cache-key-diagnosis/bundle/inputs/diagnosis-request.json
+          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+            itself bundle validate "${{ runner.temp }}/itself-evidence-bundle"

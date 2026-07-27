@@ -1,0 +1,5 @@
+{
+  "selected_hypothesis_id": "cache_key_omits_source_revision",
+  "public_explanation": "Repeated stale reports are most consistent with reuse by the caching proxy.",
+  "expressed_confidence": 0.6
+}

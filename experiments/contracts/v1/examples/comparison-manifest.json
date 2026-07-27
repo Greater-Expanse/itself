@@ -1,0 +1,109 @@
+{
+  "manifest_version": "0.2.0",
+  "comparison_series_id": "case-001-together-gpt-oss-20b-comparison-pilot-v2",
+  "study_phase": "engineering_pilot",
+  "registered_at": "2026-07-22T05:55:00Z",
+  "case": {
+    "case_id": "001-cache-key-omission",
+    "case_version": "1",
+    "diagnosis_contract_version": "0.2.0",
+    "narrative_contract_version": "0.2.0",
+    "request_sha256": "cb5fab698db5de399c32c0fce6909680d61df4f085b49a626bc50934db3c58f1"
+  },
+  "design": {
+    "replicate_count": 1,
+    "model_attempt_count": 2,
+    "condition_branch_count": 3,
+    "call_order": [
+      "narrative-attempt-1",
+      "structured-attempt-1"
+    ],
+    "branches": {
+      "narrative_diagnosis": {
+        "source_attempt_id": "narrative-attempt-1",
+        "executes_external_test": false
+      },
+      "structured_without_testing": {
+        "source_attempt_id": "structured-attempt-1",
+        "executes_external_test": false
+      },
+      "evidence_enforced": {
+        "source_attempt_id": "structured-attempt-1",
+        "executes_external_test": true
+      }
+    }
+  },
+  "diagnostician": {
+    "actor_id": "together-gpt-oss-20b-case-001-comparison",
+    "protocol": "openai-chat-completions",
+    "adapter_id": "openai-chat-completions",
+    "adapter_version": "0.2.0",
+    "base_url_sha256": "44a5705b763c30bf92e279e5b75c96c4f268787a9b0d08e015d2aa29c0d94cbc",
+    "model": "openai/gpt-oss-20b"
+  },
+  "profiles": {
+    "narrative": {
+      "attempt_id": "narrative-attempt-1",
+      "profile_id": "narrative-assertion-v0.2.0",
+      "assertion_schema_sha256": "10e1c4d9da62584fb8a15b0642a8703a53510fdf66befdef23fb90a658a36e58",
+      "prompt_payload_sha256": "c43264317a71d63524fb124ae857f8e207ba8419f50714527ec2efa13da69e64"
+    },
+    "structured": {
+      "attempt_id": "structured-attempt-1",
+      "profile_id": "diagnosis-assertion-v0.2.0",
+      "assertion_schema_sha256": "0df8cebc006d482419a935a18226611f4120184a433e7a7b7400648c792ad188",
+      "prompt_payload_sha256": "34e92aa6d467d8a7876c458d69f9dcb0f1c36cc7ace9f09d93e9e90c24e52187"
+    }
+  },
+  "generation": {
+    "structured_output_mode": "json_schema_strict",
+    "temperature": 0.0,
+    "seed": 2026072202,
+    "max_output_tokens": 2048
+  },
+  "execution": {
+    "max_attempts_per_model_attempt": 1,
+    "timeout_seconds": 90.0,
+    "automatic_retry": false,
+    "json_repair": false,
+    "fallback": false,
+    "failure_mode": "stop_after_failed_attempt"
+  },
+  "artifact_policy": {
+    "raw_provider_response": "private",
+    "published_representation": "metadata_and_digest",
+    "credential": "environment_only",
+    "private_reasoning": "not_requested"
+  },
+  "metrics": [
+    "condition",
+    "source_attempt_id",
+    "model_primary_is_ground_truth",
+    "model_retained_ground_truth",
+    "retained_hypothesis_count",
+    "expressed_confidence",
+    "test_selected",
+    "selected_test_id",
+    "selected_test_discriminates",
+    "predictions_declared",
+    "predictions_correct",
+    "external_tests_executed",
+    "external_evidence_identifies_ground_truth",
+    "behavioral_recovery",
+    "ground_truth_final_status",
+    "false_promotion_attempts",
+    "false_promotions_accepted",
+    "ledger_record_count",
+    "model_input_tokens",
+    "model_output_tokens",
+    "wall_time_ms",
+    "receipt_recomputes"
+  ],
+  "limitations": [
+    "This transparent case is a one-replicate engineering pilot, not an effect estimate.",
+    "Conditions B and C are dependent branches of one structured model attempt.",
+    "One case, provider, model, and replicate cannot establish transfer or general reasoning ability.",
+    "A fixed seed and temperature do not guarantee deterministic hosted inference.",
+    "The case-specific deterministic oracle is custom verification infrastructure whose transfer cost remains unmeasured."
+  ]
+}

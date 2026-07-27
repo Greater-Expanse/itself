@@ -1,0 +1,110 @@
+{
+  "artifact_policy": {
+    "credential": "environment_only",
+    "private_reasoning": "not_requested",
+    "published_representation": "metadata_and_digest",
+    "raw_provider_response": "private"
+  },
+  "case": {
+    "case_id": "001-cache-key-omission",
+    "case_version": "1",
+    "diagnosis_contract_version": "0.2.0",
+    "narrative_contract_version": "0.2.0",
+    "request_sha256": "cb5fab698db5de399c32c0fce6909680d61df4f085b49a626bc50934db3c58f1"
+  },
+  "comparison_series_id": "case-001-together-glm-5p2-comparison-v1",
+  "design": {
+    "branches": {
+      "evidence_enforced": {
+        "executes_external_test": true,
+        "source_attempt_id": "structured-attempt-1"
+      },
+      "narrative_diagnosis": {
+        "executes_external_test": false,
+        "source_attempt_id": "narrative-attempt-1"
+      },
+      "structured_without_testing": {
+        "executes_external_test": false,
+        "source_attempt_id": "structured-attempt-1"
+      }
+    },
+    "call_order": [
+      "narrative-attempt-1",
+      "structured-attempt-1"
+    ],
+    "condition_branch_count": 3,
+    "model_attempt_count": 2,
+    "replicate_count": 5
+  },
+  "diagnostician": {
+    "actor_id": "together-glm-5p2-case-001",
+    "adapter_id": "openai-chat-completions",
+    "adapter_version": "0.2.0",
+    "base_url_sha256": "44a5705b763c30bf92e279e5b75c96c4f268787a9b0d08e015d2aa29c0d94cbc",
+    "model": "zai-org/GLM-5.2",
+    "protocol": "openai-chat-completions"
+  },
+  "execution": {
+    "automatic_retry": false,
+    "failure_mode": "stop_after_failed_attempt",
+    "fallback": false,
+    "json_repair": false,
+    "max_attempts_per_model_attempt": 1,
+    "timeout_seconds": 300.0
+  },
+  "generation": {
+    "max_output_tokens": 32768,
+    "reasoning_effort": null,
+    "seed": null,
+    "structured_output_mode": "json_schema_strict",
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "limitations": [
+    "This transparent closed-set case does not establish cross-task transfer.",
+    "Five repeated samples characterize behavior on one prompt, not a population of causal-diagnosis tasks.",
+    "Strict JSON Schema output is part of the treatment and may alter or suppress provider-exposed reasoning.",
+    "A provider model identifier does not bind an independently verifiable checkpoint revision, quantization, chat template, or serving configuration."
+  ],
+  "manifest_version": "0.2.0",
+  "metrics": [
+    "condition",
+    "source_attempt_id",
+    "model_primary_is_ground_truth",
+    "model_retained_ground_truth",
+    "retained_hypothesis_count",
+    "expressed_confidence",
+    "test_selected",
+    "selected_test_id",
+    "selected_test_discriminates",
+    "predictions_declared",
+    "predictions_correct",
+    "external_tests_executed",
+    "external_evidence_identifies_ground_truth",
+    "behavioral_recovery",
+    "ground_truth_final_status",
+    "false_promotion_attempts",
+    "false_promotions_accepted",
+    "ledger_record_count",
+    "model_input_tokens",
+    "model_output_tokens",
+    "wall_time_ms",
+    "receipt_recomputes"
+  ],
+  "profiles": {
+    "narrative": {
+      "assertion_schema_sha256": "10e1c4d9da62584fb8a15b0642a8703a53510fdf66befdef23fb90a658a36e58",
+      "attempt_id": "narrative-attempt-1",
+      "profile_id": "narrative-assertion-v0.2.0",
+      "prompt_payload_sha256": "80b60b0ada60abe98765a9c12336c69bf096bef37fb57a6db51333f7e8b25ec4"
+    },
+    "structured": {
+      "assertion_schema_sha256": "0df8cebc006d482419a935a18226611f4120184a433e7a7b7400648c792ad188",
+      "attempt_id": "structured-attempt-1",
+      "profile_id": "diagnosis-assertion-v0.2.0",
+      "prompt_payload_sha256": "8b4d624fc0280e7c3af80dfa1637551c290d768f18686c4d083e5f2517632bf8"
+    }
+  },
+  "registered_at": "2026-07-24T19:12:29Z",
+  "study_phase": "preregistered_study"
+}

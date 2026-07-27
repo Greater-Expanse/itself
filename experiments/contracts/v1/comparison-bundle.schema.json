@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:comparisons:v1:comparison-bundle",
+  "title": "Controlled Comparison Bundle v0.2.0",
+  "description": "A digest-bound inventory for one paired two-attempt, three-branch comparison replicate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_version",
+    "bundle_id",
+    "comparison_series_id",
+    "replicate_index",
+    "outcome",
+    "created_at",
+    "attempt_outcomes",
+    "completed_branch_count",
+    "contains_private_artifacts",
+    "branch_bindings",
+    "files"
+  ],
+  "properties": {
+    "bundle_version": { "const": "0.2.0" },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^urn:sha256:[0-9a-f]{64}$"
+    },
+    "comparison_series_id": { "$ref": "#/$defs/identifier" },
+    "replicate_index": { "type": "integer", "minimum": 1 },
+    "outcome": { "enum": ["completed", "adapter_failed"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "attempt_outcomes": { "$ref": "#/$defs/attemptOutcomes" },
+    "completed_branch_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "contains_private_artifacts": { "type": "boolean" },
+    "branch_bindings": { "$ref": "#/$defs/branchBindings" },
+    "files": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/file" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "outcome": { "const": "completed" } },
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": {
+          "attempt_outcomes": {
+            "const": {
+              "narrative-attempt-1": "completed",
+              "structured-attempt-1": "completed"
+            }
+          },
+          "completed_branch_count": { "const": 3 },
+          "contains_private_artifacts": { "const": true },
+          "branch_bindings": { "$ref": "#/$defs/completedBranchBindings" },
+          "files": { "minItems": 14, "maxItems": 14 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "outcome": { "const": "adapter_failed" } },
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": {
+          "attempt_outcomes": {
+            "oneOf": [
+              {
+                "const": {
+                  "narrative-attempt-1": "adapter_failed",
+                  "structured-attempt-1": "not_run"
+                }
+              },
+              {
+                "const": {
+                  "narrative-attempt-1": "completed",
+                  "structured-attempt-1": "adapter_failed"
+                }
+              }
+            ]
+          },
+          "completed_branch_count": { "const": 0 },
+          "branch_bindings": {
+            "const": {
+              "narrative_diagnosis": null,
+              "structured_without_testing": null,
+              "evidence_enforced": null
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "value": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "media_type",
+        "visibility",
+        "size_bytes",
+        "digest"
+      ],
+      "properties": {
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "media_type": { "$ref": "#/$defs/nonEmptyString" },
+        "visibility": { "enum": ["shareable", "private"] },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "attemptOutcomes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["narrative-attempt-1", "structured-attempt-1"],
+      "properties": {
+        "narrative-attempt-1": {
+          "enum": ["completed", "adapter_failed"]
+        },
+        "structured-attempt-1": {
+          "enum": ["completed", "adapter_failed", "not_run"]
+        }
+      }
+    },
+    "branchBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_attempt_id",
+        "result_path",
+        "raw_artifact_sha256"
+      ],
+      "properties": {
+        "source_attempt_id": {
+          "enum": ["narrative-attempt-1", "structured-attempt-1"]
+        },
+        "result_path": { "$ref": "#/$defs/nonEmptyString" },
+        "raw_artifact_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "branchBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "narrative_diagnosis",
+        "structured_without_testing",
+        "evidence_enforced"
+      ],
+      "properties": {
+        "narrative_diagnosis": {
+          "oneOf": [{ "$ref": "#/$defs/branchBinding" }, { "type": "null" }]
+        },
+        "structured_without_testing": {
+          "oneOf": [{ "$ref": "#/$defs/branchBinding" }, { "type": "null" }]
+        },
+        "evidence_enforced": {
+          "oneOf": [{ "$ref": "#/$defs/branchBinding" }, { "type": "null" }]
+        }
+      }
+    },
+    "completedBranchBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "narrative_diagnosis",
+        "structured_without_testing",
+        "evidence_enforced"
+      ],
+      "properties": {
+        "narrative_diagnosis": { "$ref": "#/$defs/branchBinding" },
+        "structured_without_testing": { "$ref": "#/$defs/branchBinding" },
+        "evidence_enforced": { "$ref": "#/$defs/branchBinding" }
+      }
+    }
+  }
+}

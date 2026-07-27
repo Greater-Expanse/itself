@@ -1,0 +1,33 @@
+[
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "artifact_reference",
+    "id": "artifact-not-evidence",
+    "created_at": "2026-07-22T12:00:00Z",
+    "created_by": {
+      "id": "tool-1",
+      "actor_type": "software",
+      "role": "operator"
+    },
+    "uri": "file:result.txt",
+    "media_type": "text/plain"
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "claim",
+    "id": "claim-wrong-reference-kind",
+    "created_at": "2026-07-22T12:01:00Z",
+    "created_by": {
+      "id": "model-1",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "proposition": "An artifact was mislabeled as evidence.",
+    "claim_type": "factual",
+    "status": "proposed",
+    "scope": {
+      "description": "Bundle conformance fixture"
+    },
+    "evidence_refs": ["artifact-not-evidence"]
+  }
+]

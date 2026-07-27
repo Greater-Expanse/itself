@@ -1,0 +1,68 @@
+{
+  "manifest_version": "0.2.0",
+  "trial_series_id": "case-001-together-gpt-oss-20b-assertion-pilot-v2",
+  "study_phase": "engineering_pilot",
+  "registered_at": "2026-07-22T05:55:00Z",
+  "case": {
+    "case_id": "001-cache-key-omission",
+    "case_version": "1",
+    "diagnosis_contract_version": "0.2.0",
+    "request_sha256": "27e714233709b73f0c5b6637c99cfd0fab0cb9a144f94f33197e0eccc8324687",
+    "assertion_schema_sha256": "0df8cebc006d482419a935a18226611f4120184a433e7a7b7400648c792ad188"
+  },
+  "condition": "evidence_enforced",
+  "diagnostician": {
+    "actor_id": "together-gpt-oss-20b-case-001",
+    "protocol": "openai-chat-completions",
+    "adapter_id": "openai-chat-completions",
+    "adapter_version": "0.2.0",
+    "base_url_sha256": "44a5705b763c30bf92e279e5b75c96c4f268787a9b0d08e015d2aa29c0d94cbc",
+    "model": "openai/gpt-oss-20b"
+  },
+  "generation": {
+    "structured_output_mode": "json_schema_strict",
+    "temperature": 0.0,
+    "seed": 20260722,
+    "max_output_tokens": 2048,
+    "prompt_payload_sha256": "31b97685330f4ea74507703ef3ce40bc4b298fcf117b4acbee82740d6517f7e2"
+  },
+  "execution": {
+    "trial_count": 1,
+    "max_attempts_per_trial": 1,
+    "timeout_seconds": 90.0,
+    "automatic_retry": false,
+    "json_repair": false,
+    "fallback": false
+  },
+  "artifact_policy": {
+    "raw_provider_response": "private",
+    "published_representation": "metadata_and_digest",
+    "credential": "environment_only",
+    "private_reasoning": "not_requested"
+  },
+  "metrics": [
+    "ground_truth_identified",
+    "ground_truth_retained",
+    "evidence_identifies_ground_truth",
+    "false_promotion_attempts",
+    "false_promotions_accepted",
+    "predictions_evaluated",
+    "predictions_correct",
+    "tests_executed",
+    "discriminating_tests",
+    "behavioral_recovery",
+    "negative_control_behavioral_recovery",
+    "negative_control_addresses_cause",
+    "ledger_record_count",
+    "model_input_tokens",
+    "model_output_tokens",
+    "wall_time_ms",
+    "receipt_recomputes"
+  ],
+  "limitations": [
+    "This transparent case is an engineering pilot, not a held-out benchmark.",
+    "One trial cannot establish repeatability, provider transfer, or model reliability.",
+    "A conforming model assertion remains non-authoritative until external evidence is evaluated.",
+    "A fixed seed and temperature do not guarantee deterministic hosted inference."
+  ]
+}

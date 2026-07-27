@@ -1,0 +1,57 @@
+[
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "claim",
+    "id": "claim-declaring-transition",
+    "created_at": "2026-07-22T12:00:00Z",
+    "created_by": {
+      "id": "model-1",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "proposition": "This claim points at another claim's transition.",
+    "claim_type": "factual",
+    "status": "proposed",
+    "scope": {
+      "description": "Bundle conformance fixture"
+    },
+    "transition_refs": ["transition-for-other-claim"]
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "claim",
+    "id": "claim-transition-target",
+    "created_at": "2026-07-22T12:00:01Z",
+    "created_by": {
+      "id": "model-1",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "proposition": "This is the actual transition subject.",
+    "claim_type": "factual",
+    "status": "proposed",
+    "scope": {
+      "description": "Bundle conformance fixture"
+    }
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "status_transition",
+    "id": "transition-for-other-claim",
+    "created_at": "2026-07-22T12:01:00Z",
+    "created_by": {
+      "id": "model-1",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "subject_ref": "claim-transition-target",
+    "from_status": "proposed",
+    "to_status": "testable",
+    "authorized_by": {
+      "id": "model-1",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "reason": "The claim is testable."
+  }
+]

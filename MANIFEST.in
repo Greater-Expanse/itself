@@ -1,0 +1,9 @@
+include *.md
+include uv.lock
+recursive-include conformance *.json *.md *.mjs
+recursive-include docs *.md *.svg
+recursive-include evaluations *.json *.py
+recursive-include examples *.json *.jsonl *.md *.py
+recursive-include experiments *.json *.md *.py
+recursive-include typing_tests *.py
+prune conformance/javascript/node_modules

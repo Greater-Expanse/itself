@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:comparisons:v1:comparison-manifest",
+  "title": "Controlled Comparison Manifest v0.2.0",
+  "description": "A credential-free preregistration for repeated paired two-attempt, three-branch comparison replicates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "comparison_series_id",
+    "study_phase",
+    "registered_at",
+    "case",
+    "design",
+    "diagnostician",
+    "profiles",
+    "generation",
+    "execution",
+    "artifact_policy",
+    "metrics",
+    "limitations"
+  ],
+  "properties": {
+    "manifest_version": { "const": "0.2.0" },
+    "comparison_series_id": { "$ref": "#/$defs/identifier" },
+    "study_phase": { "enum": ["engineering_pilot", "preregistered_study"] },
+    "registered_at": { "type": "string", "format": "date-time" },
+    "case": { "$ref": "#/$defs/case" },
+    "design": { "$ref": "#/$defs/design" },
+    "diagnostician": { "$ref": "#/$defs/diagnostician" },
+    "profiles": { "$ref": "#/$defs/profiles" },
+    "generation": { "$ref": "#/$defs/generation" },
+    "execution": { "$ref": "#/$defs/execution" },
+    "artifact_policy": { "$ref": "#/$defs/artifactPolicy" },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/metric" }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "case_version",
+        "diagnosis_contract_version",
+        "narrative_contract_version",
+        "request_sha256"
+      ],
+      "properties": {
+        "case_id": { "const": "001-cache-key-omission" },
+        "case_version": { "const": "1" },
+        "diagnosis_contract_version": { "const": "0.2.0" },
+        "narrative_contract_version": { "const": "0.2.0" },
+        "request_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "design": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replicate_count",
+        "model_attempt_count",
+        "condition_branch_count",
+        "call_order",
+        "branches"
+      ],
+      "properties": {
+        "replicate_count": { "type": "integer", "minimum": 1 },
+        "model_attempt_count": { "const": 2 },
+        "condition_branch_count": { "const": 3 },
+        "call_order": {
+          "const": ["narrative-attempt-1", "structured-attempt-1"]
+        },
+        "branches": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "narrative_diagnosis",
+            "structured_without_testing",
+            "evidence_enforced"
+          ],
+          "properties": {
+            "narrative_diagnosis": {
+              "const": {
+                "source_attempt_id": "narrative-attempt-1",
+                "executes_external_test": false
+              }
+            },
+            "structured_without_testing": {
+              "const": {
+                "source_attempt_id": "structured-attempt-1",
+                "executes_external_test": false
+              }
+            },
+            "evidence_enforced": {
+              "const": {
+                "source_attempt_id": "structured-attempt-1",
+                "executes_external_test": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "diagnostician": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor_id",
+        "protocol",
+        "adapter_id",
+        "adapter_version",
+        "base_url_sha256",
+        "model"
+      ],
+      "properties": {
+        "actor_id": { "$ref": "#/$defs/identifier" },
+        "protocol": { "const": "openai-chat-completions" },
+        "adapter_id": { "const": "openai-chat-completions" },
+        "adapter_version": { "const": "0.2.0" },
+        "base_url_sha256": { "$ref": "#/$defs/sha256" },
+        "model": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "profile_id",
+        "assertion_schema_sha256",
+        "prompt_payload_sha256"
+      ],
+      "properties": {
+        "attempt_id": { "$ref": "#/$defs/identifier" },
+        "profile_id": { "$ref": "#/$defs/identifier" },
+        "assertion_schema_sha256": { "$ref": "#/$defs/sha256" },
+        "prompt_payload_sha256": { "$ref": "#/$defs/sha256" },
+        "expected_observation_values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["narrative", "structured"],
+      "properties": {
+        "narrative": { "$ref": "#/$defs/profile" },
+        "structured": { "$ref": "#/$defs/profile" }
+      }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "structured_output_mode",
+        "temperature",
+        "seed",
+        "max_output_tokens"
+      ],
+      "properties": {
+        "structured_output_mode": { "const": "json_schema_strict" },
+        "stream": { "type": "boolean" },
+        "temperature": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 2
+        },
+        "top_p": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "seed": { "type": ["integer", "null"] },
+        "reasoning_effort": {
+          "type": ["string", "null"],
+          "enum": ["low", "medium", "high", null]
+        },
+        "max_output_tokens": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_attempts_per_model_attempt",
+        "timeout_seconds",
+        "automatic_retry",
+        "json_repair",
+        "fallback",
+        "failure_mode"
+      ],
+      "properties": {
+        "max_attempts_per_model_attempt": { "const": 1 },
+        "timeout_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "automatic_retry": { "const": false },
+        "json_repair": { "const": false },
+        "fallback": { "const": false },
+        "failure_mode": { "const": "stop_after_failed_attempt" }
+      }
+    },
+    "artifactPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_provider_response",
+        "published_representation",
+        "credential",
+        "private_reasoning"
+      ],
+      "properties": {
+        "raw_provider_response": { "const": "private" },
+        "published_representation": { "const": "metadata_and_digest" },
+        "credential": { "const": "environment_only" },
+        "private_reasoning": { "const": "not_requested" }
+      }
+    },
+    "metric": {
+      "enum": [
+        "condition",
+        "source_attempt_id",
+        "model_primary_is_ground_truth",
+        "model_retained_ground_truth",
+        "retained_hypothesis_count",
+        "expressed_confidence",
+        "test_selected",
+        "selected_test_id",
+        "selected_test_discriminates",
+        "predictions_declared",
+        "predictions_correct",
+        "external_tests_executed",
+        "external_evidence_identifies_ground_truth",
+        "behavioral_recovery",
+        "ground_truth_final_status",
+        "false_promotion_attempts",
+        "false_promotions_accepted",
+        "ledger_record_count",
+        "model_input_tokens",
+        "model_output_tokens",
+        "wall_time_ms",
+        "receipt_recomputes"
+      ]
+    }
+  }
+}

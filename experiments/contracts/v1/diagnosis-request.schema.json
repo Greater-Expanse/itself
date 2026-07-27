@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:diagnostician:v1:diagnosis-request",
+  "title": "Diagnostician Request v0.2.0",
+  "description": "Provider-neutral, evaluator-safe input for a closed-set causal diagnostician.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "case_id",
+    "task",
+    "workflow_components",
+    "observations",
+    "hypothesis_options",
+    "test_options"
+  ],
+  "properties": {
+    "contract_version": { "const": "0.2.0" },
+    "case_id": { "$ref": "#/$defs/identifier" },
+    "task": { "$ref": "#/$defs/nonEmptyString" },
+    "workflow_components": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/identifier" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "observations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/observation" },
+      "minItems": 1
+    },
+    "hypothesis_options": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/hypothesisOption" },
+      "minItems": 1
+    },
+    "test_options": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/testOption" },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "result"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "result": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "hypothesisOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "statement": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "testOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "question", "estimated_cost_units"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "question": { "$ref": "#/$defs/nonEmptyString" },
+        "estimated_cost_units": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

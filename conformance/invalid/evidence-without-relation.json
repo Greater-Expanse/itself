@@ -1,0 +1,21 @@
+{
+  "protocol_version": "0.1.0-alpha.3",
+  "kind": "evidence",
+  "id": "evidence-unbound",
+  "created_at": "2026-07-22T12:00:00Z",
+  "created_by": {
+    "id": "tool-1",
+    "actor_type": "software",
+    "role": "evaluator"
+  },
+  "evidence_type": "deterministic_test",
+  "relations": [],
+  "authority": {
+    "authority_type": "deterministic_tool",
+    "actor_ref": "tool-1",
+    "basis": "A result with no declared subject"
+  },
+  "scope": {
+    "description": "Example invalid fixture"
+  }
+}

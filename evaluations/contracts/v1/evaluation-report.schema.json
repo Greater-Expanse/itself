@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:evaluations:v1:evaluation-report",
+  "title": "Itself Evaluation Report v0.1.0",
+  "description": "A content-identified report of SDK assertions or behavioral observations.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_version",
+    "suite_id",
+    "run_id",
+    "generated_at",
+    "sdk_version",
+    "source_revision",
+    "environment",
+    "outcome",
+    "summary",
+    "checks",
+    "limitations"
+  ],
+  "properties": {
+    "report_version": { "const": "0.1.0" },
+    "suite_id": { "$ref": "#/$defs/identifier" },
+    "run_id": {
+      "type": "string",
+      "pattern": "^urn:sha256:[0-9a-f]{64}$"
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "sdk_version": { "$ref": "#/$defs/nonEmptyString" },
+    "source_revision": {
+      "oneOf": [
+        { "$ref": "#/$defs/nonEmptyString" },
+        { "type": "null" }
+      ]
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python_version",
+        "python_implementation",
+        "platform"
+      ],
+      "properties": {
+        "python_version": { "$ref": "#/$defs/nonEmptyString" },
+        "python_implementation": { "$ref": "#/$defs/nonEmptyString" },
+        "platform": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "outcome": {
+      "enum": ["passed", "failed", "observational"]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "passed", "failed", "observed", "skipped"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 1 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "observed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "status",
+        "duration_ms",
+        "expected",
+        "observed",
+        "details"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "category": { "$ref": "#/$defs/nonEmptyString" },
+        "status": {
+          "enum": ["passed", "failed", "observed", "skipped"]
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expected": { "$ref": "#/$defs/nonEmptyString" },
+        "observed": { "$ref": "#/$defs/nonEmptyString" },
+        "details": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

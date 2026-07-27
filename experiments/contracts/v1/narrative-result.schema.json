@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:diagnostician:v1:narrative-result",
+  "title": "Narrative Diagnosis Result v0.2.0",
+  "description": "A narrative assertion plus adapter-owned identity, usage, and raw-output provenance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "diagnostician",
+    "assertion",
+    "raw_output_artifact",
+    "usage"
+  ],
+  "properties": {
+    "contract_version": { "const": "0.2.0" },
+    "diagnostician": { "$ref": "#/$defs/diagnostician" },
+    "assertion": { "$ref": "#/$defs/assertion" },
+    "raw_output_artifact": { "$ref": "#/$defs/artifact" },
+    "usage": { "$ref": "#/$defs/usage" }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "diagnostician": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_id", "actor_type", "adapter_id", "adapter_version"],
+      "properties": {
+        "actor_id": { "$ref": "#/$defs/identifier" },
+        "actor_type": {
+          "enum": ["human", "model", "software", "organization"]
+        },
+        "adapter_id": { "$ref": "#/$defs/identifier" },
+        "adapter_version": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_hypothesis_id",
+        "public_explanation",
+        "expressed_confidence"
+      ],
+      "properties": {
+        "selected_hypothesis_id": { "$ref": "#/$defs/identifier" },
+        "public_explanation": { "$ref": "#/$defs/nonEmptyString" },
+        "expressed_confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "media_type", "digest", "captured_at"],
+      "properties": {
+        "uri": { "$ref": "#/$defs/nonEmptyString" },
+        "media_type": { "$ref": "#/$defs/nonEmptyString" },
+        "digest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["algorithm", "value"],
+          "properties": {
+            "algorithm": { "const": "sha256" },
+            "value": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "captured_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_input_tokens",
+        "model_output_tokens",
+        "wall_time_ms",
+        "human_minutes"
+      ],
+      "properties": {
+        "model_input_tokens": { "type": "integer", "minimum": 0 },
+        "model_output_tokens": { "type": "integer", "minimum": 0 },
+        "wall_time_ms": { "type": "integer", "minimum": 0 },
+        "human_minutes": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "retained_hypothesis_ids": [
+    "cache_key_omits_source_revision",
+    "worker_reads_stale_source",
+    "verifier_reads_stale_artifact"
+  ],
+  "primary_hypothesis_id": "cache_key_omits_source_revision",
+  "predictions": [
+    {
+      "hypothesis_id": "cache_key_omits_source_revision",
+      "test_id": "bypass_caching_proxy",
+      "expected_observation": "B",
+      "falsified_when": "The observed revision is not B."
+    },
+    {
+      "hypothesis_id": "worker_reads_stale_source",
+      "test_id": "bypass_caching_proxy",
+      "expected_observation": "A",
+      "falsified_when": "The observed revision is not A."
+    },
+    {
+      "hypothesis_id": "verifier_reads_stale_artifact",
+      "test_id": "bypass_caching_proxy",
+      "expected_observation": "A",
+      "falsified_when": "The observed revision is not A."
+    }
+  ],
+  "selected_test_id": "bypass_caching_proxy",
+  "public_explanation": "Bypassing the proxy gives the three retained hypotheses distinct predictions and is intended to isolate the cache-key explanation.",
+  "expressed_confidence": 0.67
+}

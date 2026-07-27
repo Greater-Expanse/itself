@@ -1,0 +1,116 @@
+{
+  "case_id": "001-cache-key-omission",
+  "contract_version": "0.2.0",
+  "hypothesis_options": [
+    {
+      "id": "cache_key_omits_source_revision",
+      "statement": "The caching proxy reuses revision A because its key omits source_revision."
+    },
+    {
+      "id": "worker_reads_stale_source",
+      "statement": "The report worker reads a stale source-store view at revision A."
+    },
+    {
+      "id": "verifier_reads_stale_artifact",
+      "statement": "The verifier reads a previous artifact containing revision A."
+    }
+  ],
+  "observations": [
+    {
+      "id": "baseline-01",
+      "result": {
+        "attempt_id": "baseline-01",
+        "expected_revision": "B",
+        "intervention": "unchanged_replay",
+        "observed_revision": "A",
+        "task_result": "failed"
+      },
+      "summary": "The report task returned a stale revision."
+    },
+    {
+      "id": "baseline-02",
+      "result": {
+        "attempt_id": "baseline-02",
+        "expected_revision": "B",
+        "intervention": "unchanged_replay",
+        "observed_revision": "A",
+        "task_result": "failed"
+      },
+      "summary": "The report task returned a stale revision."
+    },
+    {
+      "id": "baseline-03",
+      "result": {
+        "attempt_id": "baseline-03",
+        "expected_revision": "B",
+        "intervention": "unchanged_replay",
+        "observed_revision": "A",
+        "task_result": "failed"
+      },
+      "summary": "The report task returned a stale revision."
+    },
+    {
+      "id": "baseline-04",
+      "result": {
+        "attempt_id": "baseline-04",
+        "expected_revision": "B",
+        "intervention": "unchanged_replay",
+        "observed_revision": "A",
+        "task_result": "failed"
+      },
+      "summary": "The report task returned a stale revision."
+    },
+    {
+      "id": "baseline-05",
+      "result": {
+        "attempt_id": "baseline-05",
+        "expected_revision": "B",
+        "intervention": "unchanged_replay",
+        "observed_revision": "A",
+        "task_result": "failed"
+      },
+      "summary": "The report task returned a stale revision."
+    },
+    {
+      "id": "baseline-06",
+      "result": {
+        "attempt_id": "baseline-06",
+        "expected_revision": "B",
+        "intervention": "unchanged_replay",
+        "observed_revision": "A",
+        "task_result": "failed"
+      },
+      "summary": "The report task returned a stale revision."
+    }
+  ],
+  "task": "Identify the cause of repeated stale report output and select one discriminating test.",
+  "test_options": [
+    {
+      "estimated_cost_units": 1,
+      "id": "unchanged_replay",
+      "question": "What revision appears after an unchanged replay?"
+    },
+    {
+      "estimated_cost_units": 1,
+      "id": "bypass_caching_proxy",
+      "question": "What revision appears when the caching proxy is bypassed?"
+    },
+    {
+      "estimated_cost_units": 1,
+      "id": "direct_worker_inspection",
+      "question": "What revision does a direct worker response contain?"
+    },
+    {
+      "estimated_cost_units": 1,
+      "id": "fresh_artifact_path",
+      "question": "What revision is verified through a fresh artifact path?"
+    }
+  ],
+  "workflow_components": [
+    "source_store",
+    "report_worker",
+    "caching_proxy",
+    "artifact_sink",
+    "verifier"
+  ]
+}

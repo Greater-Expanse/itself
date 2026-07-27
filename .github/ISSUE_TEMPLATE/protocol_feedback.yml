@@ -1,0 +1,70 @@
+name: Protocol or integration feedback
+description: Propose an interoperability improvement grounded in a concrete workflow.
+title: "feedback: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Itself evolves from executable agent and application workflows. Describe what the agent asserts, which external check runs, what decision follows, and how the proposed change could be tested.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Relevant surface
+      options:
+        - Agent workflow or CI integration
+        - Protocol vocabulary or lifecycle
+        - Schema or conformance fixtures
+        - Ledger, replay, or state transitions
+        - Evidence bundle or reasoning receipt
+        - Inference or verification adapter
+        - Cross-language interoperability
+        - Documentation or example
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Concrete workflow
+      description: What does the agent or person assert, which external check runs, who evaluates the result, and what application decision follows?
+    validations:
+      required: true
+  - type: textarea
+    id: limitation
+    attributes:
+      label: Current limitation
+      description: Explain what cannot be represented, verified, or integrated safely today.
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Proposed change
+      description: Describe the smallest useful protocol, SDK, fixture, or documentation change.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and assurance impact
+      description: Note any effect on existing records, schema identifiers, replay semantics, evidence boundaries, or authority rules.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Executable acceptance case
+      description: Describe a valid example, invalid counterexample, test, or independent implementation that would demonstrate the change.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: This request is grounded in a concrete use case rather than a universal trust score.
+          required: true
+        - label: I searched existing issues for related feedback.
+          required: true

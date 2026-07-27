@@ -1,0 +1,55 @@
+{
+  "contract_version": "0.2.0",
+  "diagnostician": {
+    "actor_id": "case-001-fixture-diagnostician",
+    "actor_type": "software",
+    "adapter_id": "deterministic-case-001",
+    "adapter_version": "1"
+  },
+  "assertion": {
+    "retained_hypothesis_ids": [
+      "cache_key_omits_source_revision",
+      "worker_reads_stale_source",
+      "verifier_reads_stale_artifact"
+    ],
+    "primary_hypothesis_id": "cache_key_omits_source_revision",
+    "predictions": [
+      {
+        "hypothesis_id": "cache_key_omits_source_revision",
+        "test_id": "bypass_caching_proxy",
+        "expected_observation": "B",
+        "falsified_when": "The observed revision is not B."
+      },
+      {
+        "hypothesis_id": "worker_reads_stale_source",
+        "test_id": "bypass_caching_proxy",
+        "expected_observation": "A",
+        "falsified_when": "The observed revision is not A."
+      },
+      {
+        "hypothesis_id": "verifier_reads_stale_artifact",
+        "test_id": "bypass_caching_proxy",
+        "expected_observation": "A",
+        "falsified_when": "The observed revision is not A."
+      }
+    ],
+    "selected_test_id": "bypass_caching_proxy",
+    "public_explanation": "Bypassing the proxy gives the three retained hypotheses distinct predictions and can isolate the cache-key explanation.",
+    "expressed_confidence": 0.67
+  },
+  "raw_output_artifact": {
+    "uri": "urn:gxp:fixture:case-001:diagnostician-output",
+    "media_type": "application/json",
+    "digest": {
+      "algorithm": "sha256",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "captured_at": "2026-07-22T13:00:00Z"
+  },
+  "usage": {
+    "model_input_tokens": 0,
+    "model_output_tokens": 0,
+    "wall_time_ms": 0,
+    "human_minutes": 0
+  }
+}

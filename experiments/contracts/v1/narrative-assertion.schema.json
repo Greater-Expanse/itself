@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:diagnostician:v1:narrative-assertion",
+  "title": "Narrative Diagnosis Model Assertion v0.2.0",
+  "description": "A minimally structured narrative diagnosis selection with no predictions, evidence, tests, or verdict authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "selected_hypothesis_id",
+    "public_explanation",
+    "expressed_confidence"
+  ],
+  "properties": {
+    "selected_hypothesis_id": { "$ref": "#/$defs/identifier" },
+    "public_explanation": { "$ref": "#/$defs/nonEmptyString" },
+    "expressed_confidence": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

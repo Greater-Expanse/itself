@@ -1,0 +1,120 @@
+{
+  "artifact_policy": {
+    "credential": "environment_only",
+    "private_reasoning": "not_requested",
+    "published_representation": "metadata_and_digest",
+    "raw_provider_response": "private"
+  },
+  "case": {
+    "case_id": "001-cache-key-omission",
+    "case_version": "1",
+    "diagnosis_contract_version": "0.2.0",
+    "narrative_contract_version": "0.2.0",
+    "request_sha256": "cb5fab698db5de399c32c0fce6909680d61df4f085b49a626bc50934db3c58f1"
+  },
+  "comparison_series_id": "case-001-fireworks-glm-5p2-comparison-v5",
+  "design": {
+    "branches": {
+      "evidence_enforced": {
+        "executes_external_test": true,
+        "source_attempt_id": "structured-attempt-1"
+      },
+      "narrative_diagnosis": {
+        "executes_external_test": false,
+        "source_attempt_id": "narrative-attempt-1"
+      },
+      "structured_without_testing": {
+        "executes_external_test": false,
+        "source_attempt_id": "structured-attempt-1"
+      }
+    },
+    "call_order": [
+      "narrative-attempt-1",
+      "structured-attempt-1"
+    ],
+    "condition_branch_count": 3,
+    "model_attempt_count": 2,
+    "replicate_count": 5
+  },
+  "diagnostician": {
+    "actor_id": "fireworks-glm-5p2-case-001",
+    "adapter_id": "openai-chat-completions",
+    "adapter_version": "0.2.0",
+    "base_url_sha256": "bfbe26f9a530c9f1790ba4e42a7f34d93faf36026a3a32ca0c29a10b9f8e9fce",
+    "model": "accounts/fireworks/models/glm-5p2",
+    "protocol": "openai-chat-completions"
+  },
+  "execution": {
+    "automatic_retry": false,
+    "failure_mode": "stop_after_failed_attempt",
+    "fallback": false,
+    "json_repair": false,
+    "max_attempts_per_model_attempt": 1,
+    "timeout_seconds": 300.0
+  },
+  "generation": {
+    "max_output_tokens": 32768,
+    "reasoning_effort": null,
+    "seed": null,
+    "stream": true,
+    "structured_output_mode": "json_schema_strict",
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "limitations": [
+    "This transparent closed-set case does not establish cross-task transfer.",
+    "Five repeated samples characterize behavior on one prompt, not a population of causal-diagnosis tasks.",
+    "Strict JSON Schema output is part of the treatment and may alter or suppress provider-exposed reasoning.",
+    "A provider model identifier does not bind an independently verifiable checkpoint revision, quantization, chat template, or serving configuration.",
+    "Expected observations are constrained to the preregistered revision codes A and B; this is a harness treatment.",
+    "All primary behavioral targets use Fireworks AI through one base endpoint. Provider is controlled infrastructure retained only as provenance, not a study factor or behavioral metric.",
+    "Cross-provider portability and conformance belong to a separate engineering study and are not pooled into this behavioral baseline.",
+    "Execution is round-robin by replicate index in the registered target order: fireworks-glm-5p2, fireworks-minimax-m3, fireworks-qwen3p7-plus.",
+    "V5 is a fresh run; no model output or scorecard from v4 is reused."
+  ],
+  "manifest_version": "0.2.0",
+  "metrics": [
+    "condition",
+    "source_attempt_id",
+    "model_primary_is_ground_truth",
+    "model_retained_ground_truth",
+    "retained_hypothesis_count",
+    "expressed_confidence",
+    "test_selected",
+    "selected_test_id",
+    "selected_test_discriminates",
+    "predictions_declared",
+    "predictions_correct",
+    "external_tests_executed",
+    "external_evidence_identifies_ground_truth",
+    "behavioral_recovery",
+    "ground_truth_final_status",
+    "false_promotion_attempts",
+    "false_promotions_accepted",
+    "ledger_record_count",
+    "model_input_tokens",
+    "model_output_tokens",
+    "wall_time_ms",
+    "receipt_recomputes"
+  ],
+  "profiles": {
+    "narrative": {
+      "assertion_schema_sha256": "10e1c4d9da62584fb8a15b0642a8703a53510fdf66befdef23fb90a658a36e58",
+      "attempt_id": "narrative-attempt-1",
+      "profile_id": "narrative-assertion-v0.2.0",
+      "prompt_payload_sha256": "07e935354e554701bb292f3026de67bf4f8b661d94b4da6cf053604fd7b9a4f4"
+    },
+    "structured": {
+      "assertion_schema_sha256": "11740717b06f94e6ffd99a8ebe4eff0014026c19c26668e7a18410c5018de7a2",
+      "attempt_id": "structured-attempt-1",
+      "expected_observation_values": [
+        "A",
+        "B"
+      ],
+      "profile_id": "diagnosis-assertion-v0.3.0",
+      "prompt_payload_sha256": "b37792ab5e79caaf73f1267499859a6abde1f074292e0feac406edfb0b6ccc66"
+    }
+  },
+  "registered_at": "2026-07-24T21:08:47Z",
+  "study_phase": "preregistered_study"
+}

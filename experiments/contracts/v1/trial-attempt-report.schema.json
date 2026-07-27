@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:trials:v1:trial-attempt-report",
+  "title": "Failed Controlled Trial Attempt Report v0.2.0",
+  "description": "A sanitized record of one explicit model-adapter failure.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attempt_report_version",
+    "trial_series_id",
+    "attempt_index",
+    "outcome",
+    "completed_at",
+    "failure"
+  ],
+  "properties": {
+    "attempt_report_version": { "const": "0.2.0" },
+    "trial_series_id": { "$ref": "#/$defs/identifier" },
+    "attempt_index": { "const": 1 },
+    "outcome": { "const": "adapter_failed" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "failure": { "$ref": "#/$defs/failure" }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "media_type", "digest", "captured_at"],
+      "properties": {
+        "uri": { "type": "string", "format": "uri-reference" },
+        "media_type": { "$ref": "#/$defs/nonEmptyString" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "captured_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "retryable", "status_code"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "configuration",
+            "transport",
+            "response_too_large",
+            "http_authentication",
+            "http_authorization",
+            "http_rate_limit",
+            "http_server",
+            "http_status",
+            "refusal",
+            "incomplete",
+            "response_envelope",
+            "response_json",
+            "response_schema",
+            "response_usage",
+            "assertion_contract",
+            "artifact"
+          ]
+        },
+        "retryable": { "type": "boolean" },
+        "status_code": {
+          "type": ["integer", "null"],
+          "minimum": 100,
+          "maximum": 599
+        },
+        "response_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    }
+  }
+}

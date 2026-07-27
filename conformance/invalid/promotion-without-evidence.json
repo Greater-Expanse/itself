@@ -1,0 +1,22 @@
+{
+  "protocol_version": "0.1.0-alpha.3",
+  "kind": "status_transition",
+  "id": "transition-unsupported-promotion",
+  "created_at": "2026-07-22T12:00:00Z",
+  "created_by": {
+    "id": "model-proposer-1",
+    "actor_type": "model",
+    "role": "proposer"
+  },
+  "subject_ref": "claim-unverified",
+  "from_status": "under_test",
+  "to_status": "supported",
+  "evidence_refs": [],
+  "verdict_ref": "verdict-unsupported-promotion",
+  "authorized_by": {
+    "id": "model-proposer-1",
+    "actor_type": "model",
+    "role": "proposer"
+  },
+  "reason": "The proposer generated another confident explanation."
+}

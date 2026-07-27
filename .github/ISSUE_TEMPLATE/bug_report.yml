@@ -1,0 +1,75 @@
+name: Bug report
+description: Report reproducible incorrect behavior in the SDK, CLI, or formats.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Itself. Do not include credentials, private model responses, or other sensitive evidence. Report suspected vulnerabilities through the private process in SECURITY.md instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the installed version or exact commit SHA.
+      placeholder: 0.1.0a7 or abc1234
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - Protocol records and validation
+        - Ledger and replay
+        - Evidence bundles
+        - Reasoning receipts
+        - Structured inference adapter
+        - CLI
+        - Packaging or documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest safe command, code sample, or fixture that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include the complete sanitized error and any relevant output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the result or invariant you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the operating system, Python version, installation method, and relevant endpoint capability mode.
+    validations:
+      required: true
+  - type: textarea
+    id: assurance_impact
+    attributes:
+      label: Assurance impact
+      description: If applicable, explain which evidence, authority, replay, or artifact guarantee may be affected.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I removed credentials, private model responses, and sensitive evidence.
+          required: true
+        - label: I searched existing issues for the same behavior.
+          required: true

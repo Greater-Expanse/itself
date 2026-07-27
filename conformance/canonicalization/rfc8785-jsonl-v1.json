@@ -1,0 +1,68 @@
+{
+  "canonicalization": "rfc8785-jsonl-v1",
+  "vectors": [
+    {
+      "name": "number-normalization",
+      "value": {
+        "one": 1.0,
+        "small": 0.000001,
+        "tiny": 1e-7,
+        "large": 1e21,
+        "zero": 0
+      },
+      "canonical": "{\"large\":1e+21,\"one\":1,\"small\":0.000001,\"tiny\":1e-7,\"zero\":0}"
+    },
+    {
+      "name": "utf16-property-order",
+      "value": {
+        "€": "euro",
+        "\r": "CR",
+        "דּ": "hebrew",
+        "1": "one",
+        "😀": "emoji",
+        "": "control",
+        "ö": "latin"
+      },
+      "canonical": "{\"\\r\":\"CR\",\"1\":\"one\",\"\":\"control\",\"ö\":\"latin\",\"€\":\"euro\",\"😀\":\"emoji\",\"דּ\":\"hebrew\"}"
+    },
+    {
+      "name": "string-escaping",
+      "value": {
+        "text": "€$\u000f\nA'B\"\\\\\"/"
+      },
+      "canonical": "{\"text\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}"
+    },
+    {
+      "name": "recursive-order",
+      "value": {
+        "z": [
+          {
+            "b": 2,
+            "a": 1
+          }
+        ],
+        "a": true
+      },
+      "canonical": "{\"a\":true,\"z\":[{\"a\":1,\"b\":2}]}"
+    }
+  ],
+  "ledger_records": [
+    {
+      "one": 1.0,
+      "small": 0.000001,
+      "tiny": 1e-7,
+      "large": 1e21,
+      "zero": 0
+    },
+    {
+      "€": "euro",
+      "\r": "CR",
+      "דּ": "hebrew",
+      "1": "one",
+      "😀": "emoji",
+      "": "control",
+      "ö": "latin"
+    }
+  ],
+  "ledger_sha256": "1c003c466e23be78e3b6b8a58b8b2278c9d941b4bc65546c80772101265772b6"
+}

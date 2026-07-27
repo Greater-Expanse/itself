@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "itself-sdk"
+version = "0.1.0a7"
+description = "Assurance SDK for AI agents with external checks and replayable decisions"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Greater Expanse LLC" },
+]
+keywords = ["ai", "agents", "assurance", "ci", "code-review", "evidence"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+dependencies = [
+  "jsonschema[format]>=4.10",
+  "rfc8785>=0.1.4,<0.2",
+]
+
+[project.urls]
+Homepage = "https://greaterexpanse.com/itself"
+Repository = "https://github.com/Greater-Expanse/itself.git"
+Issues = "https://github.com/Greater-Expanse/itself/issues"
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+]
+lint = [
+  "ruff>=0.15.22",
+]
+typecheck = [
+  "mypy>=1.15",
+  "pyright>=1.1.390",
+  "types-jsonschema>=4.23",
+]
+release = [
+  "check-manifest>=0.51",
+  "twine>=6.2",
+]
+
+[project.scripts]
+itself = "itself.cli:main"
+
+[tool.setuptools.package-data]
+itself = ["py.typed", "schemas/**/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.mypy]
+files = ["evaluations", "examples", "experiments", "src", "tests", "typing_tests"]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+
+[tool.pyright]
+include = ["evaluations", "examples", "experiments", "src", "tests", "typing_tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM"]

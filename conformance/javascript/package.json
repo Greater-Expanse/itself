@@ -1,0 +1,18 @@
+{
+  "name": "itself-conformance-javascript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent JavaScript conformance check for the Itself protocol fixtures",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node check.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "lossless-json": "^4.3.0"
+  }
+}

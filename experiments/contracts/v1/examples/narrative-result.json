@@ -1,0 +1,29 @@
+{
+  "contract_version": "0.2.0",
+  "diagnostician": {
+    "actor_id": "example-narrative-model",
+    "actor_type": "model",
+    "adapter_id": "openai-chat-completions",
+    "adapter_version": "0.2.0"
+  },
+  "assertion": {
+    "selected_hypothesis_id": "cache_key_omits_source_revision",
+    "public_explanation": "The repeated stale report is most consistent with reuse by the caching proxy.",
+    "expressed_confidence": 0.6
+  },
+  "raw_output_artifact": {
+    "uri": "artifacts/sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+    "media_type": "application/json",
+    "digest": {
+      "algorithm": "sha256",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "captured_at": "2026-07-22T20:00:00Z"
+  },
+  "usage": {
+    "model_input_tokens": 20,
+    "model_output_tokens": 10,
+    "wall_time_ms": 50,
+    "human_minutes": 0.0
+  }
+}

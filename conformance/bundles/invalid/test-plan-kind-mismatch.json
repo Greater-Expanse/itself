@@ -1,0 +1,84 @@
+[
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "claim",
+    "id": "claim-test-plan-kind",
+    "created_at": "2026-07-22T12:00:00Z",
+    "created_by": {
+      "id": "researcher-1",
+      "actor_type": "human",
+      "role": "proposer"
+    },
+    "proposition": "A test execution points to a non-test plan record.",
+    "claim_type": "factual",
+    "status": "proposed",
+    "scope": {
+      "description": "Test execution lineage conformance fixture"
+    }
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "artifact_reference",
+    "id": "artifact-not-test-plan",
+    "created_at": "2026-07-22T12:01:00Z",
+    "created_by": {
+      "id": "researcher-1",
+      "actor_type": "human",
+      "role": "operator"
+    },
+    "uri": "file:test-plan.md",
+    "media_type": "text/markdown"
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "test",
+    "id": "test-wrong-plan-kind-run-1",
+    "created_at": "2026-07-22T12:02:00Z",
+    "created_by": {
+      "id": "runner-1",
+      "actor_type": "software",
+      "role": "operator"
+    },
+    "question": "Does the check produce the predicted result?",
+    "design": "deterministic_check",
+    "status": "completed",
+    "plan_ref": "artifact-not-test-plan",
+    "subject_refs": ["claim-test-plan-kind"],
+    "oracle": {
+      "adapter": "reference-check",
+      "version": "1",
+      "authority_type": "deterministic_tool"
+    },
+    "scope": {
+      "description": "Test execution lineage conformance fixture"
+    },
+    "evidence_refs": ["evidence-wrong-plan-kind-run-1"]
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "evidence",
+    "id": "evidence-wrong-plan-kind-run-1",
+    "created_at": "2026-07-22T12:02:01Z",
+    "created_by": {
+      "id": "runner-1",
+      "actor_type": "software",
+      "role": "evaluator"
+    },
+    "evidence_type": "deterministic_test",
+    "relations": [
+      {
+        "subject_ref": "claim-test-plan-kind",
+        "relation": "contextualizes"
+      }
+    ],
+    "authority": {
+      "authority_type": "deterministic_tool",
+      "actor_ref": "runner-1",
+      "basis": "Reference check result"
+    },
+    "scope": {
+      "description": "Test execution lineage conformance fixture"
+    },
+    "test_ref": "test-wrong-plan-kind-run-1"
+  }
+]
