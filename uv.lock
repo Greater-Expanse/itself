@@ -371,7 +371,7 @@ wheels = [
 
 [[package]]
 name = "itself-sdk"
-version = "0.1.0a7"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema", extra = ["format"] },

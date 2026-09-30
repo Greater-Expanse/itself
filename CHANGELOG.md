@@ -4,7 +4,20 @@ User-visible SDK and format changes are recorded here. Protocol, receipt,
 evidence-bundle, and experiment-contract versions remain independent of the
 Python distribution version.
 
-## Unreleased
+## 0.2.0
+
+The first public release of `itself-sdk`. It implements these format
+versions, each versioned independently of the package:
+
+| Surface | Version |
+| --- | --- |
+| Claim and Evidence Protocol | `0.1.0-alpha.3` |
+| Reasoning receipt | `0.1.0-alpha.2` |
+| Evidence bundle | `0.1.0-alpha.2` |
+| Schema publication line | `v0alpha2` |
+| Ledger canonicalization | `rfc8785-jsonl-v1` |
+| Chat Completions adapter | `0.3.1` |
+| Decision-model adapter | `0.1.0` |
 
 ### Added
 
