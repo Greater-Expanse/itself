@@ -185,17 +185,33 @@ class Ledger:
         if not additions:
             return self._snapshot
 
-        candidate = self._records + additions
-        # Held records are private copies this validator already accepted, so
-        # only the additions need the per-record schema check.
-        snapshot = self._validator.validate(
-            candidate,
-            external_refs=self._external_refs,
-            schema_checked_prefix=len(self._records),
-        )
+        # The history is read once, so the prefix that skips the schema check
+        # is exactly the history the candidate was built from.
+        existing = self._records
+        candidate = existing + additions
+        snapshot = self._validated(candidate, schema_checked=len(existing))
         self._records = candidate
         self._snapshot = snapshot
         return snapshot
+
+    def _validated(
+        self,
+        candidate: tuple[JsonObject, ...],
+        *,
+        schema_checked: int,
+    ) -> BundleSnapshot:
+        validator = self._validator
+        # Held records are private copies this validator already accepted, so
+        # only the additions need the per-record schema check.  That shortcut
+        # is internal to the package, and a validator that overrides validate
+        # receives the whole candidate through its own method instead.
+        if type(validator).validate is BundleValidator.validate:
+            return validator._validated(  # pyright: ignore[reportPrivateUsage]
+                candidate,
+                self._external_refs,
+                schema_checked,
+            )
+        return validator.validate(candidate, external_refs=self._external_refs)
 
 
 class JsonlLedgerStore:

@@ -6,6 +6,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import pickle
+import threading
 import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -25,6 +27,7 @@ from itself import (
     DecisionModelAnswer,
     DecisionModelClient,
     DecisionModelEndpoint,
+    DecisionModelError,
     DecisionModelEstimate,
     DecisionQuestion,
     DecisionQuestionType,
@@ -224,6 +227,19 @@ def _listed(payload: JsonObject, question_id: str) -> JsonValue:
     return cast(JsonObject, questions[question_id])["criteria"]
 
 
+def _self_containing_state() -> JsonValue:
+    state: dict[str, object] = {"ticket": "T-1"}
+    state["context"] = state
+    return cast(JsonValue, state)
+
+
+def _nested_state(levels: int) -> JsonValue:
+    state: JsonValue = "leaf"
+    for _ in range(levels):
+        state = {"inner": state}
+    return state
+
+
 def test_client_is_assignable_to_decision_model_adapter_protocol(
     tmp_path: Path,
 ) -> None:
@@ -259,9 +275,15 @@ def test_endpoint_renders_the_systemone_url_and_hides_extensions() -> None:
         ({"base_url": "https://decisions.example.test:0/v1"}, "valid port"),
         ({"base_url": "https://decisions.example.test:99999/v1"}, "valid port"),
         ({"base_url": "https://decisions.example.test:api/v1"}, "valid port"),
+        ({"base_url": "https://decisions.exa\tmple.test/v1"}, "printable ASCII"),
+        ({"base_url": "https://decisions.example.test/v1\n"}, "printable ASCII"),
+        ({"base_url": "https://decisions.example.test/my v1"}, "printable ASCII"),
+        ({"base_url": "https://d\u00e9cisions.example.test/v1"}, "printable ASCII"),
         ({"model": " decider-latest"}, "model"),
         ({"resource_path": "v1/../admin"}, "resource_path"),
+        ({"resource_path": "syst\u00e8meone"}, "resource_path"),
         ({"timeout_seconds": 0.0}, "timeout_seconds"),
+        ({"timeout_seconds": threading.TIMEOUT_MAX * 2}, "timeout_seconds"),
         ({"probability_tolerance": -1e-9}, "probability_tolerance"),
         ({"probability_tolerance": 0.02}, "probability_tolerance"),
         ({"probability_tolerance": float("nan")}, "probability_tolerance"),
@@ -269,7 +291,11 @@ def test_endpoint_renders_the_systemone_url_and_hides_extensions() -> None:
         ({"deadline_seconds": 0.0}, "deadline_seconds"),
         ({"deadline_seconds": float("inf")}, "deadline_seconds"),
         ({"deadline_seconds": True}, "deadline_seconds"),
+        ({"deadline_seconds": threading.TIMEOUT_MAX * 2}, "deadline_seconds"),
         ({"extra_headers": {"content-type": "text/plain"}}, "cannot override"),
+        ({"extra_headers": {"Content-Length": "0"}}, "cannot override"),
+        ({"extra_headers": {"Host": "elsewhere.example.test"}}, "cannot override"),
+        ({"extra_headers": {"Transfer-Encoding": "chunked"}}, "cannot override"),
         ({"extra_headers": {"authorization": "Bearer x"}}, "cannot override"),
         ({"extra_headers": {"X-Trace": "trace\n7"}}, "single lines"),
         ({"extra_headers": {"X-Trace": "caf\u00e9"}}, "printable ASCII"),
@@ -580,6 +606,25 @@ def test_decide_rejects_invalid_orders_before_sending(
         (STATE, {"not an id": NoulQuestion("True?")}),
         (STATE, {"x1": {"type": "noul", "instructions": "True?"}}),
         ({"value": float("nan")}, None),
+        ({1: "approve", "1": "deny"}, None),
+        ({"ticket": 2**63}, None),
+        ({"text": "\ud800"}, None),
+        (_self_containing_state(), None),
+        (_nested_state(200), None),
+    ],
+    ids=[
+        "blank",
+        "empty-object",
+        "number",
+        "no-questions",
+        "question-id",
+        "untyped-question",
+        "nan",
+        "colliding-keys",
+        "unsafe-integer",
+        "lone-surrogate",
+        "self-containing",
+        "too-deep",
     ],
 )
 def test_ask_rejects_invalid_requests_before_sending(
@@ -601,12 +646,16 @@ def test_ask_rejects_invalid_requests_before_sending(
 def test_decide_rejects_a_model_change_between_requests(tmp_path: Path) -> None:
     server = BiasedServer(models=["example-decider-2b", "example-decider-1b"])
 
-    with pytest.raises(InferenceError) as error:
+    with pytest.raises(DecisionModelError) as error:
         _client(tmp_path, server).decide(STATE, _questions())
 
     assert error.value.failure is InferenceFailure.RESPONSE_ENVELOPE
-    assert "different model" in str(error.value)
+    assert "same model" in str(error.value)
     assert error.value.artifact is not None
+    assert error.value.request is not None
+    assert [attempt.order for attempt in error.value.attempts] == list(
+        COUNTERBALANCED_ORDERS
+    )
     assert len(server.requests) == 2
 
 
@@ -691,6 +740,22 @@ MALFORMED_RESPONSES: dict[
         lambda response: _edited(response, ("answers", "r1", "confidence"), 1.5),
         InferenceFailure.RESPONSE_SCHEMA,
     ),
+    "noul-confidence-out-of-range": (
+        lambda response: _edited(response, ("answers", "x1", "confidence"), 7.0),
+        InferenceFailure.RESPONSE_SCHEMA,
+    ),
+    "score-legend-mismatch": (
+        lambda response: _edited(
+            response,
+            ("answers", "severity", "legend"),
+            {"0": "Severe", "1": "Moderate", "2": "Minor"},
+        ),
+        InferenceFailure.RESPONSE_SCHEMA,
+    ),
+    "model-not-string": (
+        lambda response: _edited(response, ("model",), 42),
+        InferenceFailure.RESPONSE_ENVELOPE,
+    ),
     "negative-usage": (
         lambda response: _edited(response, ("usage", "input_tokens"), -1),
         InferenceFailure.RESPONSE_USAGE,
@@ -718,6 +783,9 @@ def test_malformed_answers_fail_closed_with_the_captured_response(
     assert error.value.artifact is not None
     served = transform(_biased_response(server.requests[0], "example-decider-2b"))
     assert _artifact_bytes(error.value.artifact) == served
+    assert isinstance(error.value, DecisionModelError)
+    assert error.value.request is not None
+    assert _artifact_bytes(error.value.request) == server.requests[0].body
     assert SECRET not in str(error.value)
 
 
@@ -816,6 +884,10 @@ def test_transport_exceptions_are_sanitized_after_the_request_is_captured(
     assert SECRET not in str(error.value)
     captured = list((tmp_path / "artifacts").glob("sha256-*.json"))
     assert [path.read_bytes() for path in captured] == [transport.requests[0].body]
+    assert isinstance(error.value, DecisionModelError)
+    assert error.value.artifact is None
+    assert error.value.request is not None
+    assert _artifact_bytes(error.value.request) == transport.requests[0].body
 
 
 def test_request_capture_failure_prevents_sending(tmp_path: Path) -> None:
@@ -915,3 +987,225 @@ def test_endpoint_deadline_reaches_every_request(tmp_path: Path) -> None:
 
     assert [request.deadline_seconds for request in server.requests] == [3.0, 3.0]
     assert _endpoint().deadline_seconds is None
+
+
+def test_choice_questions_compare_and_hash_by_declared_order() -> None:
+    billing_first = ChoiceQuestion(
+        "Which team should handle this?",
+        {"billing": "Charges", "technical": "Bugs"},
+    )
+    technical_first = ChoiceQuestion(
+        "Which team should handle this?",
+        {"technical": "Bugs", "billing": "Charges"},
+    )
+    same = ChoiceQuestion(
+        "Which team should handle this?",
+        {"billing": "Charges", "technical": "Bugs"},
+    )
+
+    assert billing_first != technical_first
+    assert billing_first == same
+    assert hash(billing_first) == hash(same)
+    assert len({billing_first, technical_first, same}) == 2
+    assert billing_first.criteria == {"technical": "Bugs", "billing": "Charges"}
+
+
+def test_questions_results_and_errors_survive_pickling_and_copying(
+    tmp_path: Path,
+) -> None:
+    result = _client(tmp_path, BiasedServer()).decide(STATE, _questions())
+    error = DecisionModelError(
+        InferenceFailure.HTTP_SERVER,
+        "decision endpoint returned HTTP 503",
+        status_code=503,
+        request=result.attempts[1].request,
+        attempts=result.attempts[:1],
+    )
+
+    for value in (*_questions().values(), result):
+        assert pickle.loads(pickle.dumps(value)) == value
+        assert copy.deepcopy(value) == value
+    restored = cast(DecisionModelError, pickle.loads(pickle.dumps(error)))
+    assert (
+        restored.failure,
+        restored.status_code,
+        restored.request,
+        restored.attempts,
+    ) == (error.failure, 503, error.request, error.attempts)
+    assert restored.retryable
+
+
+def test_stored_answers_keep_the_declared_order_and_tie_break() -> None:
+    estimate = DecisionModelEstimate(
+        DecisionQuestionType.CHOICE,
+        {"technical": 0.5, "billing": 0.5},
+        attempt_count=2,
+        order_gap=0.8,
+        order_flip=True,
+    )
+    answer = DecisionModelAnswer(
+        DecisionQuestionType.CHOICE,
+        {"technical": 0.5, "billing": 0.5},
+    )
+
+    for value in (estimate.to_json_object(), answer.to_json_object()):
+        stored = cast(JsonObject, json.loads(canonical_bundle_json(value)))
+        assert list(cast(JsonObject, stored["probabilities"])) == [
+            "billing",
+            "technical",
+        ]
+        assert stored["option_keys"] == ["technical", "billing"]
+        assert stored["most_likely"] == "technical"
+
+
+@pytest.mark.parametrize(
+    "legend",
+    [
+        ["Minor", "Moderate", "Severe"],
+        {"low": "Minor", "mid": "Moderate", "high": "Severe"},
+        {"0": 0, "1": 1, "2": 2},
+    ],
+    ids=["list", "other-keys", "non-text"],
+)
+def test_score_legends_of_other_shapes_stay_uninterpreted(
+    tmp_path: Path,
+    legend: JsonValue,
+) -> None:
+    server = BiasedServer(
+        transform=lambda response: _edited(
+            response, ("answers", "severity", "legend"), legend
+        )
+    )
+
+    attempt = _client(tmp_path, server).ask(STATE, _questions())
+
+    assert set(attempt.answers) == {"r1", "severity", "x1"}
+
+
+def test_reversed_score_answers_must_echo_the_levels_as_shown(tmp_path: Path) -> None:
+    server = BiasedServer(
+        transform=lambda response: _edited(
+            response,
+            ("answers", "severity", "legend"),
+            {"0": "Minor", "1": "Moderate", "2": "Severe"},
+        )
+    )
+
+    with pytest.raises(DecisionModelError) as error:
+        _client(tmp_path, server).ask(STATE, _questions(), order=OptionOrder.REVERSED)
+
+    assert error.value.failure is InferenceFailure.RESPONSE_SCHEMA
+    assert "'severity'" in str(error.value)
+
+
+def test_noul_confidence_is_validated_and_kept(tmp_path: Path) -> None:
+    server = BiasedServer(
+        transform=lambda response: _edited(
+            response, ("answers", "x1", "confidence"), 0.6
+        )
+    )
+
+    attempt = _client(tmp_path, server).ask(STATE, _questions())
+
+    assert attempt.answers["x1"].reported_confidence == 0.6
+
+
+@dataclass(slots=True)
+class FailingSecondRequest:
+    """Answer the first request, then fail the next one."""
+
+    failure: str
+    server: BiasedServer = field(default_factory=BiasedServer)
+
+    def send(self, request: HttpRequest, /) -> HttpResponse:
+        if not self.server.requests:
+            return self.server.send(request)
+        self.server.requests.append(request)
+        if self.failure == "transport":
+            raise ConnectionResetError("connection reset by peer")
+        return HttpResponse(
+            status_code=503,
+            headers={"Content-Type": "application/json"},
+            body=b'{"error":"busy"}',
+        )
+
+
+@pytest.mark.parametrize("failure", ["status", "transport"])
+def test_a_failed_later_request_keeps_the_completed_attempts(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    transport = FailingSecondRequest(failure)
+
+    with pytest.raises(DecisionModelError) as error:
+        _client(tmp_path, transport).decide(STATE, _questions())
+
+    assert error.value.retryable
+    assert [attempt.order for attempt in error.value.attempts] == [OptionOrder.DECLARED]
+    completed = error.value.attempts[0]
+    assert _artifact_bytes(completed.request) == transport.server.requests[0].body
+    assert error.value.request is not None
+    assert _artifact_bytes(error.value.request) == transport.server.requests[1].body
+    assert (error.value.artifact is None) == (failure == "transport")
+
+
+@pytest.mark.parametrize(
+    ("build", "detail"),
+    [
+        (
+            lambda: DecisionModelAnswer(
+                DecisionQuestionType.CHOICE, {"a": float("nan"), "b": 0.5}
+            ),
+            "finite",
+        ),
+        (
+            lambda: DecisionModelAnswer(DecisionQuestionType.CHOICE, {"a": 3.0}),
+            "from 0 to 1",
+        ),
+        (
+            lambda: DecisionModelAnswer(
+                DecisionQuestionType.SCORE, {"low": 0.5, "high": 0.5}
+            ),
+            "level index",
+        ),
+        (
+            lambda: DecisionModelAnswer(
+                DecisionQuestionType.CHOICE, {"a": 1.0}, reported_confidence=7.0
+            ),
+            "reported_confidence",
+        ),
+        (
+            lambda: DecisionModelEstimate(
+                DecisionQuestionType.NOUL,
+                {"true": 1.0, "false": 0.0},
+                attempt_count=2,
+                order_gap=-5.0,
+                order_flip=False,
+            ),
+            "order_gap",
+        ),
+        (
+            lambda: DecisionModelEstimate(
+                DecisionQuestionType.NOUL,
+                {"true": 1.0, "false": 0.0},
+                attempt_count=2,
+                order_gap=0.1,
+            ),
+            "both set",
+        ),
+    ],
+    ids=[
+        "nan",
+        "above-one",
+        "score-keys",
+        "confidence",
+        "negative-gap",
+        "gap-without-flip",
+    ],
+)
+def test_answers_and_estimates_reject_values_no_endpoint_could_mean(
+    build: Callable[[], object],
+    detail: str,
+) -> None:
+    with pytest.raises(ValueError, match=detail):
+        build()

@@ -12,6 +12,7 @@ import shutil
 import stat
 import tempfile
 from collections.abc import Collection, Iterator, Sequence
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -79,7 +80,8 @@ class EvidenceBundleLimits:
     max_file_bytes: int = 256 * 1024 * 1024
     max_total_bytes: int = 512 * 1024 * 1024
     max_ledger_bytes: int = 128 * 1024 * 1024
-    max_receipt_bytes: int = 64 * 1024 * 1024
+    # A receipt can be nearly as large as its ledger, so the two ceilings match.
+    max_receipt_bytes: int = 128 * 1024 * 1024
     max_ledger_records: int = 100_000
 
     def __post_init__(self) -> None:
@@ -956,15 +958,23 @@ class EvidenceBundleBuilder:
             # above. Its result depends only on the file set and the file bytes,
             # so re-checking the published inventory digests and manifest bytes
             # proves the target is what was validated without parsing it again.
-            _validate_inventory(target, tuple(entries), self.validator.limits)
-            published_manifest = _read_bounded_regular_file(
-                target / BUNDLE_MANIFEST_NAME,
-                max_bytes=self.validator.limits.max_manifest_bytes,
-            )
-            if published_manifest != manifest_content:
-                raise EvidenceBundleValidationError(
-                    f"{target}: published manifest differs from the verified manifest"
+            try:
+                _validate_inventory(target, tuple(entries), self.validator.limits)
+                published_manifest = _read_bounded_regular_file(
+                    target / BUNDLE_MANIFEST_NAME,
+                    max_bytes=self.validator.limits.max_manifest_bytes,
                 )
+                if published_manifest != manifest_content:
+                    raise EvidenceBundleValidationError(
+                        f"{target}: published manifest differs from the verified "
+                        "manifest"
+                    )
+            except BaseException:
+                # A bundle that changed after verification must not stay where
+                # a reader would take it for the verified one.
+                with suppress(OSError):
+                    shutil.rmtree(target)
+                raise
             return replace(verified, path=target)
         finally:
             if not published and staging.exists():

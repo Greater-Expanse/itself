@@ -373,9 +373,10 @@ result = client.decide(
 estimate = result.estimates["r1"]
 ```
 
-By default each question is asked twice, with its options as declared and
-reversed, and `estimate.order_gap` and `estimate.order_flip` report how far
-option position moved the answer. Every request and response is captured
+By default each choice and score question is asked twice, with its options as
+declared and reversed, and `estimate.order_gap` and `estimate.order_flip`
+report how far option position moved the answer; a yes-or-no `NoulQuestion`
+is asked once. Every request and response is captured
 before interpretation, and every distribution is validated locally. The
 probability is a prediction to test, never a verdict. See the
 [decision-model guide](docs/DECISION_MODELS.md).

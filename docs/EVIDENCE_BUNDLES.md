@@ -144,9 +144,10 @@ wrote, which proves that the destination holds the bytes that passed
 verification.
 
 Only a fully verified bundle becomes available at the destination. If validation
-or writing fails, no partial bundle is left there. Final publication is atomic
-and refuses replacement, including when another process creates the destination
-during bundle construction.
+or writing fails, no partial bundle is left there, and a bundle whose published
+files no longer match what was verified is removed before the error is raised.
+Final publication is atomic and refuses replacement, including when another
+process creates the destination during bundle construction.
 
 ## Resource limits
 
@@ -165,7 +166,7 @@ The default `EvidenceBundleLimits` are:
 | One general file | 256 MiB |
 | All inventoried files | 512 MiB |
 | Ledger | 128 MiB |
-| Reasoning receipt | 64 MiB |
+| Reasoning receipt | 128 MiB |
 | Ledger records | 100,000 |
 
 Applications should lower these ceilings when their expected artifacts are
@@ -193,8 +194,10 @@ The `itself` commands that read a ledger apply the default ledger ceilings:
 `bundle create`, `ledger validate`, `ledger replay`, `ledger summary`,
 `receipt generate`, and `receipt validate --ledger` refuse a ledger larger than
 128 MiB or longer than 100,000 records. `receipt validate` refuses a receipt
-larger than 64 MiB. `ledger append` rewrites a local ledger and applies no read
-limit.
+larger than 128 MiB, and `receipt generate --output` refuses to write one, so
+every receipt it writes can be validated and bundled. A receipt can be nearly
+as large as its ledger, which is why the two ceilings match. `ledger append`
+rewrites a local ledger and applies no read limit.
 
 The independent verification command uses the same public format but does not
 trust builder state:
@@ -202,6 +205,14 @@ trust builder state:
 ```bash
 uv run --frozen itself bundle validate run/evidence-bundle
 ```
+
+A verifier that knows which actor ids may authorize evidence-backed
+transitions can pass each one with `--trusted-authorizer ID`, to `bundle
+validate` and to `bundle create`, and the command then fails with
+`untrusted_authorizer` when any other declared id authorizes one. The list
+compares declared ids; the
+[protocol-record guide](PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions)
+describes what it can and cannot establish.
 
 ## Assurance and privacy boundary
 

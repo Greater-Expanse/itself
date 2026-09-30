@@ -56,18 +56,28 @@ def _required_kind(branch: JsonValue) -> str | None:
 def _branches_by_kind(schema: JsonObject) -> dict[str, str]:
     """Map each record kind to its root ``oneOf`` branch reference.
 
-    The map is empty unless every branch is a local reference that pins a
-    distinct kind.  Only then is validating a record against the branch for
-    its kind equivalent to validating it against the whole ``oneOf``.
+    The map is empty unless the root has no reference of its own and every
+    branch is a bare local reference that pins a distinct kind.  Only then is
+    validating a record against the branch for its kind, with the root's other
+    keywords, equivalent to validating it against the whole ``oneOf``: a
+    branch's sibling keywords, or a root reference that the branch reference
+    would replace, fall back to the root validator.
     """
 
     branches = schema.get("oneOf")
     definitions = schema.get("$defs")
-    if not isinstance(branches, list) or not isinstance(definitions, dict):
+    if (
+        not isinstance(branches, list)
+        or not isinstance(definitions, dict)
+        or "$ref" in schema
+        or "$dynamicRef" in schema
+    ):
         return {}
     references: dict[str, str] = {}
     for branch in branches:
-        reference = branch.get("$ref") if isinstance(branch, dict) else None
+        if not isinstance(branch, dict) or set(branch) != {"$ref"}:
+            return {}
+        reference = branch["$ref"]
         if not isinstance(reference, str) or not reference.startswith("#/$defs/"):
             return {}
         kind = _required_kind(definitions.get(reference.removeprefix("#/$defs/")))
@@ -123,8 +133,10 @@ class ProtocolValidator:
 
     A record whose ``kind`` names a schema branch is validated against that
     branch alone, which accepts exactly the records the root ``oneOf`` accepts
-    and reports the branch's own errors.  The packaged schema is compiled once
-    per process.
+    and reports the branch's own errors.  A schema shaped so that this would
+    not be equivalent is applied whole.  Records must also be I-JSON nested at
+    most 128 levels deep, so every accepted record can be read back.  The
+    packaged schema is compiled once per process.
     """
 
     def __init__(self, schema_path: StrPath | None = None) -> None:

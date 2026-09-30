@@ -9,6 +9,7 @@ import ipaddress
 import json
 import math
 import re
+import threading
 from collections.abc import Iterator, Mapping, Set
 from copy import deepcopy
 from types import MappingProxyType
@@ -20,7 +21,19 @@ from .types import JsonObject, JsonValue
 IDENTIFIER_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 HEADER_NAME_PATTERN: Final = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _HEADER_VALUE_PATTERN: Final = re.compile(r"[\t\x20-\x7e]*")
-RESERVED_HEADERS: Final = frozenset({"accept", "content-type", "user-agent"})
+_URL_TEXT_PATTERN: Final = re.compile(r"[\x21-\x7e]*")
+# The transport owns message framing and the target host, and the adapter owns
+# content negotiation and its identity.
+RESERVED_HEADERS: Final = frozenset(
+    {
+        "accept",
+        "content-length",
+        "content-type",
+        "host",
+        "transfer-encoding",
+        "user-agent",
+    }
+)
 
 
 class DefensiveJsonObject(Mapping[str, JsonValue]):
@@ -58,6 +71,12 @@ def normalized_base_url(
 ) -> str:
     """Return a validated base URL without a trailing slash."""
 
+    # urlsplit silently drops tabs and line breaks, so the raw text is checked
+    # before it is parsed; non-ASCII hosts and paths must arrive encoded.
+    if _URL_TEXT_PATTERN.fullmatch(base_url) is None:
+        raise ValueError(
+            "base_url must be printable ASCII without spaces or control characters"
+        )
     normalized_url = base_url.rstrip("/")
     parsed_url = urlsplit(normalized_url)
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
@@ -87,6 +106,10 @@ def normalized_base_url(
 def normalized_resource_path(resource_path: str) -> str:
     """Return a validated relative resource path without outer slashes."""
 
+    if _URL_TEXT_PATTERN.fullmatch(resource_path) is None:
+        raise ValueError(
+            "resource_path must be printable ASCII without spaces or control characters"
+        )
     normalized_resource = resource_path.strip("/")
     if normalized_resource and (
         "\\" in normalized_resource
@@ -96,23 +119,28 @@ def normalized_resource_path(resource_path: str) -> str:
     return normalized_resource
 
 
+def _is_duration(value: float) -> bool:
+    # Socket timeouts and timer waits both overflow past threading.TIMEOUT_MAX.
+    return (
+        not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0 < value <= threading.TIMEOUT_MAX
+    )
+
+
 def validate_timeout(timeout_seconds: float) -> None:
-    if (
-        isinstance(timeout_seconds, bool)
-        or not math.isfinite(timeout_seconds)
-        or timeout_seconds <= 0
-    ):
-        raise ValueError("timeout_seconds must be finite and greater than zero")
+    if not _is_duration(timeout_seconds):
+        raise ValueError(
+            "timeout_seconds must be greater than zero and at most "
+            "threading.TIMEOUT_MAX"
+        )
 
 
 def validate_deadline(deadline_seconds: float | None) -> None:
-    if deadline_seconds is not None and (
-        isinstance(deadline_seconds, bool)
-        or not math.isfinite(deadline_seconds)
-        or deadline_seconds <= 0
-    ):
+    if deadline_seconds is not None and not _is_duration(deadline_seconds):
         raise ValueError(
-            "deadline_seconds must be finite and greater than zero, or None"
+            "deadline_seconds must be greater than zero and at most "
+            "threading.TIMEOUT_MAX, or None"
         )
 
 

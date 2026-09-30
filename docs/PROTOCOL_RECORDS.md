@@ -84,27 +84,39 @@ ledger = Ledger((hypothesis, testable, prediction))
 The constructor validates each record independently. `Ledger` then validates
 cross-record references, kinds, ordering constraints, and replayed state.
 
-## Restrict who may promote a claim
+## Restrict who may authorize evidence-backed transitions
 
-Every record declares its own actors, so a validator cannot tell whether an
-identifier that calls itself `software` belongs to a policy engine or to a
-model. When a deployment knows which identities may promote claims, it can say
-so, and the validators then refuse every evidence-backed transition that any
-other actor authorizes:
+Every record declares its own actors, and the protocol binds no identifier to
+an identity, so a validator cannot tell whether an identifier that calls itself
+`software` belongs to a policy engine or to a model. When a deployment knows
+which actor ids may settle claims, it can list them, and the validators then
+refuse every evidence-backed transition whose `authorized_by` declares any
+other id:
 
 ```python
 from itself import BundleValidator, EvidenceBundleValidator, Ledger
 
 trusted = {"release-policy", "reviewer-alex"}
-ledger = Ledger(validator=BundleValidator(trusted_authorizers=trusted))
-bundle = EvidenceBundleValidator(trusted_authorizers=trusted).validate("bundle")
+trusted_ledger = Ledger(validator=BundleValidator(trusted_authorizers=trusted))
+bundle_validator = EvidenceBundleValidator(trusted_authorizers=trusted)
 ```
 
 A refused transition is reported with the integrity code
-`untrusted_authorizer` and does not apply. Transitions to `testable`,
-`under_test`, `blocked`, and the other states that need no evidence are not
-restricted. Without `trusted_authorizers`, validation accepts any authorizer
-whose declared type and role the protocol allows, as before.
+`untrusted_authorizer` and does not apply. The restriction covers the
+evidence-backed statuses in `EVIDENCE_BACKED_STATUSES`: `supported`,
+`refuted`, `inconclusive`, `mixed_evidence`, and `corroborated_within_scope`.
+Transitions to `testable`, `under_test`, `blocked`, and the other states that
+need no evidence are not restricted, and an empty list refuses every
+evidence-backed transition. Without `trusted_authorizers`, validation accepts
+any authorizer whose declared type and role the protocol allows, as before.
+
+The list compares the ids that records declare, and it establishes no
+identity. Any writer that can append records can declare a trusted id, so the
+list protects a ledger only when the write path controls which writers emit
+records under those ids, for example a service that appends every
+evidence-backed transition itself. On the command line, pass
+`--trusted-authorizer ID` once per id to the `ledger`, `receipt`, and `bundle`
+commands.
 
 ## Record a test and its evidence
 

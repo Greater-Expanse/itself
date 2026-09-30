@@ -547,3 +547,88 @@ def test_receipt_binding_rejects_schema_valid_tampering(
     captured = capsys.readouterr()
     assert result == 1
     assert "does not match" in captured.err
+
+
+def test_receipt_generate_refuses_a_receipt_later_reads_would_reject(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    receipt_path = tmp_path / "receipt.json"
+    JsonlLedgerStore(ledger_path).extend(_history())
+    monkeypatch.setattr(
+        cli_module,
+        "_CLI_LIMITS",
+        EvidenceBundleLimits(max_receipt_bytes=100),
+    )
+
+    result = main(
+        ["receipt", "generate", str(ledger_path), "--output", str(receipt_path)]
+    )
+
+    assert result == 1
+    assert "exceeds limit 100 bytes" in capsys.readouterr().err
+    assert not receipt_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("command", "trusted", "expected"),
+    [
+        (["bundle", "validate", str(REFERENCE_BUNDLE)], "someone-else", 1),
+        (["bundle", "validate", str(REFERENCE_BUNDLE)], "case-001-promotion-policy", 0),
+        (
+            ["ledger", "validate", str(REFERENCE_BUNDLE / "ledger.jsonl")],
+            "someone-else",
+            1,
+        ),
+        (
+            ["ledger", "replay", str(REFERENCE_BUNDLE / "ledger.jsonl")],
+            "case-001-promotion-policy",
+            0,
+        ),
+    ],
+    ids=["bundle-untrusted", "bundle-trusted", "ledger-untrusted", "replay-trusted"],
+)
+def test_trusted_authorizer_option_restricts_evidence_backed_transitions(
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+    trusted: str,
+    expected: int,
+) -> None:
+    result = main([*command, "--trusted-authorizer", trusted])
+
+    captured = capsys.readouterr()
+    assert result == expected
+    assert ("untrusted_authorizer" in captured.err) == (expected == 1)
+
+
+def test_ledger_append_applies_the_trusted_authorizers(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    source = REFERENCE_BUNDLE / "ledger.jsonl"
+    records = [
+        json.loads(line) for line in source.read_text(encoding="utf-8").splitlines()
+    ]
+    record_paths: list[str] = []
+    for index, record in enumerate(records):
+        path = tmp_path / f"record-{index:02}.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        record_paths.append(str(path))
+
+    result = main(
+        [
+            "ledger",
+            "append",
+            str(ledger_path),
+            *record_paths,
+            "--trusted-authorizer",
+            "someone-else",
+        ]
+    )
+
+    assert result == 1
+    assert "untrusted_authorizer" in capsys.readouterr().err
+    assert not ledger_path.exists()

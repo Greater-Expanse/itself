@@ -46,7 +46,9 @@ class _RootSchemaValidator(Protocol):
 
 
 def _load(path: Path) -> JsonValue:
-    return cast(JsonValue, json.loads(path.read_text(encoding="utf-8")))
+    # The JavaScript runner reads fixtures with its strict parser, so Python
+    # does too: a fixture either runner would refuse fails here first.
+    return strict_json_loads(path.read_bytes())
 
 
 @pytest.mark.parametrize("fixture", VALID_FIXTURES, ids=lambda path: path.name)
@@ -143,3 +145,50 @@ def test_javascript_uri_reference_grammar_matches_the_python_checker() -> None:
     )
 
     assert vendored == installed.pattern
+
+
+def _deployment_policy() -> JsonObject:
+    # A rule that a deployment adds on top of the packaged schema, and that
+    # some fixture records break.
+    return {
+        "properties": {
+            "created_by": {"properties": {"id": {"not": {"const": "trace-recorder-1"}}}}
+        }
+    }
+
+
+@pytest.mark.parametrize("variant", ["root-ref", "branch-sibling", "root-all-of"])
+def test_custom_schemas_accept_exactly_what_their_root_accepts(
+    tmp_path: Path,
+    variant: str,
+) -> None:
+    schema = cast(JsonObject, _load(PROTOCOL_SCHEMA))
+    definitions = cast(JsonObject, schema["$defs"])
+    branches = cast(list[JsonValue], schema["oneOf"])
+    if variant == "root-ref":
+        definitions["deploymentPolicy"] = _deployment_policy()
+        schema["$ref"] = "#/$defs/deploymentPolicy"
+    elif variant == "branch-sibling":
+        branches[0] = {**cast(JsonObject, branches[0]), **_deployment_policy()}
+    else:
+        definitions["deploymentPolicy"] = _deployment_policy()
+        schema["allOf"] = [{"$ref": "#/$defs/deploymentPolicy"}]
+    path = tmp_path / "custom.schema.json"
+    path.write_text(json.dumps(schema), encoding="utf-8")
+    root = cast(
+        _RootSchemaValidator,
+        Draft202012Validator(schema, format_checker=schema_format_checker()),
+    )
+    validator = ProtocolValidator(path)
+    records = _fixture_records()
+
+    outcomes = [
+        (not validator.errors(record), root.is_valid(record)) for record in records
+    ]
+
+    assert [
+        record["id"]
+        for record, (dispatched, whole) in zip(records, outcomes, strict=True)
+        if dispatched != whole
+    ] == []
+    assert {whole for _, whole in outcomes} == {True, False}

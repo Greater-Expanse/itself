@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, cast
@@ -129,9 +130,11 @@ class TransitionRequest:
         object.__setattr__(self, "to_status", ClaimStatus(self.to_status))
         object.__setattr__(self, "actor_type", ActorType(self.actor_type))
         object.__setattr__(self, "actor_role", ActorRole(self.actor_role))
-        if isinstance(cast(object, self.evidence_refs), str):
+        evidence_refs = cast(object, self.evidence_refs)
+        if isinstance(evidence_refs, str) or not isinstance(evidence_refs, Iterable):
             raise ValueError(
                 "evidence_refs must be a sequence of references, not a single string"
+                " or None"
             )
         object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
 

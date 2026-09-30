@@ -40,9 +40,9 @@ A candidate explanation for observations or failures. A hypothesis SHOULD identi
 An expected observable result under a stated condition. Predictions make hypotheses testable without treating generated explanations as evidence.
 
 A `v0alpha2` prediction carries no probability. When a model states one, as a
-decision model does, the probability belongs in an artifact reference that
-other records in the bundle can cite; it never becomes evidence by being
-recorded.
+decision model does, the probability belongs in the artifact that an
+`artifact_reference` record points to, which other records in the bundle can
+cite; it never becomes evidence by being recorded.
 
 ### Test
 
@@ -212,8 +212,11 @@ identity, so `v0alpha2` validation does not detect one identifier declared as
 a model in one record and as software in another. Deployments that rely on the
 model-authorization rule in section 6 need identity controls outside the
 protocol. The reference SDK's bundle and ledger validators accept a list of the
-actor identifiers a deployment trusts to authorize evidence-backed transitions
-and reject promotions by any other identifier.
+actor identifiers a deployment trusts to authorize evidence-backed transitions,
+and they refuse such a transition when its `authorized_by` declares any other
+identifier. The list compares declared identifiers, so it constrains a history
+only when the path that writes records controls which writers emit records
+under the listed identifiers.
 
 ## 11. Conformance
 
@@ -273,7 +276,9 @@ zero, numeric overflow or underflow, unsafe integer literals, `NaN`, and
 infinities. Protocol numbers remain inside the interoperable IEEE 754 range
 defined by the schema. The reference reader also rejects values nested more
 than 128 levels deep, an implementation limit that RFC 8259 section 9
-permits. The documents under `conformance/json/accept` and
+permits. Writers MUST NOT emit a record nested more deeply, and the reference
+validator refuses such a record before it is stored, so every record it accepts
+can be read back. The documents under `conformance/json/accept` and
 `conformance/json/reject` exercise these rules, and both the Python reference
 and the JavaScript validator must accept and reject them.
 
@@ -285,9 +290,9 @@ those exact JSON Lines bytes.
 An append or batch append MUST validate the complete candidate history before
 mutating in-memory or persisted state. References resolve against that
 candidate history, so records that cite each other arrive in the same batch.
-Records already accepted into an in-memory ledger are immutable copies, so the
-reference ledger re-checks cross-record integrity across the whole history and
-applies the schema only to new records; the reference store re-validates the
+Records already accepted into an in-memory ledger are private copies that the
+ledger never exposes, so the reference ledger re-checks cross-record integrity
+across the whole history and applies the schema only to new records; the reference store re-validates the
 stored history each time it loads the file. The store writes a replacement
 file in the destination directory and atomically replaces the previous file only
 after validation and file synchronization succeed.

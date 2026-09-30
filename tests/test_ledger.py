@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Iterable
 from copy import deepcopy
 from pathlib import Path
 from typing import cast
@@ -12,6 +13,7 @@ import pytest
 
 from itself import (
     BundleIntegrityError,
+    BundleSnapshot,
     BundleValidator,
     ClaimStatus,
     IntegrityCode,
@@ -356,3 +358,49 @@ def test_jsonl_store_rejects_dangling_symbolic_link_path(tmp_path: Path) -> None
         JsonlLedgerStore(path).load()
 
     assert path.is_symlink()
+
+
+def test_store_refuses_a_record_its_reader_could_not_read_back(
+    tmp_path: Path,
+) -> None:
+    records = _records()
+    store = JsonlLedgerStore(tmp_path / "ledger.jsonl")
+    store.extend(records[:4])
+    before = store.path.read_bytes()
+    nested: JsonValue = 1
+    for _ in range(127):
+        nested = [nested]
+    evidence = deepcopy(records[3])
+    evidence["id"] = "evidence-nested-too-deep"
+    evidence["result"] = {"value": nested}
+
+    with pytest.raises(
+        BundleIntegrityError, match="nesting exceeds 128 levels"
+    ) as error:
+        store.append(evidence)
+
+    assert _issue_codes(error.value) == [IntegrityCode.SCHEMA_INVALID]
+    assert store.path.read_bytes() == before
+    assert store.load().snapshot.record_count == 4
+
+
+def test_ledger_gives_a_validator_that_overrides_validate_every_record() -> None:
+    records = _records()
+    seen: list[int] = []
+
+    class RecordingValidator(BundleValidator):
+        def validate(
+            self,
+            records: Iterable[JsonObject],
+            *,
+            external_refs: Collection[str] = (),
+        ) -> BundleSnapshot:
+            candidate = tuple(records)
+            seen.append(len(candidate))
+            return super().validate(candidate, external_refs=external_refs)
+
+    ledger = Ledger(records[:1], validator=RecordingValidator())
+    ledger.extend(records[1:3])
+
+    assert seen == [1, 3]
+    assert len(ledger) == 3

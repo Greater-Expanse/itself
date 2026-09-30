@@ -116,12 +116,85 @@ def test_strict_json_decodes_utf8_bytes_and_bytearrays() -> None:
     assert strict_json_loads(bytearray(b'{"value":1}')) == {"value": 1}
 
 
-def test_i_json_check_walks_deep_values_without_recursion() -> None:
+def _nested(levels: int) -> JsonValue:
     value: JsonValue = []
-    for _ in range(10_000):
+    for _ in range(levels - 1):
         value = [value]
+    return value
 
-    ensure_i_json(value)
+
+def test_i_json_check_allows_the_readers_depth_and_no_more() -> None:
+    ensure_i_json(_nested(128))
+    assert strict_json_loads(json.dumps(_nested(128))) == _nested(128)
+
+    with pytest.raises(IJsonError, match="^JSON nesting exceeds 128 levels$"):
+        ensure_i_json(_nested(129))
+
+
+def test_i_json_check_refuses_deep_values_without_recursion() -> None:
+    with pytest.raises(IJsonError, match="nesting exceeds 128 levels"):
+        ensure_i_json(_nested(100_000))
+
+
+def test_i_json_check_refuses_values_that_contain_themselves() -> None:
+    record: dict[str, object] = {"kind": "claim", "scope": {}}
+    cast(dict[str, object], record["scope"])["dimensions"] = record
+    items: list[object] = [1]
+    items.append({"again": items})
+
+    with pytest.raises(
+        IJsonError, match=r"^\$\.scope\.dimensions: value contains itself$"
+    ):
+        ensure_i_json(cast(JsonValue, record))
+    with pytest.raises(IJsonError, match=r"^\$\[1\]\.again: value contains itself$"):
+        ensure_i_json(cast(JsonValue, items))
+    assert ProtocolValidator().errors(cast(JsonValue, record)) == [
+        "$: $.scope.dimensions: value contains itself"
+    ]
+
+
+def test_i_json_check_accepts_a_value_shared_by_siblings() -> None:
+    shared: JsonValue = {"value": 1}
+
+    ensure_i_json({"first": shared, "second": [shared, shared]})
+
+
+def test_strict_json_refuses_unsupported_source_types() -> None:
+    with pytest.raises(TypeError, match="str, bytes, or bytearray"):
+        strict_json_loads(cast(bytes, memoryview(b"{}")))
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('{"value":0e-99999999999999999999}', {"value": 0.0}),
+        ('{"value":0.000E+99999999999999999999}', {"value": 0.0}),
+        ('{"value":1.5e-320}', {"value": 1.5e-320}),
+    ],
+    ids=["zero-huge-negative-exponent", "zero-huge-positive-exponent", "subnormal"],
+)
+def test_strict_json_reads_any_exponent_of_zero(
+    source: str,
+    expected: JsonValue,
+) -> None:
+    assert strict_json_loads(source) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "detail"),
+    [
+        ('{"value":1e-99999999999999999999}', "underflows"),
+        ('{"value":1e99999999999999999999}', "not a finite"),
+        ('{"value":-0e-99999999999999999999}', "negative zero"),
+    ],
+    ids=["underflow", "overflow", "negative-zero"],
+)
+def test_strict_json_refuses_huge_exponents_as_i_json_errors(
+    source: str,
+    detail: str,
+) -> None:
+    with pytest.raises(IJsonError, match=detail):
+        strict_json_loads(source)
 
 
 @pytest.mark.parametrize(

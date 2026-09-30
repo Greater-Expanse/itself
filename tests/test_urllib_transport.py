@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import os
 import socket
+import ssl
+import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Event, Thread
 
 import pytest
@@ -326,3 +330,155 @@ def test_deadline_requests_still_bypass_proxies_for_loopback(
     assert response.status_code == 200
     assert target_headers == [SECRET]
     assert proxy_headers == []
+
+
+def _trickling_proxy(stop: Event) -> str:
+    """Accept one CONNECT and answer it one header line at a time."""
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def serve() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            data = b""
+            while b"\r\n\r\n" not in data:
+                data += connection.recv(65536)
+            try:
+                connection.sendall(b"HTTP/1.1 200 Connection established\r\n")
+                while not stop.is_set():
+                    connection.sendall(b"X-Slow: 1\r\n")
+                    time.sleep(0.1)
+            except OSError:
+                pass
+        listener.close()
+
+    Thread(target=serve, daemon=True).start()
+    return f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+
+def test_deadline_covers_a_proxy_that_trickles_its_connect_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stop = Event()
+    try:
+        _set_proxy_environment(monkeypatch, _trickling_proxy(stop))
+        request = replace(
+            _request("https://models.example.test/v1"),
+            timeout_seconds=5.0,
+            deadline_seconds=0.5,
+        )
+        started = time.monotonic()
+        raised = _within(5.0, lambda: UrllibHttpTransport().send(request))
+        elapsed = time.monotonic() - started
+    finally:
+        stop.set()
+
+    assert len(raised) == 1
+    error = raised[0]
+    assert isinstance(error, InferenceError)
+    assert "deadline" in str(error)
+    assert elapsed < 3.0
+
+
+def _closed_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def test_deadline_requests_load_trust_through_the_standard_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded: list[ssl.SSLContext] = []
+
+    def recording_context() -> ssl.SSLContext:
+        context = ssl.create_default_context()
+        loaded.append(context)
+        return context
+
+    monkeypatch.setattr("ssl._create_default_https_context", recording_context)
+    port = _closed_port()
+    for _ in range(2):
+        request = replace(
+            _request(f"https://127.0.0.1:{port}/v1"),
+            timeout_seconds=2.0,
+            deadline_seconds=5.0,
+        )
+        with pytest.raises(InferenceError):
+            UrllibHttpTransport().send(request)
+
+    # One trust store per connection, loaded the way requests without a
+    # deadline load theirs, so a process-wide trust setting applies to both.
+    assert len(loaded) == 2
+
+
+@pytest.mark.parametrize(
+    ("url", "headers"),
+    [
+        ("http://127.0.0.1:9/v1 x", {}),
+        ("http://127.0.0.1:9/v1\x7f", {}),
+        ("http://127.0.0.1:9/système", {}),
+        ("http://127.0.0.1:9/v1", {"X-Note": "quote ’"}),
+    ],
+    ids=["space", "control", "non-ascii-path", "non-latin-1-header"],
+)
+@pytest.mark.parametrize("deadline", [None, 5.0])
+def test_requests_http_cannot_carry_are_configuration_failures(
+    url: str,
+    headers: dict[str, str],
+    deadline: float | None,
+) -> None:
+    request = HttpRequest(
+        url=url,
+        headers=headers,
+        body=b"{}",
+        timeout_seconds=1.0,
+        deadline_seconds=deadline,
+    )
+
+    with pytest.raises(InferenceError) as raised:
+        UrllibHttpTransport().send(request)
+
+    assert raised.value.failure is InferenceFailure.CONFIGURATION
+    assert not raised.value.retryable
+
+
+@pytest.mark.parametrize(
+    ("timeout", "deadline"),
+    [
+        (0.0, None),
+        (threading.TIMEOUT_MAX * 2, None),
+        (1.0, threading.TIMEOUT_MAX * 2),
+        (1.0, float("nan")),
+    ],
+    ids=["zero-timeout", "huge-timeout", "huge-deadline", "nan-deadline"],
+)
+def test_out_of_range_durations_are_configuration_failures(
+    timeout: float,
+    deadline: float | None,
+) -> None:
+    request = replace(
+        _request(f"http://127.0.0.1:{_closed_port()}/v1"),
+        timeout_seconds=timeout,
+        deadline_seconds=deadline,
+    )
+
+    with pytest.raises(InferenceError) as raised:
+        UrllibHttpTransport().send(request)
+
+    assert raised.value.failure is InferenceFailure.CONFIGURATION
+
+
+@pytest.mark.skipif(not Path("/dev/fd").is_dir(), reason="needs /dev/fd")
+def test_deadline_requests_release_their_duplicate_descriptors() -> None:
+    with _serve(_body_handler(b"{}")) as endpoint:
+        request = replace(_request(f"{endpoint}/v1"), deadline_seconds=5.0)
+        UrllibHttpTransport().send(request)
+        before = len(os.listdir("/dev/fd"))
+        for _ in range(30):
+            UrllibHttpTransport().send(request)
+        after = len(os.listdir("/dev/fd"))
+
+    assert after - before < 10

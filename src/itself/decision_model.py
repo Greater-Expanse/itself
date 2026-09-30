@@ -18,14 +18,13 @@ import json
 import math
 import os
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from itertools import combinations
-from types import MappingProxyType
-from typing import Final, Protocol, cast
+from typing import Final, Protocol, TypeVar, cast
 
 from ._endpoints import (
     IDENTIFIER_PATTERN,
@@ -40,7 +39,7 @@ from ._endpoints import (
     validate_deadline,
     validate_timeout,
 )
-from ._json import strict_json_loads
+from ._json import ensure_i_json, strict_json_loads
 from .inference import (
     ArtifactReference,
     ArtifactSink,
@@ -61,6 +60,49 @@ DECISION_MODEL_ADAPTER_VERSION: Final = "0.1.0"
 _MAX_OPTIONS: Final = 255
 _MAX_PROBABILITY_TOLERANCE: Final = 0.01
 _RESERVED_BODY_FIELDS: Final = frozenset({"model", "questions", "state"})
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+
+
+class _FrozenMapping(Mapping[_K, _V]):
+    """An immutable mapping that keeps its order, hashes, and pickles.
+
+    Two frozen mappings are equal only with the same items in the same order,
+    because option order changes what a request shows and how ties break.
+    Compared with any other mapping, order is ignored, as between dicts.
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items: Mapping[_K, _V]) -> None:
+        self._items: dict[_K, _V] = dict(items)
+
+    def __getitem__(self, key: _K) -> _V:
+        return self._items[key]
+
+    def __iter__(self) -> Iterator[_K]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _FrozenMapping):
+            other_items = cast(_FrozenMapping[object, object], other)._items
+            return list(self._items.items()) == list(other_items.items())
+        if isinstance(other, Mapping):
+            return self._items == dict(cast(Mapping[object, object], other))
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(tuple(self._items.items()))
+
+    def __reduce__(self) -> tuple[type[_FrozenMapping[_K, _V]], tuple[dict[_K, _V]]]:
+        return (type(self), (dict(self._items),))
+
+    def __repr__(self) -> str:
+        return repr(self._items)
 
 
 class DecisionQuestionType(StrEnum):
@@ -150,7 +192,7 @@ class ChoiceQuestion(DecisionQuestion):
             _option_key(key)
             if description is not None:
                 _text(description, "choice option descriptions")
-        object.__setattr__(self, "criteria", MappingProxyType(criteria))
+        object.__setattr__(self, "criteria", _FrozenMapping(criteria))
 
     @property
     def question_type(self) -> DecisionQuestionType:
@@ -238,8 +280,10 @@ class DecisionModelEndpoint:
     """One declared decision-model endpoint and model configuration.
 
     ``probability_tolerance`` bounds how far a returned distribution may sum
-    from one, and how far a score may sit from its distribution's expected
-    level, before the answer is rejected.
+    from one and how far a choice's probability may fall below the most
+    probable option's.  A score may sit up to the tolerance times the number
+    of levels minus one from its distribution's expected level, since the
+    expected level weights each probability by an index up to that number.
     """
 
     actor_id: str
@@ -419,14 +463,18 @@ def build_decision_payload(
     """Render one decision request without credentials.
 
     Each question's options are listed in ``order``.  Serialize the payload
-    without sorting keys, or the options lose that order.
+    without sorting keys, or the options lose that order.  The state must be
+    I-JSON nested at most 128 levels deep, so that every object key is a
+    string and the request means the same thing to every JSON reader.
     """
 
     asked = _questions(questions)
     selected_order = _order(order)
+    checked_state = _state(state)
+    ensure_i_json(checked_state, path="$.state")
     payload: JsonObject = {
         "model": endpoint.model,
-        "state": deepcopy(_state(state)),
+        "state": deepcopy(checked_state),
         "questions": {
             question_id: _wire_question(question, selected_order)
             for question_id, question in asked.items()
@@ -438,6 +486,33 @@ def build_decision_payload(
 
 def _most_likely(probabilities: Mapping[str, float]) -> str:
     return max(probabilities, key=probabilities.__getitem__)
+
+
+def _probability_map(
+    question_type: DecisionQuestionType,
+    value: Mapping[str, float],
+) -> _FrozenMapping[str, float]:
+    probabilities = dict(value)
+    if not probabilities:
+        raise ValueError("a distribution needs at least one probability")
+    for key, probability in probabilities.items():
+        runtime_key, runtime_probability = cast(object, key), cast(object, probability)
+        if not isinstance(runtime_key, str) or not runtime_key:
+            raise ValueError("distribution keys must be non-empty strings")
+        if (
+            isinstance(runtime_probability, bool)
+            or not isinstance(runtime_probability, int | float)
+            or not math.isfinite(runtime_probability)
+            or not 0.0 <= runtime_probability <= 1.0
+        ):
+            raise ValueError("probabilities must be finite numbers from 0 to 1")
+    if question_type is DecisionQuestionType.SCORE and list(probabilities) != [
+        str(index) for index in range(len(probabilities))
+    ]:
+        raise ValueError("score distributions are keyed by level index, lowest first")
+    return _FrozenMapping(
+        {key: float(probability) for key, probability in probabilities.items()}
+    )
 
 
 def _expected_level(
@@ -464,13 +539,21 @@ class DecisionModelAnswer:
     reported_confidence: float | None = None
 
     def __post_init__(self) -> None:
-        if not self.probabilities:
-            raise ValueError("an answer needs at least one probability")
+        question_type = DecisionQuestionType(self.question_type)
+        object.__setattr__(self, "question_type", question_type)
         object.__setattr__(
             self,
             "probabilities",
-            MappingProxyType(dict(self.probabilities)),
+            _probability_map(question_type, self.probabilities),
         )
+        confidence = cast(object, self.reported_confidence)
+        if confidence is not None and (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, int | float)
+            or not math.isfinite(confidence)
+            or not 0.0 <= confidence <= 1.0
+        ):
+            raise ValueError("reported_confidence must be from 0 to 1, or None")
 
     @property
     def most_likely(self) -> str:
@@ -485,11 +568,17 @@ class DecisionModelAnswer:
         return _expected_level(self.question_type, self.probabilities)
 
     def to_json_object(self) -> JsonObject:
-        """Return a JSON representation suitable for an artifact."""
+        """Return a JSON representation suitable for an artifact.
+
+        Canonical JSON sorts object keys, so ``option_keys`` keeps the declared
+        order and ``most_likely`` the tie-break it decides.
+        """
 
         return {
             "type": self.question_type.value,
-            "probabilities": dict(self.probabilities),
+            "option_keys": list[JsonValue](self.probabilities),
+            "probabilities": dict[str, JsonValue](self.probabilities),
+            "most_likely": self.most_likely,
             "reported_confidence": self.reported_confidence,
         }
 
@@ -511,15 +600,32 @@ class DecisionModelEstimate:
     order_flip: bool | None = None
 
     def __post_init__(self) -> None:
-        if not self.probabilities:
-            raise ValueError("an estimate needs at least one probability")
-        if isinstance(self.attempt_count, bool) or self.attempt_count < 1:
-            raise ValueError("attempt_count must be a positive integer")
+        question_type = DecisionQuestionType(self.question_type)
+        object.__setattr__(self, "question_type", question_type)
         object.__setattr__(
             self,
             "probabilities",
-            MappingProxyType(dict(self.probabilities)),
+            _probability_map(question_type, self.probabilities),
         )
+        attempt_count = cast(object, self.attempt_count)
+        if (
+            isinstance(attempt_count, bool)
+            or not isinstance(attempt_count, int)
+            or attempt_count < 1
+        ):
+            raise ValueError("attempt_count must be a positive integer")
+        gap, flip = cast(object, self.order_gap), cast(object, self.order_flip)
+        if (gap is None) != (flip is None):
+            raise ValueError("order_gap and order_flip are both set or both None")
+        if gap is not None and (
+            isinstance(gap, bool)
+            or not isinstance(gap, int | float)
+            or not math.isfinite(gap)
+            or not 0.0 <= gap <= 1.0
+        ):
+            raise ValueError("order_gap must be from 0 to 1, or None")
+        if flip is not None and not isinstance(flip, bool):
+            raise ValueError("order_flip must be a boolean, or None")
 
     @property
     def most_likely(self) -> str:
@@ -534,11 +640,17 @@ class DecisionModelEstimate:
         return _expected_level(self.question_type, self.probabilities)
 
     def to_json_object(self) -> JsonObject:
-        """Return a JSON representation suitable for an artifact."""
+        """Return a JSON representation suitable for an artifact.
+
+        Canonical JSON sorts object keys, so ``option_keys`` keeps the declared
+        order and ``most_likely`` the tie-break it decides.
+        """
 
         return {
             "type": self.question_type.value,
-            "probabilities": dict(self.probabilities),
+            "option_keys": list[JsonValue](self.probabilities),
+            "probabilities": dict[str, JsonValue](self.probabilities),
+            "most_likely": self.most_likely,
             "attempt_count": self.attempt_count,
             "order_gap": self.order_gap,
             "order_flip": self.order_flip,
@@ -576,7 +688,7 @@ class DecisionModelAttempt:
     answers: Mapping[str, DecisionModelAnswer]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "answers", MappingProxyType(dict(self.answers)))
+        object.__setattr__(self, "answers", _FrozenMapping(self.answers))
 
     def to_json_object(self) -> JsonObject:
         """Return a JSON representation suitable for an artifact."""
@@ -613,11 +725,7 @@ class DecisionModelResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "attempts", tuple(self.attempts))
-        object.__setattr__(
-            self,
-            "estimates",
-            MappingProxyType(dict(self.estimates)),
-        )
+        object.__setattr__(self, "estimates", _FrozenMapping(self.estimates))
 
     @property
     def usage(self) -> InferenceUsage:
@@ -647,6 +755,30 @@ class DecisionModelResult:
                 for question_id, estimate in self.estimates.items()
             },
         }
+
+
+class DecisionModelError(InferenceError):
+    """A failed decision request, with what was captured before it failed.
+
+    ``request`` references the captured request body when the request was
+    captured before the failure.  For a failure inside ``decide``,
+    ``attempts`` holds every request of the decision that completed, so each
+    captured artifact of the decision stays reachable from the error.
+    """
+
+    def __init__(
+        self,
+        failure: InferenceFailure,
+        detail: str,
+        *,
+        status_code: int | None = None,
+        artifact: ArtifactReference | None = None,
+        request: ArtifactReference | None = None,
+        attempts: Sequence[DecisionModelAttempt] = (),
+    ) -> None:
+        super().__init__(failure, detail, status_code=status_code, artifact=artifact)
+        self.request: ArtifactReference | None = request
+        self.attempts: tuple[DecisionModelAttempt, ...] = tuple(attempts)
 
 
 class DecisionModelAdapter(Protocol):
@@ -692,6 +824,27 @@ def _distribution(
     return probabilities
 
 
+def _check_legend(
+    question: ScoreQuestion,
+    order: OptionOrder,
+    legend: JsonValue | None,
+) -> None:
+    """Refuse a legend showing that the server read other levels or another order.
+
+    A legend that maps every level index to text echoes the levels as the
+    server read them, so it must match the levels this request showed.  A
+    legend of any other shape stays uninterpreted in the captured response.
+    """
+
+    if not isinstance(legend, dict) or set(legend) != set(question.option_keys):
+        return
+    if not all(isinstance(text, str) for text in legend.values()):
+        return
+    shown = question.levels[::-1] if order is OptionOrder.REVERSED else question.levels
+    if any(legend[str(index)] != level for index, level in enumerate(shown)):
+        raise ValueError("score legend does not match the levels the request showed")
+
+
 def _answer(
     question: DecisionQuestion,
     order: OptionOrder,
@@ -702,13 +855,14 @@ def _answer(
         raise TypeError("expected a JSON object")
     if value.get("type") != question.question_type.value:
         raise ValueError("answer type does not match the question")
+    confidence = _optional_probability(value.get("confidence"))
     if isinstance(question, NoulQuestion):
         probability_true = _probability(value["noul"])
         return DecisionModelAnswer(
             question.question_type,
             {"true": probability_true, "false": 1.0 - probability_true},
+            confidence,
         )
-    confidence = _optional_probability(value.get("confidence"))
     if isinstance(question, ChoiceQuestion):
         probabilities = _distribution(
             value["probabilities"],
@@ -732,6 +886,7 @@ def _answer(
     expected = math.fsum(index * shown[str(index)] for index in range(count))
     if abs(score - expected) > tolerance * (count - 1):
         raise ValueError("score is not the expected level of its distribution")
+    _check_legend(question, order, value.get("legend"))
     if order is OptionOrder.REVERSED:
         shown = {str(index): shown[str(count - 1 - index)] for index in range(count)}
     return DecisionModelAnswer(question.question_type, shown, confidence)
@@ -752,6 +907,7 @@ def _parsed_response(
     order: OptionOrder,
     tolerance: float,
     artifact: ArtifactReference,
+    request: ArtifactReference,
 ) -> _ParsedResponse:
     try:
         envelope = strict_json_loads(body)
@@ -761,18 +917,28 @@ def _parsed_response(
         if not isinstance(answers, dict):
             raise TypeError("expected a JSON object")
     except (KeyError, TypeError, ValueError):
-        raise InferenceError(
+        raise DecisionModelError(
             InferenceFailure.RESPONSE_ENVELOPE,
             "decision endpoint returned a malformed response envelope",
             artifact=artifact,
+            request=request,
         ) from None
     if len(answers) != len(questions) or any(
         question_id not in answers for question_id in questions
     ):
-        raise InferenceError(
+        raise DecisionModelError(
             InferenceFailure.RESPONSE_ENVELOPE,
             "decision endpoint did not answer exactly the asked questions",
             artifact=artifact,
+            request=request,
+        )
+    resolved_model = envelope.get("model")
+    if resolved_model is not None and not isinstance(resolved_model, str):
+        raise DecisionModelError(
+            InferenceFailure.RESPONSE_ENVELOPE,
+            "decision endpoint reported a model that is not a string",
+            artifact=artifact,
+            request=request,
         )
 
     parsed: dict[str, DecisionModelAnswer] = {}
@@ -785,11 +951,12 @@ def _parsed_response(
                 tolerance,
             )
         except (KeyError, TypeError, ValueError):
-            raise InferenceError(
+            raise DecisionModelError(
                 InferenceFailure.RESPONSE_SCHEMA,
                 f"decision answer {question_id!r} was not a valid "
                 f"{question.question_type.value} answer",
                 artifact=artifact,
+                request=request,
             ) from None
 
     input_tokens: int | None = None
@@ -800,15 +967,15 @@ def _parsed_response(
         try:
             input_tokens, output_tokens, total_tokens = token_counts(usage_value)
         except TypeError:
-            raise InferenceError(
+            raise DecisionModelError(
                 InferenceFailure.RESPONSE_USAGE,
                 "decision endpoint returned malformed token usage",
                 artifact=artifact,
+                request=request,
             ) from None
-    resolved_model = envelope.get("model")
     return _ParsedResponse(
         answers=parsed,
-        resolved_model=resolved_model if isinstance(resolved_model, str) else None,
+        resolved_model=resolved_model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
@@ -927,7 +1094,12 @@ class DecisionModelClient:
         )
 
     def _capture(
-        self, content: bytes, media_type: str, detail: str
+        self,
+        content: bytes,
+        media_type: str,
+        detail: str,
+        *,
+        request: ArtifactReference | None = None,
     ) -> ArtifactReference:
         try:
             return self.artifact_sink.capture(
@@ -936,7 +1108,11 @@ class DecisionModelClient:
                 captured_at=self.now(),
             )
         except (OSError, ValueError) as error:
-            raise InferenceError(InferenceFailure.ARTIFACT, detail) from error
+            raise DecisionModelError(
+                InferenceFailure.ARTIFACT,
+                detail,
+                request=request,
+            ) from error
 
     def ask(
         self,
@@ -948,7 +1124,9 @@ class DecisionModelClient:
         """Send one request, capture it and its response, and validate each answer.
 
         The exact request body is captured before it is sent, and the bounded
-        response bytes before they are interpreted.  Nothing is retried.
+        response bytes before they are interpreted.  Nothing is retried.  A
+        failure after the request is captured raises ``DecisionModelError``
+        with a reference to the captured request.
         """
 
         try:
@@ -965,26 +1143,35 @@ class DecisionModelClient:
         started_at = self.monotonic_ns()
         try:
             response = self.transport.send(http_request)
-        except InferenceError:
-            raise
+        except InferenceError as error:
+            raise DecisionModelError(
+                error.failure,
+                error.detail,
+                status_code=error.status_code,
+                artifact=error.artifact,
+                request=request_artifact,
+            ) from error
         except Exception as error:
-            raise InferenceError(
+            raise DecisionModelError(
                 InferenceFailure.TRANSPORT,
                 "custom decision transport failed",
+                request=request_artifact,
             ) from error
         elapsed_ns = max(0, self.monotonic_ns() - started_at)
         artifact = self._capture(
             response.body,
             content_type(response.headers),
             "decision response artifact capture failed",
+            request=request_artifact,
         )
 
         if not 200 <= response.status_code <= 299:
-            raise InferenceError(
+            raise DecisionModelError(
                 _http_failure(response.status_code),
                 f"decision endpoint returned HTTP {response.status_code}",
                 status_code=response.status_code,
                 artifact=artifact,
+                request=request_artifact,
             )
 
         parsed = _parsed_response(
@@ -993,6 +1180,7 @@ class DecisionModelClient:
             selected_order,
             self.endpoint.probability_tolerance,
             artifact,
+            request_artifact,
         )
         return DecisionModelAttempt(
             order=selected_order,
@@ -1025,8 +1213,9 @@ class DecisionModelClient:
 
         Choice and score questions are asked once per order.  A noul question
         has no option order, so only the first request asks it, and a later
-        request with nothing left to ask is not sent.  Every attempt's request
-        and response stay in the artifact sink even if a later attempt fails.
+        request with nothing left to ask is not sent.  If a later request
+        fails, the ``DecisionModelError`` it raises carries the attempts that
+        completed before it, so their captured artifacts stay reachable.
         """
 
         try:
@@ -1046,16 +1235,33 @@ class DecisionModelClient:
                     if not isinstance(question, NoulQuestion)
                 }
             )
-            if subset:
+            if not subset:
+                continue
+            try:
                 attempts.append(self.ask(state, subset, order=order))
+            except DecisionModelError as error:
+                error.attempts = tuple(attempts)
+                raise
+            except InferenceError as error:
+                if not attempts:
+                    raise
+                raise DecisionModelError(
+                    error.failure,
+                    error.detail,
+                    status_code=error.status_code,
+                    artifact=error.artifact,
+                    attempts=attempts,
+                ) from error
 
         identity = attempts[0].identity
         for attempt in attempts[1:]:
             if attempt.identity != identity:
-                raise InferenceError(
+                raise DecisionModelError(
                     InferenceFailure.RESPONSE_ENVELOPE,
-                    "decision endpoint reported a different model between requests",
+                    "decision endpoint did not report the same model for every request",
                     artifact=attempt.raw_response,
+                    request=attempt.request,
+                    attempts=attempts,
                 )
         return DecisionModelResult(
             identity=identity,

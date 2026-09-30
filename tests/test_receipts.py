@@ -247,3 +247,20 @@ def test_receipt_store_rejects_symbolic_link_path(tmp_path: Path) -> None:
 
     assert path.is_symlink()
     assert target.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_receipt_store_refuses_a_write_its_limited_load_would_reject(
+    tmp_path: Path,
+) -> None:
+    receipt = build_reasoning_receipt(_ledger())
+    path = tmp_path / "receipt.json"
+    JsonReceiptStore(path).write(receipt)
+    size = path.stat().st_size
+    path.unlink()
+
+    with pytest.raises(ReasoningReceiptFormatError, match=f"exceeds limit {size - 1}"):
+        JsonReceiptStore(path).write(receipt, max_bytes=size - 1)
+    assert not path.exists()
+
+    JsonReceiptStore(path).write(receipt, max_bytes=size)
+    assert JsonReceiptStore(path).load(max_bytes=size) == receipt

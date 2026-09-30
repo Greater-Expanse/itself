@@ -21,6 +21,7 @@ from .decision_model import (
     DecisionModelAttempt,
     DecisionModelClient,
     DecisionModelEndpoint,
+    DecisionModelError,
     DecisionModelEstimate,
     DecisionModelResult,
     DecisionQuestion,
@@ -135,6 +136,7 @@ from .schema_export import (
     export_schemas,
 )
 from .state import (
+    EVIDENCE_BACKED_STATUSES,
     ActorRole,
     ActorType,
     ClaimStatus,
@@ -174,6 +176,7 @@ __all__ = [
     "DecisionModelAttempt",
     "DecisionModelClient",
     "DecisionModelEndpoint",
+    "DecisionModelError",
     "DecisionModelEstimate",
     "DecisionModelResult",
     "DecisionQuestion",
@@ -181,6 +184,7 @@ __all__ = [
     "Digest",
     "DigestAlgorithm",
     "DirectoryArtifactSink",
+    "EVIDENCE_BACKED_STATUSES",
     "EVIDENCE_BUNDLE_LEDGER_PATH",
     "EVIDENCE_BUNDLE_RECEIPT_PATH",
     "EVIDENCE_BUNDLE_VERSION",

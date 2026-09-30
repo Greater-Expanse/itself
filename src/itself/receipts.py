@@ -473,10 +473,32 @@ class JsonReceiptStore:
         self._validator.validate(value)
         return value
 
-    def write(self, receipt: JsonObject) -> None:
-        """Validate and atomically replace the stored receipt document."""
+    def write(self, receipt: JsonObject, *, max_bytes: int | None = None) -> None:
+        """Validate and atomically replace the stored receipt document.
 
+        With ``max_bytes``, a receipt that serializes to more bytes is refused
+        before anything is written, so ``load`` with the same limit can read
+        every receipt this method stores.
+        """
+
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("max_bytes must not be negative")
         self._validator.validate(receipt)
+        content = (
+            json.dumps(
+                receipt,
+                allow_nan=False,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+        if max_bytes is not None and len(content) > max_bytes:
+            raise ReasoningReceiptFormatError(
+                self.path,
+                f"receipt size {len(content)} bytes exceeds limit {max_bytes} bytes",
+            )
         parent = self.path.parent
         parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -496,16 +518,8 @@ class JsonReceiptStore:
         )
         temporary_path = Path(temporary_name)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-                json.dump(
-                    receipt,
-                    handle,
-                    allow_nan=False,
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-                handle.write("\n")
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
 

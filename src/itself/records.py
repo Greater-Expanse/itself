@@ -19,7 +19,6 @@ from .state import (
     ActorRole,
     ActorType,
     ClaimStatus,
-    TransitionError,
     TransitionRequest,
     validate_transition,
 )
@@ -706,35 +705,37 @@ def status_transition_record(
 ) -> JsonObject:
     """Construct and validate one transition under the reference state policy."""
 
+    evidence = _string_values(evidence_refs, "evidence_refs")
     try:
-        validate_transition(
-            TransitionRequest(
-                subject_ref=subject_ref,
-                from_status=from_status,
-                to_status=to_status,
-                authorized_by=authorized_by.actor_id,
-                actor_type=authorized_by.actor_type,
-                actor_role=authorized_by.role,
-                evidence_refs=tuple(evidence_refs),
-                verdict_ref=verdict_ref,
-                policy_ref=policy_ref,
-            )
+        # The request converts plain status strings to enum members and
+        # rejects unknown ones, and the record uses its converted values.
+        request = TransitionRequest(
+            subject_ref=subject_ref,
+            from_status=from_status,
+            to_status=to_status,
+            authorized_by=authorized_by.actor_id,
+            actor_type=authorized_by.actor_type,
+            actor_role=authorized_by.role,
+            evidence_refs=tuple(cast(list[str], evidence)),
+            verdict_ref=verdict_ref,
+            policy_ref=policy_ref,
         )
-    except TransitionError as error:
+        validate_transition(request)
+    except ValueError as error:
         raise RecordConstructionError(str(error)) from error
 
     value = _record(header, "status_transition")
     value.update(
         {
             "subject_ref": subject_ref,
-            "from_status": from_status.value,
-            "to_status": to_status.value,
+            "from_status": request.from_status.value,
+            "to_status": request.to_status.value,
             "authorized_by": authorized_by.to_json_object(),
             "reason": reason,
         }
     )
-    if evidence_refs:
-        value["evidence_refs"] = _string_values(evidence_refs, "evidence_refs")
+    if evidence:
+        value["evidence_refs"] = evidence
     if verdict_ref is not None:
         value["verdict_ref"] = verdict_ref
     if policy_ref is not None:

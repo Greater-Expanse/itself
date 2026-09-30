@@ -69,7 +69,13 @@ print(result.raw_response.sha256)
 
 The credential is read from the environment only while a request is rendered.
 It is absent from endpoint representations, request bodies, response artifacts,
-results, and sanitized exceptions.
+results, and sanitized exceptions. A value that is not printable ASCII, holds a
+line break, or ends in whitespace is refused before anything is sent, and the
+refusal drops the value and the environment from its frame's local variables.
+A custom transport's own exceptions are chained as the cause of a transport
+failure, so keep secrets out of what it raises. Tools that record the local
+variables of every traceback frame can still see request headers in the frames
+that were sending the request.
 
 `DirectoryArtifactSink` refuses symbolic-link roots. On POSIX systems it also
 requires an owner-only artifact directory, and stored responses are readable
@@ -128,6 +134,13 @@ loopback host.
   `timeout_seconds`;
 - a replaceable synchronous HTTP transport with no implicit retry.
 
+`base_url` and `resource_path` must be printable ASCII without spaces or
+control characters: encode an international host name with IDNA and other
+characters with percent-encoding first. Extra headers cannot set `Host`,
+`Content-Length`, or `Transfer-Encoding`, which the transport owns. A URL or
+header value that HTTP cannot carry is a configuration failure, never a
+retryable transport failure.
+
 The built-in transport does not follow redirects. It returns a 3xx response to
 the client as an HTTP-status failure, so authentication headers are never
 forwarded to a redirect target. A custom transport owns the same obligation.
@@ -146,9 +159,13 @@ request. A server that keeps sending, for example keep-alive comments on a
 stalled event stream or an endless run of chunked trailer lines, never trips
 it. Set `deadline_seconds` to bound the request as a whole: once that much
 time has passed, the built-in transport shuts the connection down and reports
-a retryable transport failure. Connecting remains bounded by
-`timeout_seconds`. The deadline is off by default. A custom transport receives
-it as `HttpRequest.deadline_seconds`.
+a retryable transport failure. The deadline runs from the moment the socket
+connects, so a proxy's `CONNECT` exchange and the TLS handshake count against
+it. Each connection attempt is bounded by `timeout_seconds`, and host name
+resolution by neither setting. Both durations must be positive and at most
+`threading.TIMEOUT_MAX`. The deadline is off by default, and a request with a
+deadline trusts exactly the certificates a request without one does. A custom
+transport receives it as `HttpRequest.deadline_seconds`.
 
 For example, an endpoint whose supplied URL is already complete can use:
 

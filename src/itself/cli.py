@@ -17,7 +17,7 @@ from typing import Final, cast
 
 from ._json import strict_json_loads
 from ._version import __version__
-from .bundle import BundleIntegrityError
+from .bundle import BundleIntegrityError, BundleValidator
 from .evidence_bundle import (
     DEFAULT_EVIDENCE_BUNDLE_LIMITATIONS,
     DEFAULT_EVIDENCE_BUNDLE_LIMITS,
@@ -103,6 +103,18 @@ def _add_external_refs(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_trusted_authorizers(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--trusted-authorizer",
+        action="append",
+        metavar="ID",
+        help=(
+            "refuse evidence-backed transitions authorized by any other declared "
+            "actor id; may be repeated"
+        ),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate and inspect Claim and Evidence Protocol records."
@@ -167,11 +179,13 @@ def _parser() -> argparse.ArgumentParser:
         metavar="TEXT",
         help="add a bundle-specific limitation; may be repeated",
     )
+    _add_trusted_authorizers(bundle_create)
     bundle_validate = bundle_commands.add_parser(
         "validate",
         help="verify bundle bytes, ledger, receipt, and artifact bindings",
     )
     bundle_validate.add_argument("bundle", type=Path)
+    _add_trusted_authorizers(bundle_validate)
 
     ledger = subcommands.add_parser(
         "ledger",
@@ -185,6 +199,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     ledger_validate.add_argument("ledger", type=Path)
     _add_external_refs(ledger_validate)
+    _add_trusted_authorizers(ledger_validate)
 
     append = ledger_commands.add_parser(
         "append",
@@ -193,6 +208,7 @@ def _parser() -> argparse.ArgumentParser:
     append.add_argument("ledger", type=Path)
     append.add_argument("records", nargs="+", type=Path)
     _add_external_refs(append)
+    _add_trusted_authorizers(append)
 
     replay = ledger_commands.add_parser(
         "replay",
@@ -201,6 +217,7 @@ def _parser() -> argparse.ArgumentParser:
     replay.add_argument("ledger", type=Path)
     replay.add_argument("--format", choices=("text", "json"), default="text")
     _add_external_refs(replay)
+    _add_trusted_authorizers(replay)
 
     summary = ledger_commands.add_parser(
         "summary",
@@ -209,6 +226,7 @@ def _parser() -> argparse.ArgumentParser:
     summary.add_argument("ledger", type=Path)
     summary.add_argument("--format", choices=("text", "json"), default="text")
     _add_external_refs(summary)
+    _add_trusted_authorizers(summary)
 
     receipt = subcommands.add_parser(
         "receipt",
@@ -223,6 +241,7 @@ def _parser() -> argparse.ArgumentParser:
     receipt_generate.add_argument("ledger", type=Path)
     receipt_generate.add_argument("--output", "-o", type=Path)
     _add_external_refs(receipt_generate)
+    _add_trusted_authorizers(receipt_generate)
 
     receipt_validate = receipt_commands.add_parser(
         "validate",
@@ -231,6 +250,7 @@ def _parser() -> argparse.ArgumentParser:
     receipt_validate.add_argument("receipt", type=Path)
     receipt_validate.add_argument("--ledger", type=Path)
     _add_external_refs(receipt_validate)
+    _add_trusted_authorizers(receipt_validate)
 
     schema = subcommands.add_parser(
         "schema",
@@ -281,13 +301,24 @@ def _validate_records(paths: Sequence[Path]) -> int:
     return 1 if failed else 0
 
 
+def _ledger_store(
+    path: Path,
+    trusted_authorizers: Collection[str] | None,
+) -> JsonlLedgerStore:
+    return JsonlLedgerStore(
+        path,
+        validator=BundleValidator(trusted_authorizers=trusted_authorizers),
+    )
+
+
 def _load_existing_ledger(
     path: Path,
     external_refs: Collection[str],
+    trusted_authorizers: Collection[str] | None,
 ) -> Ledger:
     if not path.is_file():
         raise _RecordFileError(f"{path}: ledger file does not exist")
-    return JsonlLedgerStore(path).load(
+    return _ledger_store(path, trusted_authorizers).load(
         external_refs=external_refs,
         max_records=_CLI_LIMITS.max_ledger_records,
         max_bytes=_CLI_LIMITS.max_ledger_bytes,
@@ -345,8 +376,9 @@ def _bundle_create(
     input_paths: Sequence[Path],
     supplemental_paths: Sequence[Path],
     additional_limitations: Sequence[str],
+    trusted_authorizers: Collection[str] | None,
 ) -> int:
-    ledger = _load_existing_ledger(ledger_path, ())
+    ledger = _load_existing_ledger(ledger_path, (), trusted_authorizers)
     artifact_records = {
         _record_string(record, "id"): record
         for record in ledger.records
@@ -393,7 +425,9 @@ def _bundle_create(
         *DEFAULT_EVIDENCE_BUNDLE_LIMITATIONS,
         *additional_limitations,
     )
-    verified = EvidenceBundleBuilder().build(
+    verified = EvidenceBundleBuilder(
+        validator=EvidenceBundleValidator(trusted_authorizers=trusted_authorizers)
+    ).build(
         destination,
         ledger=ledger,
         title=title,
@@ -409,8 +443,13 @@ def _bundle_create(
     return 0
 
 
-def _bundle_validate(path: Path) -> int:
-    verified = EvidenceBundleValidator().validate(path)
+def _bundle_validate(
+    path: Path,
+    trusted_authorizers: Collection[str] | None,
+) -> int:
+    verified = EvidenceBundleValidator(
+        trusted_authorizers=trusted_authorizers
+    ).validate(path)
     file_count = len(cast(list[JsonValue], verified.manifest["files"]))
     print(
         f"PASS {path}: {verified.ledger.snapshot.record_count} records, "
@@ -419,8 +458,12 @@ def _bundle_validate(path: Path) -> int:
     return 0
 
 
-def _ledger_validate(path: Path, external_refs: Collection[str]) -> int:
-    ledger = _load_existing_ledger(path, external_refs)
+def _ledger_validate(
+    path: Path,
+    external_refs: Collection[str],
+    trusted_authorizers: Collection[str] | None,
+) -> int:
+    ledger = _load_existing_ledger(path, external_refs, trusted_authorizers)
     summary = summarize_ledger(ledger)
     print(
         f"PASS {path}: {summary.record_count} records, {summary.subject_count} subjects"
@@ -432,9 +475,13 @@ def _ledger_append(
     path: Path,
     record_paths: Sequence[Path],
     external_refs: Collection[str],
+    trusted_authorizers: Collection[str] | None,
 ) -> int:
     records = tuple(_load_record(record_path) for record_path in record_paths)
-    snapshot = JsonlLedgerStore(path).extend(records, external_refs=external_refs)
+    snapshot = _ledger_store(path, trusted_authorizers).extend(
+        records,
+        external_refs=external_refs,
+    )
     print(
         f"PASS {path}: appended {len(records)} records; "
         f"ledger now contains {snapshot.record_count} records"
@@ -445,9 +492,10 @@ def _ledger_append(
 def _ledger_replay(
     path: Path,
     external_refs: Collection[str],
+    trusted_authorizers: Collection[str] | None,
     output_format: str,
 ) -> int:
-    ledger = _load_existing_ledger(path, external_refs)
+    ledger = _load_existing_ledger(path, external_refs, trusted_authorizers)
     subjects = replay_subjects(ledger)
     if output_format == "json":
         print(
@@ -478,9 +526,12 @@ def _ledger_replay(
 def _ledger_summary(
     path: Path,
     external_refs: Collection[str],
+    trusted_authorizers: Collection[str] | None,
     output_format: str,
 ) -> int:
-    summary = summarize_ledger(_load_existing_ledger(path, external_refs))
+    summary = summarize_ledger(
+        _load_existing_ledger(path, external_refs, trusted_authorizers)
+    )
     if output_format == "json":
         print(
             json.dumps(
@@ -507,8 +558,9 @@ def _receipt_generate(
     ledger_path: Path,
     output_path: Path | None,
     external_refs: Collection[str],
+    trusted_authorizers: Collection[str] | None,
 ) -> int:
-    ledger = _load_existing_ledger(ledger_path, external_refs)
+    ledger = _load_existing_ledger(ledger_path, external_refs, trusted_authorizers)
     if (
         output_path is not None
         and output_path.exists()
@@ -529,7 +581,11 @@ def _receipt_generate(
         )
         return 0
 
-    JsonReceiptStore(output_path).write(receipt)
+    # The receipt must stay readable by `receipt validate` and `bundle create`.
+    JsonReceiptStore(output_path).write(
+        receipt,
+        max_bytes=_CLI_LIMITS.max_receipt_bytes,
+    )
     print(f"PASS {output_path}: receipt generated from {ledger_path}")
     return 0
 
@@ -538,6 +594,7 @@ def _receipt_validate(
     receipt_path: Path,
     ledger_path: Path | None,
     external_refs: Collection[str],
+    trusted_authorizers: Collection[str] | None,
 ) -> int:
     receipt = JsonReceiptStore(receipt_path).load(
         max_bytes=_CLI_LIMITS.max_receipt_bytes
@@ -546,7 +603,7 @@ def _receipt_validate(
         print(f"PASS {receipt_path}: schema-valid receipt")
         return 0
 
-    ledger = _load_existing_ledger(ledger_path, external_refs)
+    ledger = _load_existing_ledger(ledger_path, external_refs, trusted_authorizers)
     ReasoningReceiptValidator().validate_against_ledger(receipt, ledger)
     print(f"PASS {receipt_path}: bound to {ledger_path}")
     return 0
@@ -556,6 +613,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line interface and return a process exit status."""
 
     args = _parser().parse_args(argv)
+    trusted_authorizers = cast(
+        list[str] | None,
+        getattr(args, "trusted_authorizer", None),
+    )
     try:
         if args.command == "validate":
             return _validate_records(cast(list[Path], args.files))
@@ -570,32 +631,40 @@ def main(argv: Sequence[str] | None = None) -> int:
                 input_paths=cast(list[Path], args.input),
                 supplemental_paths=cast(list[Path], args.supplemental),
                 additional_limitations=cast(list[str], args.limitation),
+                trusted_authorizers=trusted_authorizers,
             )
 
         if args.command == "bundle" and args.bundle_command == "validate":
-            return _bundle_validate(cast(Path, args.bundle))
+            return _bundle_validate(cast(Path, args.bundle), trusted_authorizers)
 
         if args.command == "ledger":
             ledger_path = cast(Path, args.ledger)
             external_refs = cast(list[str], args.external_ref)
             if args.ledger_command == "validate":
-                return _ledger_validate(ledger_path, external_refs)
+                return _ledger_validate(
+                    ledger_path,
+                    external_refs,
+                    trusted_authorizers,
+                )
             if args.ledger_command == "append":
                 return _ledger_append(
                     ledger_path,
                     cast(list[Path], args.records),
                     external_refs,
+                    trusted_authorizers,
                 )
             if args.ledger_command == "replay":
                 return _ledger_replay(
                     ledger_path,
                     external_refs,
+                    trusted_authorizers,
                     cast(str, args.format),
                 )
             if args.ledger_command == "summary":
                 return _ledger_summary(
                     ledger_path,
                     external_refs,
+                    trusted_authorizers,
                     cast(str, args.format),
                 )
 
@@ -606,12 +675,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     cast(Path, args.ledger),
                     cast(Path | None, args.output),
                     external_refs,
+                    trusted_authorizers,
                 )
             if args.receipt_command == "validate":
                 return _receipt_validate(
                     cast(Path, args.receipt),
                     cast(Path | None, args.ledger),
                     external_refs,
+                    trusted_authorizers,
                 )
 
         if args.command == "schema" and args.schema_command == "export":

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -232,4 +232,17 @@ def test_single_string_evidence_reference_is_rejected() -> None:
             actor_role="evaluator",
             evidence_refs="evidence-1",
             verdict_ref="verdict-1",
+        )
+
+
+def test_transition_request_names_a_missing_evidence_list() -> None:
+    with pytest.raises(ValueError, match="evidence_refs must be a sequence"):
+        TransitionRequest(
+            subject_ref="claim-1",
+            from_status=ClaimStatus.PROPOSED,
+            to_status=ClaimStatus.TESTABLE,
+            authorized_by="actor-1",
+            actor_type=ActorType.SOFTWARE,
+            actor_role=ActorRole.EVALUATOR,
+            evidence_refs=cast(tuple[str, ...], None),
         )

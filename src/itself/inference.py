@@ -16,7 +16,6 @@ import json
 import os
 import re
 import socket
-import ssl
 import stat
 import tempfile
 import threading
@@ -35,6 +34,7 @@ from http.client import (
     HTTPMessage,
     HTTPResponse,
     HTTPSConnection,
+    InvalidURL,
 )
 from pathlib import Path
 from types import MappingProxyType
@@ -42,6 +42,7 @@ from typing import IO, Final, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import (
+    AbstractHTTPHandler,
     BaseHandler,
     HTTPHandler,
     HTTPRedirectHandler,
@@ -227,7 +228,11 @@ class EnvironmentCredential:
         """Resolve the secret only while rendering a request header."""
 
         value = environment.get(self.variable)
+        # A traceback keeps each frame's local variables, which tools that
+        # record them would otherwise capture, so the secret and the whole
+        # environment are dropped before an error leaves this frame.
         if value is None or not value.strip():
+            del value, environment
             raise InferenceError(
                 InferenceFailure.CONFIGURATION,
                 f"credential environment variable {self.variable!r} "
@@ -237,10 +242,11 @@ class EnvironmentCredential:
         # http.client would either raise with the secret in its message or send
         # a folded header line, so the value is refused here without echoing it.
         if _CREDENTIAL_VALUE_PATTERN.fullmatch(rendered) is None:
+            del value, rendered, environment
             raise InferenceError(
                 InferenceFailure.CONFIGURATION,
-                f"credential environment variable {self.variable!r} "
-                "contains characters not allowed in an HTTP header",
+                f"credential environment variable {self.variable!r} must be "
+                "printable ASCII without line breaks or trailing whitespace",
             )
         return self.header, rendered
 
@@ -516,7 +522,15 @@ def _direct_opener() -> OpenerDirector:
 
 
 class _SocketTracker:
-    """The sockets of one request, shut down together when its deadline passes."""
+    """One request's connections, shut down together when its deadline passes.
+
+    The tracker holds a duplicate descriptor of each socket from the moment it
+    connects.  Shutting a duplicate down ends the shared connection, so the
+    deadline also covers a proxy's CONNECT exchange and the TLS handshake, and
+    it still reaches the connection after TLS has taken over the original
+    socket object.  The lock keeps shutdown and close from racing, so a
+    descriptor number is never used after it is released.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -525,32 +539,47 @@ class _SocketTracker:
 
     def add(self, connection_socket: socket.socket) -> None:
         with self._lock:
-            self._sockets.append(connection_socket)
-            expired = self.expired.is_set()
-        # A connection that opens after the deadline is closed at once.
-        if expired:
-            _shut_down(connection_socket)
+            duplicate = connection_socket.dup()
+            self._sockets.append(duplicate)
+            # A connection that opens after the deadline is shut down at once.
+            if self.expired.is_set():
+                _shut_down(duplicate)
 
     def expire(self) -> None:
         with self._lock:
             self.expired.set()
-            sockets = tuple(self._sockets)
-        for connection_socket in sockets:
-            _shut_down(connection_socket)
+            for duplicate in self._sockets:
+                _shut_down(duplicate)
+
+    def close(self) -> None:
+        with self._lock:
+            for duplicate in self._sockets:
+                duplicate.close()
+            self._sockets.clear()
 
 
 def _shut_down(connection_socket: socket.socket) -> None:
-    # The base method also reaches a TLS socket's descriptor without touching
-    # the TLS object that a blocked read is still using.
     with suppress(OSError):
-        socket.socket.shutdown(connection_socket, socket.SHUT_RDWR)
+        connection_socket.shutdown(socket.SHUT_RDWR)
 
 
-@cache
-def _https_context() -> ssl.SSLContext:
-    context = ssl.create_default_context()
-    context.set_alpn_protocols(["http/1.1"])
-    return context
+def _tracked_socket_factory(
+    tracker: _SocketTracker,
+) -> Callable[[tuple[str, int], float | None, tuple[str, int] | None], socket.socket]:
+    def create(
+        address: tuple[str, int],
+        timeout: float | None,
+        source_address: tuple[str, int] | None,
+    ) -> socket.socket:
+        connection_socket = socket.create_connection(address, timeout, source_address)
+        try:
+            tracker.add(connection_socket)
+        except BaseException:
+            connection_socket.close()
+            raise
+        return connection_socket
+
+    return create
 
 
 class _TrackedHTTPConnection(HTTPConnection):
@@ -571,11 +600,9 @@ class _TrackedHTTPConnection(HTTPConnection):
             source_address=source_address,
             blocksize=blocksize,
         )
-        self._tracker = tracker
-
-    def connect(self) -> None:
-        super().connect()
-        self._tracker.add(self.sock)
+        # Every Python release this package supports opens the socket, and
+        # any proxy tunnel, through this factory attribute.
+        self._create_connection = _tracked_socket_factory(tracker)
 
 
 class _TrackedHTTPSConnection(HTTPSConnection):
@@ -589,19 +616,16 @@ class _TrackedHTTPSConnection(HTTPSConnection):
         source_address: tuple[str, int] | None = None,
         blocksize: int = 8192,
     ) -> None:
+        # No context is passed, so certificates are trusted exactly as they
+        # are for requests without a deadline.
         super().__init__(
             host,
             port=port,
             timeout=timeout,
             source_address=source_address,
-            context=_https_context(),
             blocksize=blocksize,
         )
-        self._tracker = tracker
-
-    def connect(self) -> None:
-        super().connect()
-        self._tracker.add(self.sock)
+        self._create_connection = _tracked_socket_factory(tracker)
 
 
 class _TrackedHTTPHandler(HTTPHandler):
@@ -635,7 +659,10 @@ class _TrackedHTTPHandler(HTTPHandler):
 
 class _TrackedHTTPSHandler(HTTPSHandler):
     def __init__(self, tracker: _SocketTracker) -> None:
-        super().__init__(context=_https_context())
+        # HTTPSHandler would load a trust store here for connections that this
+        # handler never makes.  Each tracked connection loads its own through
+        # the standard hook, so a plain HTTP request loads none.
+        AbstractHTTPHandler.__init__(self)
         self._tracker = tracker
 
     def https_open(self, req: Request) -> HTTPResponse:
@@ -731,9 +758,12 @@ class UrllibHttpTransport:
     def send(self, request: HttpRequest, /) -> HttpResponse:
         """Send one POST and return success or HTTP-error bodies uniformly.
 
-        ``timeout_seconds`` bounds each socket operation.  When the request
-        carries ``deadline_seconds``, a timer also shuts the connection down
-        once that much time has passed, however the peer keeps it busy.
+        ``timeout_seconds`` bounds each socket operation, including each
+        connection attempt.  When the request carries ``deadline_seconds``, a
+        timer also shuts the connection down once that much time has passed,
+        however the peer keeps it busy, from the moment the socket connects:
+        a proxy's CONNECT exchange and the TLS handshake count against it.
+        Host name resolution is bounded by neither setting.
         """
 
         if urlsplit(request.url).scheme not in {"http", "https"}:
@@ -741,6 +771,11 @@ class UrllibHttpTransport:
                 InferenceFailure.CONFIGURATION,
                 "inference transport requests must use HTTP or HTTPS",
             )
+        try:
+            validate_timeout(request.timeout_seconds)
+            validate_deadline(request.deadline_seconds)
+        except ValueError as error:
+            raise InferenceError(InferenceFailure.CONFIGURATION, str(error)) from None
         wire_request = Request(
             request.url,
             data=request.body,
@@ -773,6 +808,7 @@ class UrllibHttpTransport:
             raise
         finally:
             timer.cancel()
+            tracker.close()
         # A shut-down connection can still end in a complete-looking response.
         if tracker.expired.is_set():
             raise InferenceError(
@@ -805,6 +841,16 @@ class UrllibHttpTransport:
                         headers=self._headers(error),
                         body=self._read_body(error),
                     )
+        except InvalidURL:
+            raise InferenceError(
+                InferenceFailure.CONFIGURATION,
+                "inference request URL is not a valid HTTP request target",
+            ) from None
+        except UnicodeError:
+            raise InferenceError(
+                InferenceFailure.CONFIGURATION,
+                "inference request URL or headers cannot be encoded for HTTP",
+            ) from None
         except (TimeoutError, URLError, OSError, HTTPException) as error:
             raise InferenceError(
                 InferenceFailure.TRANSPORT,

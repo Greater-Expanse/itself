@@ -577,3 +577,30 @@ def test_evidence_result_is_defensively_copied_and_strict_json() -> None:
             scope=SCOPE,
             result={"score": float("nan")},
         )
+
+
+def test_status_transition_record_accepts_plain_status_strings() -> None:
+    record = status_transition_record(
+        _header("transition-from-strings", 2),
+        subject_ref="hypothesis-cache",
+        from_status=cast(ClaimStatus, "proposed"),
+        to_status=cast(ClaimStatus, "testable"),
+        authorized_by=MODEL,
+        reason="Status names decoded from JSON arrive as plain strings.",
+    )
+
+    assert (record["from_status"], record["to_status"]) == ("proposed", "testable")
+
+
+def test_status_transition_record_reports_unknown_statuses_as_construction_errors() -> (
+    None
+):
+    with pytest.raises(RecordConstructionError, match="'bogus' is not a valid"):
+        status_transition_record(
+            _header("transition-bogus", 2),
+            subject_ref="hypothesis-cache",
+            from_status=cast(ClaimStatus, "bogus"),
+            to_status=ClaimStatus.TESTABLE,
+            authorized_by=MODEL,
+            reason="An unknown status is a construction error.",
+        )

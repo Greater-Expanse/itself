@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Iterator
-from decimal import Decimal
 from typing import NoReturn, TypeAlias, cast
 
 from .types import JsonObject, JsonValue
@@ -18,8 +17,8 @@ _MIN_SAFE_INTEGER = -_MAX_SAFE_INTEGER
 _MAX_NESTING_DEPTH = 128
 _CONTAINERS: tuple[type[object], ...] = (list, dict)
 
-_OpenValue: TypeAlias = tuple[Iterator[tuple[object, object]], str, bool]
-"""An open array or object: its member iterator, path, and whether it has keys."""
+_OpenValue: TypeAlias = tuple[Iterator[tuple[object, object]], bool]
+"""An open array or object: its member iterator and whether it has keys."""
 
 
 class IJsonError(ValueError):
@@ -56,11 +55,13 @@ def _parse_float(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed):
         raise IJsonError(f"number {value} is not a finite IEEE 754 value")
-    exact = Decimal(value)
     if parsed == 0:
         if value.startswith("-"):
             raise IJsonError("negative zero is not accepted")
-        if exact != 0:
+        # A zero result from a nonzero mantissa underflowed.  Reading the
+        # digits keeps any exponent JSON allows in range, which Decimal's is not.
+        mantissa = value.lower().partition("e")[0]
+        if any(digit in "123456789" for digit in mantissa):
             raise IJsonError(f"number {value} underflows IEEE 754 binary64")
     return parsed
 
@@ -106,28 +107,33 @@ def _scalar_violation(value: object) -> str | None:
     return f"{type(value).__name__} is not a JSON value"
 
 
-def _require_object_key(key: object, path: str) -> None:
+def _object_key_violation(key: object) -> str | None:
+    """Return why an object key is not I-JSON, or None."""
+
     if not isinstance(key, str):
-        raise IJsonError(f"{path}: object key is not a string")
+        return "object key is not a string"
     if not key.isascii():
         try:
             key.encode("utf-8")
-        except UnicodeEncodeError as error:
-            raise IJsonError(
-                f"{path}: object key contains a Unicode surrogate"
-            ) from error
-
-
-def _opened(value: object, path: str) -> _OpenValue | None:
-    if isinstance(value, list):
-        return enumerate(cast(list[object], value)), path, False
-    if isinstance(value, dict):
-        return iter(cast(dict[object, object], value).items()), path, True
+        except UnicodeEncodeError:
+            return "object key contains a Unicode surrogate"
     return None
 
 
-def _require_i_json(value: object, path: str, max_depth: int | None) -> None:
-    opened = _opened(value, path)
+def _opened(value: object) -> _OpenValue | None:
+    if isinstance(value, list):
+        return enumerate(cast(list[object], value)), False
+    if isinstance(value, dict):
+        return iter(cast(dict[object, object], value).items()), True
+    return None
+
+
+def _segment(key: object, is_object: bool) -> str:
+    return f".{key}" if is_object else f"[{key}]"
+
+
+def _require_i_json(value: object, path: str, max_depth: int) -> None:
+    opened = _opened(value)
     if opened is None:
         violation = _scalar_violation(value)
         if violation is not None:
@@ -135,40 +141,55 @@ def _require_i_json(value: object, path: str, max_depth: int | None) -> None:
         return
     # The stack holds one member iterator per open array or object, so its
     # height is the nesting depth.  Each iterator resumes where it paused, which
-    # keeps checks in document order, and a path is rendered only for a nested
-    # value or a violation.
+    # keeps checks in document order.  Each level keeps only the path segment
+    # that leads to it, and a full path is rendered only for a violation, so
+    # memory grows linearly with depth.  An open container that is reached
+    # again contains itself, and no finite JSON text can represent it.
     open_values = [opened]
+    segments = [path]
+    open_ids = [id(value)]
     while open_values:
-        members, owner_path, is_object = open_values[-1]
+        members, is_object = open_values[-1]
         for key, member in members:
             if is_object:
-                _require_object_key(key, owner_path)
-            if isinstance(member, _CONTAINERS):
-                if max_depth is not None and len(open_values) >= max_depth:
+                key_violation = _object_key_violation(key)
+                if key_violation is not None:
+                    raise IJsonError(f"{''.join(segments)}: {key_violation}")
+            nested = _opened(member)
+            if nested is not None:
+                if id(member) in open_ids:
+                    raise IJsonError(
+                        f"{''.join(segments)}{_segment(key, is_object)}: "
+                        "value contains itself"
+                    )
+                if len(open_values) >= max_depth:
                     raise IJsonError(f"JSON nesting exceeds {max_depth} levels")
-                member_path = (
-                    f"{owner_path}.{key}" if is_object else f"{owner_path}[{key}]"
-                )
-                open_values.append(cast(_OpenValue, _opened(member, member_path)))
+                open_values.append(nested)
+                segments.append(_segment(key, is_object))
+                open_ids.append(id(member))
                 break
             violation = _scalar_violation(member)
             if violation is not None:
-                member_path = (
-                    f"{owner_path}.{key}" if is_object else f"{owner_path}[{key}]"
+                raise IJsonError(
+                    f"{''.join(segments)}{_segment(key, is_object)}: {violation}"
                 )
-                raise IJsonError(f"{member_path}: {violation}")
         else:
             open_values.pop()
+            segments.pop()
+            open_ids.pop()
 
 
 def ensure_i_json(value: JsonValue, *, path: str = "$") -> None:
     """Require the interoperable JSON value domain used by RFC 8785.
 
-    The walk keeps its own stack, so nesting cannot exhaust the interpreter's,
-    and it reports the first violation in document order.
+    Values may nest at most 128 levels deep, the limit the strict reader
+    enforces, so every value that passes can be written and read back.  The
+    walk keeps its own stack, so nesting cannot exhaust the interpreter's; it
+    refuses a value that contains itself and reports the first violation in
+    document order.
     """
 
-    _require_i_json(value, path, None)
+    _require_i_json(value, path, _MAX_NESTING_DEPTH)
 
 
 def strict_json_loads(source: str | bytes | bytearray) -> JsonValue:
@@ -178,7 +199,13 @@ def strict_json_loads(source: str | bytes | bytearray) -> JsonValue:
     as it is in text.  Values may nest at most 128 levels deep.
     """
 
-    text = source if isinstance(source, str) else source.decode("utf-8")
+    runtime_source = cast(object, source)
+    if isinstance(runtime_source, str):
+        text = runtime_source
+    elif isinstance(runtime_source, bytes | bytearray):
+        text = runtime_source.decode("utf-8")
+    else:
+        raise TypeError("JSON source must be str, bytes, or bytearray")
     try:
         value = cast(
             JsonValue,

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -16,9 +17,9 @@ from itself import (
     ClaimStatus,
     IntegrityCode,
     JsonObject,
-    JsonValue,
     Ledger,
 )
+from itself._json import strict_json_loads
 
 ROOT = Path(__file__).resolve().parents[1]
 VALID_BUNDLES = sorted((ROOT / "conformance" / "bundles" / "valid").glob("*.json"))
@@ -40,7 +41,7 @@ EXPECTED_CODES = {
 
 
 def _load_bundle(path: Path) -> list[JsonObject]:
-    value = cast(JsonValue, json.loads(path.read_text(encoding="utf-8")))
+    value = strict_json_loads(path.read_bytes())
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise TypeError(f"bundle fixture {path} must contain a JSON object array")
     return cast(list[JsonObject], value)
@@ -218,12 +219,10 @@ def test_bundle_validation_does_not_mutate_records() -> None:
 
 
 def test_fully_schema_checked_prefix_still_replays_every_record() -> None:
-    records = _load_bundle(VALID_BUNDLES[0])
+    records = tuple(_load_bundle(VALID_BUNDLES[0]))
+    validator = BundleValidator()
 
-    snapshot = BundleValidator().validate(
-        records,
-        schema_checked_prefix=len(records),
-    )
+    snapshot = validator._validated(records, frozenset(), len(records))  # pyright: ignore[reportPrivateUsage]
 
     assert snapshot == BundleValidator().validate(records)
 
@@ -234,13 +233,24 @@ def test_fully_schema_checked_prefix_still_replays_every_record() -> None:
     ids=["negative", "past-end", "bool", "float", "string", "none"],
 )
 def test_invalid_schema_checked_prefix_is_rejected(prefix: object) -> None:
-    records = _load_bundle(VALID_BUNDLES[0])[:2]
+    records = tuple(_load_bundle(VALID_BUNDLES[0])[:2])
     validator = BundleValidator()
 
-    with pytest.raises(ValueError, match="schema_checked_prefix must be an integer"):
-        validator.validate(records, schema_checked_prefix=cast(int, prefix))
-    with pytest.raises(ValueError, match="schema_checked_prefix must be an integer"):
-        validator.errors(records, schema_checked_prefix=cast(int, prefix))
+    with pytest.raises(ValueError, match="schema-checked prefix must be an integer"):
+        validator._validated(records, frozenset(), cast(int, prefix))  # pyright: ignore[reportPrivateUsage]
+
+
+def test_public_validation_schema_checks_every_record() -> None:
+    records = _load_bundle(VALID_BUNDLES[0])[:2]
+    records[0] = {**records[0], "unexpected": True}
+    validator = BundleValidator()
+
+    for method in (BundleValidator.errors, BundleValidator.validate):
+        assert "schema_checked_prefix" not in inspect.signature(method).parameters
+    issues = validator.errors(records)
+    assert [issue.code for issue in issues] == [IntegrityCode.SCHEMA_INVALID]
+    with pytest.raises(BundleIntegrityError):
+        validator.validate(records)
 
 
 def test_bundle_fixture_sets_are_not_empty() -> None:

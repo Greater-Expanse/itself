@@ -304,6 +304,9 @@ def test_builder_rejects_bundle_changed_after_validation(
             files=_reference_bundle_files(),
         )
 
+    assert not (tmp_path / "bundle").exists()
+    assert list(tmp_path.iterdir()) == []
+
 
 @pytest.mark.parametrize(
     "path",
