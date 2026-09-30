@@ -632,3 +632,24 @@ def test_ledger_append_applies_the_trusted_authorizers(
     assert result == 1
     assert "untrusted_authorizer" in capsys.readouterr().err
     assert not ledger_path.exists()
+
+
+def test_receipt_validate_refuses_a_trust_list_without_the_ledger(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    receipt_path = tmp_path / "receipt.json"
+    JsonlLedgerStore(ledger_path).extend(_history())
+    assert (
+        main(["receipt", "generate", str(ledger_path), "--output", str(receipt_path)])
+        == 0
+    )
+    capsys.readouterr()
+
+    result = main(
+        ["receipt", "validate", str(receipt_path), "--trusted-authorizer", "nobody"]
+    )
+
+    assert result == 1
+    assert "--trusted-authorizer requires --ledger" in capsys.readouterr().err

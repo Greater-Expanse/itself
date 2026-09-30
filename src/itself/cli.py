@@ -596,6 +596,12 @@ def _receipt_validate(
     external_refs: Collection[str],
     trusted_authorizers: Collection[str] | None,
 ) -> int:
+    if ledger_path is None and trusted_authorizers is not None:
+        # The authorizers are checked while the ledger replays, so a trust list
+        # without the ledger would otherwise pass unchecked.
+        raise _RecordFileError(
+            f"{receipt_path}: --trusted-authorizer requires --ledger"
+        )
     receipt = JsonReceiptStore(receipt_path).load(
         max_bytes=_CLI_LIMITS.max_receipt_bytes
     )

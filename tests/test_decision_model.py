@@ -49,6 +49,7 @@ from itself import (
     build_decision_payload,
     canonical_bundle_json,
 )
+from itself._json import strict_json_loads
 
 CAPTURED_AT = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 SECRET = "decision-secret-that-must-not-leak"
@@ -1209,3 +1210,19 @@ def test_answers_and_estimates_reject_values_no_endpoint_could_mean(
 ) -> None:
     with pytest.raises(ValueError, match=detail):
         build()
+
+
+def test_the_request_carrying_a_state_stays_within_the_reader_depth(
+    tmp_path: Path,
+) -> None:
+    server = BiasedServer()
+    client = _client(tmp_path, server)
+
+    client.ask(_nested_state(127), _questions())
+    with pytest.raises(InferenceError) as error:
+        client.ask(_nested_state(128), _questions())
+
+    assert error.value.failure is InferenceFailure.CONFIGURATION
+    assert len(server.requests) == 1
+    captured = cast(JsonObject, strict_json_loads(server.requests[0].body))
+    assert captured["state"] == _nested_state(127)

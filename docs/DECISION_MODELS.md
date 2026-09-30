@@ -81,11 +81,12 @@ default resource path is `systemone`, so a base URL ending in `/v1` reaches
 | `ScoreQuestion(instructions, levels)` | 2 to 255 ordered levels, lowest first | A distribution over the level indexes `"0"`, `"1"`, and so on |
 
 The state is JSON text, an object, or an array. An object or array must be
-I-JSON nested at most 128 levels deep: every key is a string, integers stay
-within ±(2^53 − 1), and every number is finite, so the request means the same
-thing to every JSON reader and its captured copy can be read back. The keys of
-the question mapping identify each question in every request, answer, and
-estimate, and they must be identifiers.
+I-JSON nested at most 127 levels deep, so the request that carries it stays
+within the 128 levels a strict reader accepts: every key is a string, integers
+stay within ±(2^53 − 1), and every number is finite, so the request means the
+same thing to every JSON reader and its captured copy can be read back. The
+keys of the question mapping identify each question in every request, answer,
+and estimate, and they must be identifiers.
 
 Questions are immutable values that compare, hash, and pickle. A choice
 question's option order is part of its value, so two questions that list the

@@ -463,9 +463,10 @@ def build_decision_payload(
     """Render one decision request without credentials.
 
     Each question's options are listed in ``order``.  Serialize the payload
-    without sorting keys, or the options lose that order.  The state must be
-    I-JSON nested at most 128 levels deep, so that every object key is a
-    string and the request means the same thing to every JSON reader.
+    without sorting keys, or the options lose that order.  The payload must be
+    I-JSON nested at most 128 levels deep, so the state nests at most 127:
+    every object key is a string, the request means the same thing to every
+    JSON reader, and its captured copy can be read back.
     """
 
     asked = _questions(questions)
@@ -481,6 +482,8 @@ def build_decision_payload(
         },
     }
     payload.update(endpoint.extra_body)
+    # The state sits one level down, so the whole request is checked too.
+    ensure_i_json(payload)
     return payload
 
 

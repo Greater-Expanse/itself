@@ -110,3 +110,5 @@ When a source ledger declares external references, pass the same repeated
 Both commands also accept repeated `--trusted-authorizer ID` arguments, which
 refuse evidence-backed transitions authorized by any other declared actor id;
 see the [protocol-record guide](PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions).
+`receipt validate` checks them while it replays the ledger, so it accepts the
+option only together with `--ledger`.
