@@ -30,7 +30,7 @@ Itself gives those objects an explicit, machine-readable lifecycle:
 <p align="center">
   <img
     src="docs/assets/itself-lifecycle-dark.svg"
-    alt="A model assertion becomes a testable claim with a declared expected result. An external check produces evidence. Declared evaluation and authority control the resulting action. Every stage remains in a validated evidence ledger and reasoning receipt."
+    alt="A model assertion or a decision model's probability becomes a testable claim with a declared expected result. An external check produces evidence. Declared evaluation and authority control the resulting action. Every stage remains in a validated evidence ledger and reasoning receipt."
     width="1200"
   >
 </p>
@@ -39,8 +39,8 @@ Every record in the ledger carries explicit scope and provenance. Evidence,
 verdicts, and state changes also identify the actors and authority responsible
 for them.
 
-A model may create an assertion or recommend a test. It cannot silently turn
-its own output into verified evidence. Promotion to a stronger epistemic state
+A model may create an assertion, state a probability, or recommend a test. It
+cannot silently turn its own output into verified evidence. Promotion to a stronger epistemic state
 requires declared evidence, a matching verdict, and an authorized human,
 organization, or policy-enforcing software actor.
 
@@ -336,6 +336,50 @@ capability fallback.
 
 See the [inference guide](docs/INFERENCE.md) for configuration patterns,
 guarantees, and the boundary for native provider protocols.
+
+Decision models answer typed questions about a state with probability
+distributions instead of text. `DecisionModelClient` sends `choice`, `noul`,
+and `score` questions to any endpoint implementing the `/v1/systemone`
+decision format:
+
+```python
+from pathlib import Path
+
+from itself import (
+    ChoiceQuestion,
+    DecisionModelClient,
+    DecisionModelEndpoint,
+    DirectoryArtifactSink,
+)
+
+client = DecisionModelClient(
+    endpoint=DecisionModelEndpoint(
+        actor_id="spec-checker",
+        base_url="http://127.0.0.1:8000/v1",
+        model="local-decider",
+        allow_insecure_http=True,
+    ),
+    artifact_sink=DirectoryArtifactSink(Path(".itself/decisions")),
+)
+result = client.decide(
+    "Specification: R1. Reject empty input.\n\nCode: return text.split()[0]",
+    {
+        "r1": ChoiceQuestion(
+            "Does the code satisfy rule R1?",
+            {"true": "Yes, it satisfies R1.", "false": "No, it violates R1."},
+        ),
+    },
+)
+estimate = result.estimates["r1"]
+```
+
+By default each choice and score question is asked twice, with its options as
+declared and reversed, and `estimate.order_gap` and `estimate.order_flip`
+report how far option position moved the answer; a yes-or-no `NoulQuestion`
+is asked once. Every request and response is captured
+before interpretation, and every distribution is validated locally. The
+probability is a prediction to test, never a verdict. See the
+[decision-model guide](docs/DECISION_MODELS.md).
 
 The repository also contains a transparent controlled incident investigation.
 A report-generation system advances from source revision `A` to `B`, but keeps

@@ -44,6 +44,16 @@
         "a": true
       },
       "canonical": "{\"a\":true,\"z\":[{\"a\":1,\"b\":2}]}"
+    },
+    {
+      "name": "proto-key",
+      "value": {
+        "b": [true],
+        "__proto__": {
+          "nested": 1
+        }
+      },
+      "canonical": "{\"__proto__\":{\"nested\":1},\"b\":[true]}"
     }
   ],
   "ledger_records": [

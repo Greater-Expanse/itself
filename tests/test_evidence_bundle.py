@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -14,6 +15,7 @@ import pytest
 
 import itself.evidence_bundle as evidence_bundle_module
 from itself import (
+    BundleIntegrityError,
     EvidenceBundleBuilder,
     EvidenceBundleBuildError,
     EvidenceBundleFile,
@@ -26,6 +28,10 @@ from itself import (
     JsonValue,
     Ledger,
     LedgerFormatError,
+    StrPath,
+    VerifiedEvidenceBundle,
+    build_reasoning_receipt,
+    canonical_ledger_bytes,
     evidence_bundle_id,
     parse_bundle_path,
 )
@@ -66,6 +72,12 @@ def _rebind_file_and_bundle(root: Path, relative_path: str) -> None:
     identity = {key: value for key, value in manifest.items() if key != "bundle_id"}
     manifest["bundle_id"] = evidence_bundle_id(identity)
     _pretty_write(manifest_path, manifest)
+
+
+def _rebind_manifest(root: Path, manifest: JsonObject) -> None:
+    identity = {key: value for key, value in manifest.items() if key != "bundle_id"}
+    manifest["bundle_id"] = evidence_bundle_id(identity)
+    _pretty_write(root / "bundle.json", manifest)
 
 
 def _reference_bundle_files() -> tuple[EvidenceBundleFile, ...]:
@@ -227,6 +239,75 @@ def test_builder_preserves_destination_created_during_publication(
     assert tuple(tmp_path.glob(".bundle.*")) == ()
 
 
+def test_builder_runs_full_validation_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validated: list[Path] = []
+    validate = EvidenceBundleValidator.validate
+
+    def recording_validate(
+        validator: EvidenceBundleValidator,
+        path: StrPath,
+    ) -> VerifiedEvidenceBundle:
+        validated.append(Path(path))
+        return validate(validator, path)
+
+    monkeypatch.setattr(EvidenceBundleValidator, "validate", recording_validate)
+    destination = tmp_path / "bundle"
+
+    verified = EvidenceBundleBuilder().build(
+        destination,
+        ledger=JsonlLedgerStore(REFERENCE_BUNDLE / "ledger.jsonl").load(),
+        title="Deterministic cache-key causal diagnosis",
+        created_at=datetime(2026, 7, 23, 12, tzinfo=UTC),
+        files=_reference_bundle_files(),
+        limitations=(
+            "The diagnostician is a deterministic software fixture, not a hosted model.",
+            "Structural integrity does not establish that a real-world claim is true.",
+            "The causal oracle is authoritative only within this controlled case.",
+        ),
+    )
+
+    assert len(validated) == 1
+    assert validated[0].parent == tmp_path
+    assert validated[0].name.startswith(".bundle.")
+    assert verified.path == destination
+    assert verified.manifest["bundle_id"] == EXPECTED_BUNDLE_ID
+
+
+def test_builder_rejects_bundle_changed_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = JsonlLedgerStore(REFERENCE_BUNDLE / "ledger.jsonl").load()
+
+    def publish_after_edit(source: Path, target: Path) -> None:
+        request = source / "inputs" / "diagnosis-request.json"
+        request.write_bytes(request.read_bytes() + b"\n")
+        publish_path_no_replace(source, target)
+
+    monkeypatch.setattr(
+        evidence_bundle_module,
+        "publish_path_no_replace",
+        publish_after_edit,
+    )
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="size mismatch for 'inputs/diagnosis-request.json'",
+    ):
+        EvidenceBundleBuilder().build(
+            tmp_path / "bundle",
+            ledger=ledger,
+            title="Changed between validation and publication",
+            files=_reference_bundle_files(),
+        )
+
+    assert not (tmp_path / "bundle").exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "path",
     ["bundle.json", "ledger.jsonl", "reasoning-receipt.json"],
@@ -263,6 +344,74 @@ def test_tampered_inventory_file_is_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(EvidenceBundleValidationError, match="size mismatch"):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_validator_decodes_only_bytes_checked_against_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    records = list(JsonlLedgerStore(REFERENCE_BUNDLE / "ledger.jsonl").load().records)
+    injected = deepcopy(
+        next(record for record in records if record["kind"] == "hypothesis")
+    )
+    injected["id"] = "hypothesis-injected"
+    injected["statement"] = "Injected after the inventory pass."
+    forged = Ledger([*records, injected])
+
+    def replace_after_inventory(manifest_without_id: JsonObject) -> str:
+        (destination / "ledger.jsonl").write_bytes(canonical_ledger_bytes(forged))
+        _pretty_write(
+            destination / "reasoning-receipt.json",
+            build_reasoning_receipt(forged),
+        )
+        return evidence_bundle_id(manifest_without_id)
+
+    # The bundle_id check is the validator's first step after the inventory pass.
+    monkeypatch.setattr(
+        evidence_bundle_module,
+        "evidence_bundle_id",
+        replace_after_inventory,
+    )
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="mismatch for 'ledger.jsonl'",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_validator_rejects_fractional_size_bytes(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    manifest = _load_object(destination / "bundle.json")
+    entry = cast(list[JsonObject], manifest["files"])[0]
+    entry["size_bytes"] = float(cast(int, entry["size_bytes"]))
+    _rebind_manifest(destination, manifest)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="must write size_bytes as an integer literal, not 3302.0",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_validator_reports_inventory_paths_it_cannot_inspect(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    manifest = _load_object(destination / "bundle.json")
+    entry = cast(list[JsonObject], manifest["files"])[0]
+    entry["path"] = f"inputs/{'a' * 300}.json"
+    _rebind_manifest(destination, manifest)
+
+    # Most Python versions raise for the overlong name and the validator reports
+    # it; Python 3.14's pathlib reports such a path as absent instead.
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="cannot be inspected|is missing or not regular",
+    ):
         EvidenceBundleValidator().validate(destination)
 
 
@@ -437,3 +586,51 @@ def test_limits_reject_invalid_values(
 def test_bundle_paths_reject_smuggling(value: str) -> None:
     with pytest.raises(EvidenceBundleValidationError):
         parse_bundle_path(value)
+    with pytest.raises(EvidenceBundleBuildError):
+        EvidenceBundleFile(
+            path=value,
+            content=b"data",
+            role=EvidenceBundleFileRole.INPUT,
+            media_type="application/octet-stream",
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "artifacts/%2e%2e/%2e%2e/outside.json",
+        "artifacts/model-assertion.json#fragment",
+        "artifacts/model-assertion.json?version=1",
+        "inputs/100%.json",
+    ],
+)
+def test_builder_rejects_uri_sensitive_paths_the_validator_accepts(value: str) -> None:
+    assert parse_bundle_path(value).as_posix() == value
+    with pytest.raises(EvidenceBundleBuildError, match="must not contain"):
+        EvidenceBundleFile(
+            path=value,
+            content=b"data",
+            role=EvidenceBundleFileRole.ARTIFACT,
+            media_type="application/json",
+            record_ref="artifact-diagnostician-output",
+        )
+
+
+def test_bundle_validation_can_require_trusted_authorizers() -> None:
+    trusted = EvidenceBundleValidator(
+        trusted_authorizers=["case-001-promotion-policy"]
+    ).validate(REFERENCE_BUNDLE)
+
+    assert (
+        trusted.manifest["bundle_id"]
+        == (EvidenceBundleValidator().validate(REFERENCE_BUNDLE).manifest["bundle_id"])
+    )
+    with pytest.raises(BundleIntegrityError) as raised:
+        EvidenceBundleValidator(trusted_authorizers=()).validate(REFERENCE_BUNDLE)
+    issues = raised.value.issues
+    assert issues
+    assert {issue.code.value for issue in issues} == {"untrusted_authorizer"}
+    assert {issue.reference for issue in issues} == {"case-001-promotion-policy"}
+    assert EvidenceBundleValidator(
+        trusted_authorizers=["a", "a"]
+    ).trusted_authorizers == frozenset({"a"})

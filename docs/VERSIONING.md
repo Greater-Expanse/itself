@@ -7,7 +7,7 @@ does not implicitly change the protocol or artifact formats it implements.
 
 ### Python distribution
 
-The `itself-sdk` distribution uses PEP 440 versions. The package version in
+The `itself` distribution uses PEP 440 versions. The package version in
 `pyproject.toml` and `itself.__version__` must match.
 
 Before `1.0.0`, minor and prerelease versions may change the Python API. Such
@@ -92,7 +92,13 @@ A release must:
 3. pass tests, strict type checks, lint, formatting, and package-build checks;
 4. include the schemas, `py.typed` marker, and license in built artifacts;
 5. verify that any published schema line matches the packaged bytes;
-6. use a Git tag matching the normalized distribution version.
+6. use the Git tag `v` followed by the normalized distribution version, such
+   as `v0.2.0`.
+
+Publishing a GitHub release for that tag runs the release workflow. It refuses
+a tag that does not name the package version, builds and checks the
+distributions, and uploads them to PyPI through trusted publishing once a
+maintainer approves the protected `pypi` environment.
 
 No compatibility claim extends beyond the explicit surface and version named in
 that claim. In particular, structural validation does not establish factual

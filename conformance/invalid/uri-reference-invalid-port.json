@@ -1,0 +1,20 @@
+{
+  "protocol_version": "0.1.0-alpha.3",
+  "kind": "artifact_reference",
+  "id": "artifact-invalid-port",
+  "created_at": "2026-07-22T11:59:00Z",
+  "created_by": {
+    "id": "trace-recorder-1",
+    "actor_type": "software",
+    "role": "operator"
+  },
+  "uri": "//host:port/",
+  "media_type": "application/x-ndjson",
+  "title": "Completion-loop failure trace",
+  "digest": {
+    "algorithm": "sha256",
+    "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "captured_at": "2026-07-22T11:58:00Z",
+  "derived_from_refs": []
+}

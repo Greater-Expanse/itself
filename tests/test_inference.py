@@ -6,7 +6,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pickle
 import stat
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -19,6 +21,7 @@ import itself.inference as inference_module
 from itself import (
     ADAPTER_ID,
     ADAPTER_VERSION,
+    ArtifactReference,
     DirectoryArtifactSink,
     EnvironmentCredential,
     HttpRequest,
@@ -458,6 +461,33 @@ def test_artifact_sink_accepts_identical_concurrent_publication(
     assert tuple(root.glob(".artifact-*.tmp")) == ()
 
 
+class NonPosixOs:
+    """Forward to os, but report Windows and lack fchmod as 3.11 and 3.12 do."""
+
+    name = "nt"
+
+    def __getattr__(self, attribute: str) -> object:
+        if attribute == "fchmod":
+            raise AttributeError(attribute)
+        return cast(object, getattr(os, attribute))
+
+
+def test_artifact_sink_does_not_require_fchmod_outside_posix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inference_module, "os", NonPosixOs())
+
+    reference = DirectoryArtifactSink(tmp_path / "artifacts").capture(
+        b"{}",
+        media_type="application/json",
+        captured_at=CAPTURED_AT,
+    )
+
+    assert Path(reference.uri.removeprefix("file://")).read_bytes() == b"{}"
+    assert tuple((tmp_path / "artifacts").glob(".artifact-*.tmp")) == ()
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_format"),
     [
@@ -595,6 +625,49 @@ def test_missing_runtime_credential_fails_before_transport(tmp_path: Path) -> No
     assert SECRET not in str(captured.value)
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [f"{SECRET}\n", f"{SECRET}\r\n X-Injected: yes", f"{SECRET}\u2019"],
+    ids=["newline", "folded", "non-ascii"],
+)
+def test_malformed_runtime_credential_fails_without_echoing_it(
+    tmp_path: Path,
+    secret: str,
+) -> None:
+    client, transport = _client(
+        tmp_path,
+        environment={"TEST_INFERENCE_KEY": secret},
+    )
+
+    with pytest.raises(InferenceError) as captured:
+        client.invoke({"question": "test"}, _profile())
+
+    assert captured.value.failure is InferenceFailure.CONFIGURATION
+    assert not captured.value.retryable
+    assert not transport.requests
+    assert SECRET not in "".join(traceback.format_exception(captured.value))
+
+
+@pytest.mark.parametrize(
+    ("prefix", "message"),
+    [("Bearer\n", "single line"), ("Bearer\u00a0", "printable ASCII")],
+)
+def test_credential_prefix_is_one_printable_ascii_line(
+    prefix: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        EnvironmentCredential("TEST_INFERENCE_KEY", prefix=prefix)
+
+
+def test_extra_header_values_allow_tabs_but_no_other_controls() -> None:
+    endpoint = _endpoint(extra_headers={"X-Trace": "trace\t7"})
+
+    assert endpoint.extra_headers["X-Trace"] == "trace\t7"
+    with pytest.raises(ValueError, match="printable ASCII"):
+        _endpoint(extra_headers={"X-Trace": "trace\x007"})
+
+
 def test_missing_usage_and_compatible_text_parts_are_supported(tmp_path: Path) -> None:
     content_parts: JsonValue = [
         {"type": "text", "text": '{"answer":"four",'},
@@ -652,6 +725,35 @@ def test_content_must_be_one_strict_json_document(
 
 
 @pytest.mark.parametrize(
+    ("body", "failure"),
+    [
+        (
+            _completion_body('{"answer":' + "[" * 500 + "]" * 500 + "}"),
+            InferenceFailure.RESPONSE_JSON,
+        ),
+        (
+            b'{"choices":' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+            InferenceFailure.RESPONSE_ENVELOPE,
+        ),
+    ],
+    ids=["content", "envelope"],
+)
+def test_deeply_nested_responses_fail_closed_with_the_artifact(
+    tmp_path: Path,
+    body: bytes,
+    failure: InferenceFailure,
+) -> None:
+    client, _ = _client(tmp_path, body=body)
+
+    with pytest.raises(InferenceError) as captured:
+        client.invoke({"question": "test"}, _profile())
+
+    assert captured.value.failure is failure
+    assert captured.value.artifact is not None
+    assert captured.value.artifact.sha256 == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.parametrize(
     ("status_code", "failure", "retryable"),
     [
         (400, InferenceFailure.HTTP_STATUS, False),
@@ -697,6 +799,7 @@ def test_http_failures_are_classified_without_exposing_response(
             InferenceFailure.REFUSAL,
         ),
         (b'{"choices":[]}', InferenceFailure.RESPONSE_ENVELOPE),
+        (_completion_body([{"type": "text"}]), InferenceFailure.RESPONSE_ENVELOPE),
         (
             _completion_body().replace(
                 b'"prompt_tokens":12', b'"prompt_tokens":"twelve"'
@@ -741,6 +844,22 @@ def test_completion_failures_remain_distinct(
         (
             _streaming_completion_body(refusal="cannot comply"),
             InferenceFailure.REFUSAL,
+        ),
+        (
+            _sse_body(
+                [
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "finish_reason": "stop",
+                                "delta": {"content": [{"type": "text"}]},
+                            }
+                        ]
+                    }
+                ]
+            ),
+            InferenceFailure.RESPONSE_ENVELOPE,
         ),
     ],
 )
@@ -831,12 +950,16 @@ def test_streaming_completion_rejects_conflicting_usage(tmp_path: Path) -> None:
         ),
         lambda: _endpoint(base_url="https://user:secret@models.example.test/v1"),
         lambda: _endpoint(base_url="https://models.example.test/v1?secret=value"),
+        lambda: _endpoint(base_url="https://models.example.test:0/v1"),
+        lambda: _endpoint(base_url="https://models.example.test:65536/v1"),
+        lambda: _endpoint(base_url="https://models.example.test:port/v1"),
         lambda: _endpoint(resource_path="../chat/completions"),
         lambda: _endpoint(query_parameters={"api-version": "line\nbreak"}),
         lambda: _endpoint(max_output_tokens=0),
         lambda: _endpoint(accepted_finish_reasons=()),
         lambda: _endpoint(extra_headers={"Authorization": "secret"}),
         lambda: _endpoint(extra_headers={"X-Test": "line\nbreak"}),
+        lambda: _endpoint(extra_headers={"X-Test": "caf\u00e9"}),
         lambda: _endpoint(extra_body={"messages": []}),
         lambda: _endpoint(extra_body={"temperature": float("nan")}),
     ],
@@ -869,3 +992,55 @@ def test_custom_transport_failures_are_sanitized(tmp_path: Path) -> None:
     assert captured.value.failure is InferenceFailure.TRANSPORT
     assert captured.value.retryable is True
     assert "private transport failure" not in str(captured.value)
+
+
+def test_inference_errors_survive_pickling() -> None:
+    artifact = ArtifactReference(
+        uri="artifacts/sha256-response.json",
+        media_type="application/json",
+        sha256="0" * 64,
+        captured_at="2026-07-23T12:30:00Z",
+    )
+    error = InferenceError(
+        InferenceFailure.HTTP_RATE_LIMIT,
+        "inference endpoint returned HTTP 429",
+        status_code=429,
+        artifact=artifact,
+    )
+
+    restored = pickle.loads(pickle.dumps(error))
+
+    assert isinstance(restored, InferenceError)
+    assert restored.failure is InferenceFailure.HTTP_RATE_LIMIT
+    assert restored.detail == error.detail
+    assert restored.status_code == 429
+    assert restored.artifact == artifact
+    assert str(restored) == str(error)
+    assert restored.retryable
+
+
+@pytest.mark.parametrize("deadline", [0.0, -1.0, float("nan"), float("inf"), True])
+def test_endpoint_rejects_invalid_deadlines(deadline: float) -> None:
+    with pytest.raises(ValueError, match="deadline_seconds"):
+        OpenAICompatibleEndpoint(
+            actor_id="model-under-test",
+            base_url="https://models.example.test/v1",
+            model="org/model-1",
+            deadline_seconds=deadline,
+        )
+
+
+def test_endpoint_deadline_reaches_the_request(tmp_path: Path) -> None:
+    endpoint = OpenAICompatibleEndpoint(
+        actor_id="model-under-test",
+        base_url="https://models.example.test/v1",
+        model="org/model-1",
+        credential=DEFAULT_CREDENTIAL,
+        deadline_seconds=12.5,
+    )
+    client, transport = _client(tmp_path, endpoint=endpoint)
+
+    client.invoke({"question": "What is two plus two?"}, _profile())
+
+    assert transport.requests[0].deadline_seconds == 12.5
+    assert _endpoint().deadline_seconds is None

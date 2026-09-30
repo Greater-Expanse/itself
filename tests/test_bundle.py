@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -16,17 +17,20 @@ from itself import (
     ClaimStatus,
     IntegrityCode,
     JsonObject,
-    JsonValue,
+    Ledger,
 )
+from itself._json import strict_json_loads
 
 ROOT = Path(__file__).resolve().parents[1]
 VALID_BUNDLES = sorted((ROOT / "conformance" / "bundles" / "valid").glob("*.json"))
 INVALID_BUNDLES = sorted((ROOT / "conformance" / "bundles" / "invalid").glob("*.json"))
 
 EXPECTED_CODES = {
+    "blank-transition-subject.json": IntegrityCode.INVALID_TRANSITION,
     "dangling-reference.json": IntegrityCode.UNRESOLVED_REFERENCE,
     "duplicate-id.json": IntegrityCode.DUPLICATE_ID,
     "invalid-transition.json": IntegrityCode.INVALID_TRANSITION,
+    "proto-scope-mismatch.json": IntegrityCode.SCOPE_MISMATCH,
     "state-drift.json": IntegrityCode.STATE_MISMATCH,
     "test-plan-kind-mismatch.json": IntegrityCode.REFERENCE_KIND_MISMATCH,
     "transition-subject-mismatch.json": IntegrityCode.TRANSITION_SUBJECT_MISMATCH,
@@ -37,7 +41,7 @@ EXPECTED_CODES = {
 
 
 def _load_bundle(path: Path) -> list[JsonObject]:
-    value = cast(JsonValue, json.loads(path.read_text(encoding="utf-8")))
+    value = strict_json_loads(path.read_bytes())
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise TypeError(f"bundle fixture {path} must contain a JSON object array")
     return cast(list[JsonObject], value)
@@ -214,7 +218,128 @@ def test_bundle_validation_does_not_mutate_records() -> None:
     assert json.dumps(records, sort_keys=True) == before
 
 
+def test_fully_schema_checked_prefix_still_replays_every_record() -> None:
+    records = tuple(_load_bundle(VALID_BUNDLES[0]))
+    validator = BundleValidator()
+
+    snapshot = validator._validated(records, frozenset(), len(records))  # pyright: ignore[reportPrivateUsage]
+
+    assert snapshot == BundleValidator().validate(records)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [-1, 3, True, 1.0, "1", None],
+    ids=["negative", "past-end", "bool", "float", "string", "none"],
+)
+def test_invalid_schema_checked_prefix_is_rejected(prefix: object) -> None:
+    records = tuple(_load_bundle(VALID_BUNDLES[0])[:2])
+    validator = BundleValidator()
+
+    with pytest.raises(ValueError, match="schema-checked prefix must be an integer"):
+        validator._validated(records, frozenset(), cast(int, prefix))  # pyright: ignore[reportPrivateUsage]
+
+
+def test_public_validation_schema_checks_every_record() -> None:
+    records = _load_bundle(VALID_BUNDLES[0])[:2]
+    records[0] = {**records[0], "unexpected": True}
+    validator = BundleValidator()
+
+    for method in (BundleValidator.errors, BundleValidator.validate):
+        assert "schema_checked_prefix" not in inspect.signature(method).parameters
+    issues = validator.errors(records)
+    assert [issue.code for issue in issues] == [IntegrityCode.SCHEMA_INVALID]
+    with pytest.raises(BundleIntegrityError):
+        validator.validate(records)
+
+
 def test_bundle_fixture_sets_are_not_empty() -> None:
     assert VALID_BUNDLES
     assert INVALID_BUNDLES
     assert {fixture.name for fixture in INVALID_BUNDLES} == set(EXPECTED_CODES)
+
+
+HISTORY = ROOT / "conformance" / "bundles" / "valid" / "evidence-backed-history.json"
+
+
+def test_default_validator_accepts_any_declared_authorizer() -> None:
+    validator = BundleValidator()
+
+    assert validator.trusted_authorizers is None
+    assert validator.errors(_load_bundle(HISTORY)) == []
+
+
+def test_trusted_authorizers_accept_listed_actors() -> None:
+    validator = BundleValidator(
+        trusted_authorizers=["default-transition-policy", "reviewer-alex"]
+    )
+
+    snapshot = validator.validate(_load_bundle(HISTORY))
+
+    assert validator.trusted_authorizers == frozenset(
+        {"default-transition-policy", "reviewer-alex"}
+    )
+    assert (
+        snapshot.current_states["claim-cache-cause"]
+        is ClaimStatus.CORROBORATED_WITHIN_SCOPE
+    )
+
+
+def test_trusted_authorizers_reject_other_evidence_backed_authorizers() -> None:
+    issues = BundleValidator(trusted_authorizers={"default-transition-policy"}).errors(
+        _load_bundle(HISTORY)
+    )
+
+    assert [(issue.code, issue.record_id, issue.reference) for issue in issues] == [
+        (
+            IntegrityCode.UNTRUSTED_AUTHORIZER,
+            "transition-cache-corroborated",
+            "reviewer-alex",
+        )
+    ]
+
+
+def test_trusted_authorizers_leave_other_transitions_alone() -> None:
+    issues = BundleValidator(trusted_authorizers=()).errors(_load_bundle(HISTORY))
+
+    # The model's move to testable and the runner's move to under_test are not
+    # evidence-backed, so only the two promotions are refused. A refused
+    # transition does not apply, so the later one also starts from the wrong
+    # state.
+    untrusted = [
+        issue for issue in issues if issue.code is IntegrityCode.UNTRUSTED_AUTHORIZER
+    ]
+    assert sorted(issue.reference or "" for issue in untrusted) == [
+        "default-transition-policy",
+        "reviewer-alex",
+    ]
+    assert {issue.code for issue in issues} == {
+        IntegrityCode.UNTRUSTED_AUTHORIZER,
+        IntegrityCode.STATE_MISMATCH,
+    }
+
+
+@pytest.mark.parametrize("value", ["reviewer-alex", [""], ["  "], [3], None])
+def test_trusted_authorizers_must_be_actor_ids(value: object) -> None:
+    if value is None:
+        assert BundleValidator(trusted_authorizers=None).trusted_authorizers is None
+        return
+    with pytest.raises(ValueError, match="trusted_authorizers"):
+        BundleValidator(trusted_authorizers=value)  # type: ignore[arg-type]
+
+
+def test_ledger_refuses_a_promotion_by_an_untrusted_actor() -> None:
+    records = _load_bundle(HISTORY)
+    position = [record["id"] for record in records].index("transition-cache-supported")
+    ledger = Ledger(
+        records[:position],
+        validator=BundleValidator(trusted_authorizers={"reviewer-alex"}),
+    )
+
+    with pytest.raises(BundleIntegrityError) as raised:
+        ledger.append(records[position])
+
+    assert [issue.code for issue in raised.value.issues] == [
+        IntegrityCode.UNTRUSTED_AUTHORIZER
+    ]
+    assert len(ledger) == position

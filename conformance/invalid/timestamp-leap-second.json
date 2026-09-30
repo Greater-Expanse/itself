@@ -1,0 +1,17 @@
+{
+  "protocol_version": "0.1.0-alpha.3",
+  "kind": "claim",
+  "id": "claim-timestamp-leap-second",
+  "created_at": "2026-06-30T23:59:60Z",
+  "created_by": {
+    "id": "local-user",
+    "actor_type": "human",
+    "role": "proposer"
+  },
+  "proposition": "The local example ledger can be replayed deterministically.",
+  "claim_type": "factual",
+  "status": "proposed",
+  "scope": {
+    "description": "Local SDK quick-start example"
+  }
+}

@@ -84,6 +84,160 @@ ledger = Ledger((hypothesis, testable, prediction))
 The constructor validates each record independently. `Ledger` then validates
 cross-record references, kinds, ordering constraints, and replayed state.
 
+## Restrict who may authorize evidence-backed transitions
+
+Every record declares its own actors, and the protocol binds no identifier to
+an identity, so a validator cannot tell whether an identifier that calls itself
+`software` belongs to a policy engine or to a model. When a deployment knows
+which actor ids may settle claims, it can list them, and the validators then
+refuse every evidence-backed transition whose `authorized_by` declares any
+other id:
+
+```python
+from itself import BundleValidator, EvidenceBundleValidator, Ledger
+
+trusted = {"release-policy", "reviewer-alex"}
+trusted_ledger = Ledger(validator=BundleValidator(trusted_authorizers=trusted))
+bundle_validator = EvidenceBundleValidator(trusted_authorizers=trusted)
+```
+
+A refused transition is reported with the integrity code
+`untrusted_authorizer` and does not apply. The restriction covers the
+evidence-backed statuses in `EVIDENCE_BACKED_STATUSES`: `supported`,
+`refuted`, `inconclusive`, `mixed_evidence`, and `corroborated_within_scope`.
+Transitions to `testable`, `under_test`, `blocked`, and the other states that
+need no evidence are not restricted, and an empty list refuses every
+evidence-backed transition. Without `trusted_authorizers`, validation accepts
+any authorizer whose declared type and role the protocol allows, as before.
+
+The list compares the ids that records declare, and it establishes no
+identity. Any writer that can append records can declare a trusted id, so the
+list protects a ledger only when the write path controls which writers emit
+records under those ids, for example a service that appends every
+evidence-backed transition itself. On the command line, pass
+`--trusted-authorizer ID` once per id to the `ledger`, `receipt`, and `bundle`
+commands.
+
+## Record a test and its evidence
+
+A planned test and its execution are separate immutable records. The completed
+record names its plan in `plan_ref` and must cite the evidence it produced in
+`evidence_refs`. The schema rejects a `completed` test without evidence, and
+the constructor reports `$: 'evidence_refs' is a required property`.
+
+The evidence names the completed test in `test_ref`, so the two records
+reference each other. References resolve against the complete candidate
+history, so appending either record alone fails with `unresolved_reference`.
+Records that reference each other must enter in one `Ledger.extend` or
+`JsonlLedgerStore.extend` batch, in either order.
+
+Continuing the hypothesis example:
+
+```python
+from itself import (
+    Authority,
+    AuthorityType,
+    EvidenceRelation,
+    EvidenceRelationType,
+    EvidenceType,
+    Oracle,
+    TestDesign,
+    TestStatus,
+    VerdictOutcome,
+    evidence_record,
+    protocol_test_record,
+    verdict_record,
+)
+
+operator = Actor("ci-runner", ActorType.SOFTWARE, ActorRole.OPERATOR)
+evaluator = Actor("bypass-checker", ActorType.SOFTWARE, ActorRole.EVALUATOR)
+oracle = Oracle("revision-equality", "1", AuthorityType.DETERMINISTIC_TOOL)
+authority = Authority(
+    AuthorityType.DETERMINISTIC_TOOL,
+    actor_ref="bypass-checker",
+    basis="Exact comparison of the returned and current revisions",
+)
+
+
+def header(record_id: str, second: int, actor: Actor) -> RecordHeader:
+    return RecordHeader(
+        record_id=record_id,
+        created_at=datetime(2026, 7, 23, 12, 0, second, tzinfo=UTC),
+        created_by=actor,
+    )
+
+
+plan = protocol_test_record(
+    header("test-cache-bypass-plan", 3, operator),
+    question="Does bypassing the proxy return the current revision?",
+    design=TestDesign.DETERMINISTIC_CHECK,
+    status=TestStatus.PLANNED,
+    oracle=oracle,
+    scope=scope,
+    subject_refs=("hypothesis-cache-key",),
+    prediction_refs=("prediction-cache-bypass",),
+)
+under_test = status_transition_record(
+    header("transition-cache-under-test", 4, operator),
+    subject_ref="hypothesis-cache-key",
+    from_status=ClaimStatus.TESTABLE,
+    to_status=ClaimStatus.UNDER_TEST,
+    authorized_by=operator,
+    reason="The planned bypass check is running.",
+)
+ledger.extend((plan, under_test))
+
+run = protocol_test_record(
+    header("test-cache-bypass-run", 5, operator),
+    question="Does bypassing the proxy return the current revision?",
+    design=TestDesign.DETERMINISTIC_CHECK,
+    status=TestStatus.COMPLETED,
+    oracle=oracle,
+    scope=scope,
+    subject_refs=("hypothesis-cache-key",),
+    prediction_refs=("prediction-cache-bypass",),
+    plan_ref="test-cache-bypass-plan",
+    evidence_refs=("evidence-cache-bypass",),
+)
+evidence = evidence_record(
+    header("evidence-cache-bypass", 6, evaluator),
+    evidence_type=EvidenceType.DETERMINISTIC_TEST,
+    relations=(
+        EvidenceRelation("hypothesis-cache-key", EvidenceRelationType.SUPPORTS),
+    ),
+    authority=authority,
+    scope=scope,
+    test_ref="test-cache-bypass-run",
+    result={"returned_current_revision": True},
+)
+ledger.extend((run, evidence))
+
+verdict = verdict_record(
+    header("verdict-cache-key", 7, evaluator),
+    subject_ref="hypothesis-cache-key",
+    outcome=VerdictOutcome.SUPPORTED,
+    evidence_refs=("evidence-cache-bypass",),
+    authority=authority,
+    scope=scope,
+    public_rationale="Bypassing the proxy returned the current revision.",
+)
+supported = status_transition_record(
+    header("transition-cache-supported", 8, evaluator),
+    subject_ref="hypothesis-cache-key",
+    from_status=ClaimStatus.UNDER_TEST,
+    to_status=ClaimStatus.SUPPORTED,
+    authorized_by=evaluator,
+    reason="The deterministic check supported the scoped hypothesis.",
+    evidence_refs=("evidence-cache-bypass",),
+    verdict_ref="verdict-cache-key",
+)
+ledger.extend((verdict, supported))
+```
+
+The hypothesis replays to `ClaimStatus.SUPPORTED`. A verdict and its
+transition may also arrive in separate appends, because each only cites
+records that precede it.
+
 ## Typed value objects
 
 The repeated nested structures are represented by immutable typed values:

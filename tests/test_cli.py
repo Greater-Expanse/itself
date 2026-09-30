@@ -4,13 +4,18 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import os
+import shutil
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+import itself.cli as cli_module
 from itself import (
     DEFAULT_EVIDENCE_BUNDLE_LIMITATIONS,
+    EvidenceBundleLimits,
     EvidenceBundleValidator,
     JsonlLedgerStore,
     JsonObject,
@@ -108,6 +113,73 @@ def test_bundle_create_materializes_a_closed_bundle(
     assert (destination / "inputs" / input_path.name).read_bytes() == (
         input_path.read_bytes()
     )
+
+
+def test_bundle_create_media_types_ignore_host_mimetypes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    destination = tmp_path / "bundle"
+    trace_path = tmp_path / "trace.log"
+    trace_path.write_text("check passed\n", encoding="utf-8")
+    notes_path = tmp_path / "notes.unregistered"
+    notes_path.write_text("reviewer notes\n", encoding="utf-8")
+    artifact_path = REFERENCE_BUNDLE / "artifacts" / "model-assertion.json"
+    mimetypes.add_type("text/x-host-json", ".json")
+    mimetypes.add_type("text/x-host-log", ".log")
+    mimetypes.add_type("text/x-host-notes", ".unregistered")
+    try:
+        result = main(
+            [
+                "bundle",
+                "create",
+                str(REFERENCE_BUNDLE / "ledger.jsonl"),
+                str(destination),
+                "--title",
+                "Host-independent media types",
+                "--created-at",
+                "2026-07-23T12:00:00Z",
+                "--artifact",
+                f"artifact-diagnostician-output={artifact_path}",
+                "--input",
+                str(REFERENCE_BUNDLE / "inputs" / "diagnosis-request.json"),
+                "--input",
+                str(trace_path),
+                "--supplemental",
+                str(notes_path),
+            ]
+        )
+    finally:
+        mimetypes.init()
+
+    captured = capsys.readouterr()
+    manifest = EvidenceBundleValidator().validate(destination).manifest
+    media_types = {
+        cast(str, entry["path"]): entry["media_type"]
+        for entry in cast(list[JsonObject], manifest["files"])
+    }
+    assert result == 0
+    assert not captured.err
+    assert media_types["inputs/diagnosis-request.json"] == "application/json"
+    assert media_types["inputs/trace.log"] == "text/plain"
+    assert media_types["supplemental/notes.unregistered"] == "application/octet-stream"
+
+
+def test_bundle_validate_reports_deeply_nested_manifest(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    (destination / "bundle.json").write_text("[" * 3000 + "]" * 3000, encoding="utf-8")
+
+    result = main(["bundle", "validate", str(destination)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "FAIL" in captured.err
+    assert "cannot load one strict JSON object" in captured.err
+    assert not captured.out
 
 
 def test_bundle_create_requires_every_ledger_artifact_mapping(
@@ -353,6 +425,90 @@ def test_receipt_generate_and_validate_against_ledger(
     assert "bound to" in validate_output.out
 
 
+@pytest.mark.parametrize("alias", ["same-path", "hard-link", "symbolic-link"])
+def test_receipt_generate_refuses_to_replace_its_source_ledger(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    alias: str,
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    JsonlLedgerStore(ledger_path).extend(_history())
+    original = ledger_path.read_bytes()
+    output_path = ledger_path
+    if alias != "same-path":
+        output_path = tmp_path / "alias.jsonl"
+        try:
+            if alias == "hard-link":
+                os.link(ledger_path, output_path)
+            else:
+                output_path.symlink_to(ledger_path)
+        except OSError:
+            pytest.skip(f"{alias}s are unavailable")
+
+    result = main(
+        ["receipt", "generate", str(ledger_path), "--output", str(output_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert f"FAIL {output_path}: receipt output would replace" in captured.err
+    assert not captured.out
+    assert ledger_path.read_bytes() == original
+
+
+def test_receipt_generate_still_replaces_an_existing_receipt(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    receipt_path = tmp_path / "receipt.json"
+    JsonlLedgerStore(ledger_path).extend(_history())
+    receipt_path.write_text("{}\n", encoding="utf-8")
+
+    result = main(
+        ["receipt", "generate", str(ledger_path), "--output", str(receipt_path)]
+    )
+
+    captured = capsys.readouterr()
+    receipt = JsonReceiptStore(receipt_path).load()
+    assert result == 0
+    assert "receipt generated" in captured.out
+    assert cast(JsonObject, receipt["source_ledger"])["record_count"] == 10
+
+
+def test_read_commands_apply_cli_resource_limits(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    receipt_path = tmp_path / "receipt.json"
+    JsonlLedgerStore(ledger_path).extend(_history())
+    assert (
+        main(["receipt", "generate", str(ledger_path), "--output", str(receipt_path)])
+        == 0
+    )
+    capsys.readouterr()
+    monkeypatch.setattr(
+        cli_module,
+        "_CLI_LIMITS",
+        EvidenceBundleLimits(
+            max_ledger_records=9,
+            max_receipt_bytes=receipt_path.stat().st_size - 1,
+        ),
+    )
+
+    ledger_result = main(["ledger", "summary", str(ledger_path)])
+    ledger_output = capsys.readouterr()
+    receipt_result = main(["receipt", "validate", str(receipt_path)])
+    receipt_output = capsys.readouterr()
+
+    assert ledger_result == 1
+    assert "ledger record count exceeds limit 9" in ledger_output.err
+    assert receipt_result == 1
+    assert "receipt size exceeds limit" in receipt_output.err
+
+
 def test_receipt_binding_rejects_schema_valid_tampering(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -391,3 +547,109 @@ def test_receipt_binding_rejects_schema_valid_tampering(
     captured = capsys.readouterr()
     assert result == 1
     assert "does not match" in captured.err
+
+
+def test_receipt_generate_refuses_a_receipt_later_reads_would_reject(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    receipt_path = tmp_path / "receipt.json"
+    JsonlLedgerStore(ledger_path).extend(_history())
+    monkeypatch.setattr(
+        cli_module,
+        "_CLI_LIMITS",
+        EvidenceBundleLimits(max_receipt_bytes=100),
+    )
+
+    result = main(
+        ["receipt", "generate", str(ledger_path), "--output", str(receipt_path)]
+    )
+
+    assert result == 1
+    assert "exceeds limit 100 bytes" in capsys.readouterr().err
+    assert not receipt_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("command", "trusted", "expected"),
+    [
+        (["bundle", "validate", str(REFERENCE_BUNDLE)], "someone-else", 1),
+        (["bundle", "validate", str(REFERENCE_BUNDLE)], "case-001-promotion-policy", 0),
+        (
+            ["ledger", "validate", str(REFERENCE_BUNDLE / "ledger.jsonl")],
+            "someone-else",
+            1,
+        ),
+        (
+            ["ledger", "replay", str(REFERENCE_BUNDLE / "ledger.jsonl")],
+            "case-001-promotion-policy",
+            0,
+        ),
+    ],
+    ids=["bundle-untrusted", "bundle-trusted", "ledger-untrusted", "replay-trusted"],
+)
+def test_trusted_authorizer_option_restricts_evidence_backed_transitions(
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+    trusted: str,
+    expected: int,
+) -> None:
+    result = main([*command, "--trusted-authorizer", trusted])
+
+    captured = capsys.readouterr()
+    assert result == expected
+    assert ("untrusted_authorizer" in captured.err) == (expected == 1)
+
+
+def test_ledger_append_applies_the_trusted_authorizers(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    source = REFERENCE_BUNDLE / "ledger.jsonl"
+    records = [
+        json.loads(line) for line in source.read_text(encoding="utf-8").splitlines()
+    ]
+    record_paths: list[str] = []
+    for index, record in enumerate(records):
+        path = tmp_path / f"record-{index:02}.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        record_paths.append(str(path))
+
+    result = main(
+        [
+            "ledger",
+            "append",
+            str(ledger_path),
+            *record_paths,
+            "--trusted-authorizer",
+            "someone-else",
+        ]
+    )
+
+    assert result == 1
+    assert "untrusted_authorizer" in capsys.readouterr().err
+    assert not ledger_path.exists()
+
+
+def test_receipt_validate_refuses_a_trust_list_without_the_ledger(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "assurance.jsonl"
+    receipt_path = tmp_path / "receipt.json"
+    JsonlLedgerStore(ledger_path).extend(_history())
+    assert (
+        main(["receipt", "generate", str(ledger_path), "--output", str(receipt_path)])
+        == 0
+    )
+    capsys.readouterr()
+
+    result = main(
+        ["receipt", "validate", str(receipt_path), "--trusted-authorizer", "nobody"]
+    )
+
+    assert result == 1
+    assert "--trusted-authorizer requires --ledger" in capsys.readouterr().err

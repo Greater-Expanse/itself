@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -14,6 +16,7 @@ from itself import (
     ActorType,
     Authority,
     AuthorityType,
+    BundleIntegrityError,
     ClaimStatus,
     ClaimType,
     DecisionDisposition,
@@ -22,11 +25,13 @@ from itself import (
     EvidenceRelation,
     EvidenceRelationType,
     EvidenceType,
+    IntegrityCode,
     JsonObject,
     JsonValue,
     Ledger,
     Oracle,
     PredictionCondition,
+    ProtocolValidator,
     RecordConstructionError,
     RecordHeader,
     Scope,
@@ -315,6 +320,152 @@ def test_completed_test_requires_evidence() -> None:
         )
 
 
+def _check_test(
+    record_id: str,
+    second: int,
+    status: TestStatus,
+    *,
+    plan_ref: str | None = None,
+    evidence_refs: Sequence[str] = (),
+) -> JsonObject:
+    return protocol_test_record(
+        _header(record_id, second, OPERATOR),
+        question="Does the declared check pass?",
+        design=TestDesign.DETERMINISTIC_CHECK,
+        status=status,
+        oracle=ORACLE,
+        scope=SCOPE,
+        subject_refs=("claim-check",),
+        prediction_refs=("prediction-check",),
+        plan_ref=plan_ref,
+        evidence_refs=evidence_refs,
+    )
+
+
+def test_completed_test_without_evidence_names_the_missing_field() -> None:
+    planned = _check_test("test-check-plan", 4, TestStatus.PLANNED)
+    completed = dict(planned, id="test-check-run", status="completed")
+
+    assert ProtocolValidator().errors(completed) == [
+        "$: 'evidence_refs' is a required property"
+    ]
+    with pytest.raises(RecordConstructionError) as raised:
+        _check_test("test-check-run", 6, TestStatus.COMPLETED)
+    assert str(raised.value) == "$: 'evidence_refs' is a required property"
+
+
+def test_single_string_reference_list_is_rejected() -> None:
+    with pytest.raises(
+        RecordConstructionError,
+        match="evidence_refs must be a sequence of strings, not a single string",
+    ):
+        _check_test(
+            "test-check-run",
+            6,
+            TestStatus.COMPLETED,
+            plan_ref="test-check-plan",
+            evidence_refs="ev-1",
+        )
+
+
+def test_completed_test_and_its_evidence_enter_the_ledger_in_one_batch() -> None:
+    ledger = Ledger(
+        [
+            claim_record(
+                _header("claim-check", 0),
+                proposition="The declared check passes.",
+                claim_type=ClaimType.FACTUAL,
+                scope=SCOPE,
+            ),
+            hypothesis_record(
+                _header("hypothesis-check", 1),
+                statement="The change preserves the checked behavior.",
+                scope=SCOPE,
+            ),
+            status_transition_record(
+                _header("transition-check-testable", 2),
+                subject_ref="claim-check",
+                from_status=ClaimStatus.PROPOSED,
+                to_status=ClaimStatus.TESTABLE,
+                authorized_by=MODEL,
+                reason="The claim names a deterministic check.",
+            ),
+            prediction_record(
+                _header("prediction-check", 3),
+                hypothesis_ref="hypothesis-check",
+                condition=PredictionCondition.HYPOTHESIS_TRUE,
+                expected_observation="The check exits with status zero.",
+                scope=SCOPE,
+            ),
+            _check_test("test-check-plan", 4, TestStatus.PLANNED),
+            status_transition_record(
+                _header("transition-check-under-test", 5, OPERATOR),
+                subject_ref="claim-check",
+                from_status=ClaimStatus.TESTABLE,
+                to_status=ClaimStatus.UNDER_TEST,
+                authorized_by=OPERATOR,
+                reason="The planned check is running.",
+            ),
+        ]
+    )
+    run = _check_test(
+        "test-check-run",
+        6,
+        TestStatus.COMPLETED,
+        plan_ref="test-check-plan",
+        evidence_refs=("evidence-check",),
+    )
+    evidence = evidence_record(
+        _header("evidence-check", 7, EVALUATOR),
+        evidence_type=EvidenceType.DETERMINISTIC_TEST,
+        relations=(
+            EvidenceRelation(
+                subject_ref="claim-check",
+                relation=EvidenceRelationType.SUPPORTS,
+            ),
+        ),
+        authority=AUTHORITY,
+        scope=SCOPE,
+        test_ref="test-check-run",
+        result={"exit_code": 0},
+    )
+
+    # Each record cites the other, so neither can enter the ledger alone.
+    for record in (run, evidence):
+        with pytest.raises(BundleIntegrityError) as raised:
+            ledger.append(record)
+        assert [issue.code for issue in raised.value.issues] == [
+            IntegrityCode.UNRESOLVED_REFERENCE
+        ]
+
+    ledger.extend((run, evidence))
+    ledger.extend(
+        (
+            verdict_record(
+                _header("verdict-check", 8, EVALUATOR),
+                subject_ref="claim-check",
+                outcome=VerdictOutcome.SUPPORTED,
+                evidence_refs=("evidence-check",),
+                authority=AUTHORITY,
+                scope=SCOPE,
+                public_rationale="The declared check passed.",
+            ),
+            status_transition_record(
+                _header("transition-check-supported", 9, EVALUATOR),
+                subject_ref="claim-check",
+                from_status=ClaimStatus.UNDER_TEST,
+                to_status=ClaimStatus.SUPPORTED,
+                authorized_by=EVALUATOR,
+                reason="The deterministic check supported the scoped claim.",
+                evidence_refs=("evidence-check",),
+                verdict_ref="verdict-check",
+            ),
+        )
+    )
+
+    assert ledger.snapshot.current_states["claim-check"] is ClaimStatus.SUPPORTED
+
+
 def test_corroborated_verdict_requires_policy_reference() -> None:
     with pytest.raises(RecordConstructionError):
         verdict_record(
@@ -348,6 +499,35 @@ def test_model_cannot_construct_evidence_backed_promotion() -> None:
             evidence_refs=("evidence-model-output",),
             verdict_ref="verdict-model-output",
         )
+
+
+def test_actor_normalizes_decoded_type_and_role() -> None:
+    decoded: dict[str, Any] = json.loads('{"actor_type": "model", "role": "evaluator"}')
+    actor = Actor("model-evaluator", decoded["actor_type"], decoded["role"])
+
+    assert actor.actor_type is ActorType.MODEL
+    assert actor.role is ActorRole.EVALUATOR
+    with pytest.raises(
+        RecordConstructionError,
+        match="model actor cannot authorize",
+    ):
+        status_transition_record(
+            _header("transition-decoded-model", 0, actor),
+            subject_ref="hypothesis-cache",
+            from_status=ClaimStatus.UNDER_TEST,
+            to_status=ClaimStatus.SUPPORTED,
+            authorized_by=actor,
+            reason="A decoded model actor judged its own assertion correct.",
+            evidence_refs=("evidence-model-output",),
+            verdict_ref="verdict-model-output",
+        )
+
+
+def test_actor_rejects_unknown_type() -> None:
+    decoded: dict[str, Any] = json.loads('{"actor_type": "robot", "role": "evaluator"}')
+
+    with pytest.raises(RecordConstructionError, match="'robot' is not a valid"):
+        Actor("robot-1", decoded["actor_type"], decoded["role"])
 
 
 def test_naive_record_timestamp_is_rejected() -> None:
@@ -396,4 +576,31 @@ def test_evidence_result_is_defensively_copied_and_strict_json() -> None:
             authority=AUTHORITY,
             scope=SCOPE,
             result={"score": float("nan")},
+        )
+
+
+def test_status_transition_record_accepts_plain_status_strings() -> None:
+    record = status_transition_record(
+        _header("transition-from-strings", 2),
+        subject_ref="hypothesis-cache",
+        from_status=cast(ClaimStatus, "proposed"),
+        to_status=cast(ClaimStatus, "testable"),
+        authorized_by=MODEL,
+        reason="Status names decoded from JSON arrive as plain strings.",
+    )
+
+    assert (record["from_status"], record["to_status"]) == ("proposed", "testable")
+
+
+def test_status_transition_record_reports_unknown_statuses_as_construction_errors() -> (
+    None
+):
+    with pytest.raises(RecordConstructionError, match="'bogus' is not a valid"):
+        status_transition_record(
+            _header("transition-bogus", 2),
+            subject_ref="hypothesis-cache",
+            from_status=cast(ClaimStatus, "bogus"),
+            to_status=ClaimStatus.TESTABLE,
+            authorized_by=MODEL,
+            reason="An unknown status is a construction error.",
         )

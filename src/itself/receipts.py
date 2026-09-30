@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Final, Protocol, cast
 
 import rfc8785
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from ._formats import schema_format_checker
 from ._json import format_json_path as _format_path
 from ._json import strict_json_loads
 from .ledger import Ledger
@@ -328,6 +329,35 @@ class ReasoningReceiptFormatError(ValueError):
         super().__init__(f"{path}: {detail}")
 
 
+def decode_receipt_document(content: bytes, *, path: StrPath) -> JsonObject:
+    """Decode receipt bytes into one strict JSON object without schema checks.
+
+    ``path`` names the source in diagnostics only; nothing is read from it.
+    """
+
+    source = Path(path)
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ReasoningReceiptFormatError(
+            source,
+            f"receipt is not valid UTF-8: {error}",
+        ) from error
+    try:
+        value = strict_json_loads(text)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise ReasoningReceiptFormatError(
+            source,
+            f"invalid JSON: {error}",
+        ) from error
+    if not isinstance(value, dict):
+        raise ReasoningReceiptFormatError(
+            source,
+            "receipt must contain one JSON object",
+        )
+    return value
+
+
 class ReasoningReceiptValidator:
     """Validate reasoning receipts against the canonical packaged schema."""
 
@@ -339,12 +369,12 @@ class ReasoningReceiptValidator:
         )
         schema = cast(
             JsonObject,
-            json.loads(schema_resource.read_text(encoding="utf-8")),
+            strict_json_loads(schema_resource.read_text(encoding="utf-8")),
         )
         Draft202012Validator.check_schema(schema)
         self._validator = cast(
             _ReceiptSchemaValidator,
-            Draft202012Validator(schema, format_checker=FormatChecker()),
+            Draft202012Validator(schema, format_checker=schema_format_checker()),
         )
 
     def errors(self, receipt: JsonValue) -> list[str]:
@@ -439,32 +469,36 @@ class JsonReceiptStore:
             or final_size != opened_metadata.st_size
         ):
             raise OSError(f"receipt path changed while reading: {self.path}")
-        try:
-            source = source_bytes.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ReasoningReceiptFormatError(
-                self.path,
-                f"receipt is not valid UTF-8: {error}",
-            ) from error
-        try:
-            value = strict_json_loads(source)
-        except (json.JSONDecodeError, ValueError) as error:
-            raise ReasoningReceiptFormatError(
-                self.path,
-                f"invalid JSON: {error}",
-            ) from error
-        if not isinstance(value, dict):
-            raise ReasoningReceiptFormatError(
-                self.path,
-                "receipt must contain one JSON object",
-            )
+        value = decode_receipt_document(source_bytes, path=self.path)
         self._validator.validate(value)
         return value
 
-    def write(self, receipt: JsonObject) -> None:
-        """Validate and atomically replace the stored receipt document."""
+    def write(self, receipt: JsonObject, *, max_bytes: int | None = None) -> None:
+        """Validate and atomically replace the stored receipt document.
 
+        With ``max_bytes``, a receipt that serializes to more bytes is refused
+        before anything is written, so ``load`` with the same limit can read
+        every receipt this method stores.
+        """
+
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("max_bytes must not be negative")
         self._validator.validate(receipt)
+        content = (
+            json.dumps(
+                receipt,
+                allow_nan=False,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+        if max_bytes is not None and len(content) > max_bytes:
+            raise ReasoningReceiptFormatError(
+                self.path,
+                f"receipt size {len(content)} bytes exceeds limit {max_bytes} bytes",
+            )
         parent = self.path.parent
         parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -484,16 +518,8 @@ class JsonReceiptStore:
         )
         temporary_path = Path(temporary_name)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-                json.dump(
-                    receipt,
-                    handle,
-                    allow_nan=False,
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-                handle.write("\n")
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
 

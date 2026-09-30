@@ -24,6 +24,7 @@ from itself import (
     canonical_ledger_bytes,
     ledger_sha256,
 )
+from itself.receipts import decode_receipt_document
 
 ROOT = Path(__file__).resolve().parents[1]
 VALID_HISTORY = (
@@ -213,6 +214,22 @@ def test_receipt_store_rejects_duplicate_object_keys(tmp_path: Path) -> None:
         JsonReceiptStore(path).load()
 
 
+@pytest.mark.parametrize("content", [b"\xff{}", b"{not-json}", b"[]", b'{"a":1,"a":2}'])
+def test_bytes_decoder_reports_receipt_store_errors(
+    tmp_path: Path,
+    content: bytes,
+) -> None:
+    path = tmp_path / "receipt.json"
+    path.write_bytes(content)
+
+    with pytest.raises(ReasoningReceiptFormatError) as from_file:
+        JsonReceiptStore(path).load()
+    with pytest.raises(ReasoningReceiptFormatError) as from_bytes:
+        decode_receipt_document(content, path=path)
+
+    assert str(from_bytes.value) == str(from_file.value)
+
+
 def test_receipt_store_rejects_symbolic_link_path(tmp_path: Path) -> None:
     receipt = build_reasoning_receipt(_ledger())
     target = tmp_path / "target.json"
@@ -230,3 +247,20 @@ def test_receipt_store_rejects_symbolic_link_path(tmp_path: Path) -> None:
 
     assert path.is_symlink()
     assert target.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_receipt_store_refuses_a_write_its_limited_load_would_reject(
+    tmp_path: Path,
+) -> None:
+    receipt = build_reasoning_receipt(_ledger())
+    path = tmp_path / "receipt.json"
+    JsonReceiptStore(path).write(receipt)
+    size = path.stat().st_size
+    path.unlink()
+
+    with pytest.raises(ReasoningReceiptFormatError, match=f"exceeds limit {size - 1}"):
+        JsonReceiptStore(path).write(receipt, max_bytes=size - 1)
+    assert not path.exists()
+
+    JsonReceiptStore(path).write(receipt, max_bytes=size)
+    assert JsonReceiptStore(path).load(max_bytes=size) == receipt

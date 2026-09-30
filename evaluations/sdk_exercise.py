@@ -67,9 +67,11 @@ EXPECTED_RECORD_KINDS: Final = frozenset(
     }
 )
 EXPECTED_INTEGRITY_CODES: Final[dict[str, IntegrityCode]] = {
+    "blank-transition-subject.json": IntegrityCode.INVALID_TRANSITION,
     "dangling-reference.json": IntegrityCode.UNRESOLVED_REFERENCE,
     "duplicate-id.json": IntegrityCode.DUPLICATE_ID,
     "invalid-transition.json": IntegrityCode.INVALID_TRANSITION,
+    "proto-scope-mismatch.json": IntegrityCode.SCOPE_MISMATCH,
     "state-drift.json": IntegrityCode.STATE_MISMATCH,
     "test-plan-kind-mismatch.json": IntegrityCode.REFERENCE_KIND_MISMATCH,
     "transition-subject-mismatch.json": IntegrityCode.TRANSITION_SUBJECT_MISMATCH,

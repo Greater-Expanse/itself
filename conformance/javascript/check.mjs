@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import { parse } from "lossless-json";
+
+import { URI_REFERENCE_PATTERN } from "./uri-reference.mjs";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const SCHEMA_PATH = path.join(
@@ -134,10 +135,38 @@ const EVIDENCE_BACKED_STATES = new Set([
 ]);
 const PROMOTION_ROLES = new Set(["evaluator", "reviewer", "authority"]);
 
+// The reference reader's limits and decoding rules (SPECIFICATION section 11.2).
+const MAX_NESTING_DEPTH = 128;
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const JSON_ESCAPES = {
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
+const JSON_NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+
+// The reference implementation checks `date-time` with rfc3339-validator after
+// upper-casing, and refuses a value ending in a line break.
+const RFC3339_DATE_TIME =
+  /^(\d{4})-(0[1-9]|1[0-2])-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+const URI_REFERENCE = new RegExp(`^(?:${URI_REFERENCE_PATTERN})$`);
+
+// Python's str.strip() whitespace, which the reference implementation uses to
+// refuse a blank transition subject or authorizing actor.
+const PYTHON_BLANK =
+  /^[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
+
 const EXPECTED_BUNDLE_CODES = {
+  "blank-transition-subject.json": "invalid_transition",
   "dangling-reference.json": "unresolved_reference",
   "duplicate-id.json": "duplicate_id",
   "invalid-transition.json": "invalid_transition",
+  "proto-scope-mismatch.json": "scope_mismatch",
   "state-drift.json": "state_mismatch",
   "test-plan-kind-mismatch.json": "reference_kind_mismatch",
   "transition-subject-mismatch.json": "transition_subject_mismatch",
@@ -175,7 +204,8 @@ function assertWellFormedString(value) {
     const unit = value.charCodeAt(index);
     if (unit >= 0xd800 && unit <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
-      if (next < 0xdc00 || next > 0xdfff) {
+      // charCodeAt returns NaN past the end, which fails both comparisons.
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
         throw new TypeError("string contains a Unicode surrogate");
       }
       index += 1;
@@ -209,16 +239,191 @@ function ensureIJson(value) {
   }
 }
 
+// A strict JSON parser. Unlike JSON.parse and lossless-json, it rejects every
+// repeated object key, stores a `__proto__` key as an ordinary own property,
+// limits nesting to the reference reader's depth, and passes each number's
+// source text to parseIJsonNumber.
+function parseJsonText(text) {
+  let index = 0;
+  const fail = (message) => {
+    throw new SyntaxError(`${message} at offset ${index}`);
+  };
+  const skipWhitespace = () => {
+    while (index < text.length) {
+      const unit = text.charCodeAt(index);
+      if (unit !== 0x20 && unit !== 0x09 && unit !== 0x0a && unit !== 0x0d) {
+        return;
+      }
+      index += 1;
+    }
+  };
+  const parseString = () => {
+    index += 1;
+    let result = "";
+    let start = index;
+    for (;;) {
+      if (index >= text.length) {
+        fail("unterminated string");
+      }
+      const unit = text.charCodeAt(index);
+      if (unit === 0x22) {
+        result += text.slice(start, index);
+        index += 1;
+        return result;
+      }
+      if (unit === 0x5c) {
+        result += text.slice(start, index);
+        const escape = text[index + 1];
+        if (escape === "u") {
+          const hex = text.slice(index + 2, index + 6);
+          if (!/^[0-9A-Fa-f]{4}$/.test(hex)) {
+            fail("invalid unicode escape");
+          }
+          result += String.fromCharCode(Number.parseInt(hex, 16));
+          index += 6;
+        } else if (Object.hasOwn(JSON_ESCAPES, escape)) {
+          result += JSON_ESCAPES[escape];
+          index += 2;
+        } else {
+          fail("invalid string escape");
+        }
+        start = index;
+        continue;
+      }
+      if (unit < 0x20) {
+        fail("unescaped control character in string");
+      }
+      index += 1;
+    }
+  };
+  const parseValue = (depth) => {
+    const character = text[index];
+    if (character === "{" || character === "[") {
+      if (depth > MAX_NESTING_DEPTH) {
+        fail(`JSON nesting exceeds ${MAX_NESTING_DEPTH} levels`);
+      }
+      return character === "{" ? parseObject(depth) : parseArray(depth);
+    }
+    if (character === '"') {
+      return parseString();
+    }
+    for (const [literal, value] of [
+      ["true", true],
+      ["false", false],
+      ["null", null],
+    ]) {
+      if (text.startsWith(literal, index)) {
+        index += literal.length;
+        return value;
+      }
+    }
+    JSON_NUMBER.lastIndex = index;
+    const match = JSON_NUMBER.exec(text);
+    if (match === null) {
+      fail("unexpected character");
+    }
+    index = JSON_NUMBER.lastIndex;
+    return parseIJsonNumber(match[0]);
+  };
+  const parseObject = (depth) => {
+    index += 1;
+    const object = {};
+    const keys = new Set();
+    skipWhitespace();
+    if (text[index] === "}") {
+      index += 1;
+      return object;
+    }
+    for (;;) {
+      skipWhitespace();
+      if (text[index] !== '"') {
+        fail("expected an object key");
+      }
+      const key = parseString();
+      if (keys.has(key)) {
+        fail(`duplicate JSON object key ${JSON.stringify(key)}`);
+      }
+      keys.add(key);
+      skipWhitespace();
+      if (text[index] !== ":") {
+        fail("expected ':'");
+      }
+      index += 1;
+      skipWhitespace();
+      Object.defineProperty(object, key, {
+        value: parseValue(depth + 1),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+      skipWhitespace();
+      if (text[index] === ",") {
+        index += 1;
+      } else if (text[index] === "}") {
+        index += 1;
+        return object;
+      } else {
+        fail("expected ',' or '}'");
+      }
+    }
+  };
+  const parseArray = (depth) => {
+    index += 1;
+    const array = [];
+    skipWhitespace();
+    if (text[index] === "]") {
+      index += 1;
+      return array;
+    }
+    for (;;) {
+      skipWhitespace();
+      array.push(parseValue(depth + 1));
+      skipWhitespace();
+      if (text[index] === ",") {
+        index += 1;
+      } else if (text[index] === "]") {
+        index += 1;
+        return array;
+      } else {
+        fail("expected ',' or ']'");
+      }
+    }
+  };
+  skipWhitespace();
+  const value = parseValue(1);
+  skipWhitespace();
+  if (index !== text.length) {
+    fail("unexpected data after the JSON value");
+  }
+  return value;
+}
+
 function parseJson(source) {
-  const value = parse(source, undefined, {
-    parseNumber: parseIJsonNumber,
-  });
+  const value = parseJsonText(source);
   ensureIJson(value);
   return value;
 }
 
+function readText(filePath) {
+  return UTF8.decode(fs.readFileSync(filePath));
+}
+
 function readJson(filePath) {
-  return parseJson(fs.readFileSync(filePath, "utf8"));
+  return parseJson(readText(filePath));
+}
+
+function isPythonDateTime(value) {
+  const match = RFC3339_DATE_TIME.exec(value.toUpperCase());
+  if (match === null) {
+    return false;
+  }
+  const [year, month, day] = match.slice(1).map(Number);
+  if (year === 0) {
+    return false;
+  }
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= days[month - 1];
 }
 
 function canonicalJson(value) {
@@ -294,6 +499,13 @@ function checkReference(
 
 function transitionPolicyIssues(record) {
   const issues = [];
+  if (
+    PYTHON_BLANK.test(record.subject_ref) ||
+    PYTHON_BLANK.test(record.authorized_by.id)
+  ) {
+    issues.push(issue("invalid_transition", record.id, record.subject_ref));
+    return issues;
+  }
   if (!ALLOWED_TRANSITIONS[record.from_status].has(record.to_status)) {
     issues.push(issue("invalid_transition", record.id, record.subject_ref));
     return issues;
@@ -610,6 +822,13 @@ const ajv = new Ajv2020({
   strictTypes: false,
 });
 addFormats(ajv);
+// Mirror the reference implementation's format checks so both runners accept
+// exactly the same records.
+ajv.addFormat("date-time", { type: "string", validate: isPythonDateTime });
+ajv.addFormat("uri-reference", {
+  type: "string",
+  validate: (value) => URI_REFERENCE.test(value),
+});
 const validateRecord = ajv.compile(schema);
 
 const validRecords = fixturePaths("valid");
@@ -713,6 +932,51 @@ assert.throws(
   /safe range/i,
   "unsafe integer literals must be rejected",
 );
+assert.throws(
+  () => parseJson('{"kind":"claim","kind":"claim"}'),
+  /duplicate/i,
+  "a repeated key must be rejected even when its values are equal",
+);
+const protoKey = parseJson('{"__proto__":{"x":1},"kind":"claim"}');
+assert.deepEqual(
+  Object.keys(protoKey),
+  ["__proto__", "kind"],
+  "a __proto__ key must stay an ordinary member",
+);
+assert.equal(Object.getPrototypeOf(protoKey), Object.prototype);
+assert.equal(canonicalJson(protoKey), '{"__proto__":{"x":1},"kind":"claim"}');
+assert.throws(
+  () => UTF8.decode(Uint8Array.from([0x7b, 0x22, 0xc3, 0x28, 0x22, 0x7d])),
+  TypeError,
+  "invalid UTF-8 must be rejected, not replaced",
+);
+assert.equal(isPythonDateTime("2026-07-23t12:00:00z"), true);
+for (const value of [
+  "2026-07-23 12:00:00Z",
+  "2026-07-23T12:00:00+01",
+  "2026-07-23T12:00:00+0100",
+  "2026-06-30T23:59:60Z",
+  "0000-01-01T00:00:00Z",
+  "2026-02-29T00:00:00Z",
+  "2026-07-23T12:00:00Z\n",
+]) {
+  assert.equal(isPythonDateTime(value), false, `date-time ${JSON.stringify(value)}`);
+}
+
+// Reader documents shared with the Python reference (SPECIFICATION 11.2).
+const acceptedDocuments = fixturePaths("json", "accept");
+const rejectedDocuments = fixturePaths("json", "reject");
+assert(acceptedDocuments.length > 0 && rejectedDocuments.length > 0);
+for (const filePath of acceptedDocuments) {
+  readJson(filePath);
+}
+for (const filePath of rejectedDocuments) {
+  assert.throws(
+    () => readJson(filePath),
+    undefined,
+    `${path.relative(ROOT, filePath)} must be rejected`,
+  );
+}
 
 const canonicalizationFixture = readJson(
   path.join(
@@ -744,10 +1008,7 @@ const referenceBundle = path.join(
   "cache-key-diagnosis",
   "bundle",
 );
-const referenceLedgerText = fs.readFileSync(
-  path.join(referenceBundle, "ledger.jsonl"),
-  "utf8",
-);
+const referenceLedgerText = readText(path.join(referenceBundle, "ledger.jsonl"));
 const referenceCanonicalLedger = referenceLedgerText
   .trimEnd()
   .split("\n")
@@ -774,7 +1035,9 @@ const fixtureCount =
   validRecords.length +
   invalidRecords.length +
   validBundles.length +
-  invalidBundles.length;
+  invalidBundles.length +
+  acceptedDocuments.length +
+  rejectedDocuments.length;
 console.log(
   `PASS JavaScript conformance: ${fixtureCount} fixtures, ` +
     `${validBundles.length} deterministic bundle replays`,

@@ -3,8 +3,8 @@ requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "itself-sdk"
-version = "0.1.0a7"
+name = "itself"
+version = "0.2.0"
 description = "Assurance SDK for AI agents with external checks and replayable decisions"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,7 +26,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "jsonschema[format]>=4.10",
+  "jsonschema[format-nongpl]>=4.10",
   "rfc8785>=0.1.4,<0.2",
 ]
 

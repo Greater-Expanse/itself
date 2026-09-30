@@ -6,7 +6,8 @@
 >
   <title id="title">The Itself agent assurance lifecycle</title>
   <desc id="description">
-    A model assertion becomes a testable claim with a declared expected result.
+    A model assertion or a decision model's probability becomes a testable
+    claim with a declared expected result.
     An external check produces evidence. Declared evaluation and authority
     control the resulting action. Every stage is retained in a validated
     evidence ledger and projected into a reasoning receipt.
@@ -90,7 +91,7 @@
     From model assertion to authorized action
   </text>
   <text class="subheading" x="42" y="108" font-size="15">
-    Make model assertions testable before software acts on them.
+    Make model assertions and probabilities testable before software acts on them.
   </text>
 
   <rect class="zone-generated" x="26" y="128" width="484" height="216" rx="20" />
@@ -158,7 +159,7 @@
   </g>
 
   <g class="card-title" font-size="16" font-weight="690" text-anchor="middle">
-    <text x="112" y="232"><tspan x="112">Model</tspan><tspan x="112" dy="20">assertion</tspan></text>
+    <text x="112" y="232"><tspan x="112">Assertion or</tspan><tspan x="112" dy="20">probability</tspan></text>
     <text x="268" y="232"><tspan x="268">Claim or</tspan><tspan x="268" dy="20">hypothesis</tspan></text>
     <text x="424" y="242">Prediction</text>
     <text x="610" y="232"><tspan x="610">External</tspan><tspan x="610" dy="20">check</tspan></text>

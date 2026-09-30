@@ -25,7 +25,7 @@ def test_distribution_version_declarations_match() -> None:
     project = cast(JsonObject, document["project"])
 
     assert project["version"] == __version__
-    assert version("itself-sdk") == __version__
+    assert version("itself") == __version__
 
 
 def test_cli_reports_distribution_version(

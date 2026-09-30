@@ -39,13 +39,22 @@ A candidate explanation for observations or failures. A hypothesis SHOULD identi
 
 An expected observable result under a stated condition. Predictions make hypotheses testable without treating generated explanations as evidence.
 
+A `v0alpha2` prediction carries no probability. When a model states one, as a
+decision model does, the probability belongs in the artifact that an
+`artifact_reference` record points to, which other records in the bundle can
+cite; it never becomes evidence by being recorded.
+
 ### Test
 
 A planned or completed intervention, query, replay, calculation, review, or other evidence-producing operation. A test MUST declare its design and oracle or evaluator.
 
 In an append-only history, a completed execution MUST NOT overwrite its planned
 test record. It SHOULD be emitted as a new test record whose `plan_ref` points to
-the immutable plan and whose `evidence_refs` identify the resulting evidence.
+the immutable plan. A test record with status `completed` MUST identify the
+resulting evidence in a non-empty `evidence_refs`, as the canonical schema
+requires. When that evidence also cites the test through `test_ref`, the two
+records reference each other, so a writer appends them in one batch
+(section 11.2).
 
 ### Evidence
 
@@ -198,6 +207,17 @@ Primary threats include:
 not provide cryptographic identity, secure execution, or a universally correct
 oracle.
 
+Each record declares its actors' types rather than binding them to an
+identity, so `v0alpha2` validation does not detect one identifier declared as
+a model in one record and as software in another. Deployments that rely on the
+model-authorization rule in section 6 need identity controls outside the
+protocol. The reference SDK's bundle and ledger validators accept a list of the
+actor identifiers a deployment trusts to authorize evidence-backed transitions,
+and they refuse such a transition when its `authorized_by` declares any other
+identifier. The list compares declared identifiers, so it constrains a history
+only when the path that writes records controls which writers emit records
+under the listed identifiers.
+
 ## 11. Conformance
 
 An implementation conforms to `v0alpha2` when it:
@@ -254,7 +274,13 @@ order is authoritative replay order. Blank lines and non-object JSON values are
 invalid. Readers reject duplicate object keys, lone Unicode surrogates, negative
 zero, numeric overflow or underflow, unsafe integer literals, `NaN`, and
 infinities. Protocol numbers remain inside the interoperable IEEE 754 range
-defined by the schema.
+defined by the schema. The reference reader also rejects values nested more
+than 128 levels deep, an implementation limit that RFC 8259 section 9
+permits. Writers MUST NOT emit a record nested more deeply, and the reference
+validator refuses such a record before it is stored, so every record it accepts
+can be read back. The documents under `conformance/json/accept` and
+`conformance/json/reject` exercise these rules, and both the Python reference
+and the JavaScript validator must accept and reject them.
 
 Writers emit each record using
 [RFC 8785 JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
@@ -262,7 +288,12 @@ followed by one LF byte. Reasoning-receipt ledger digests are computed over
 those exact JSON Lines bytes.
 
 An append or batch append MUST validate the complete candidate history before
-mutating in-memory or persisted state. The reference store writes a replacement
+mutating in-memory or persisted state. References resolve against that
+candidate history, so records that cite each other arrive in the same batch.
+Records already accepted into an in-memory ledger are private copies that the
+ledger never exposes, so the reference ledger re-checks cross-record integrity
+across the whole history and applies the schema only to new records; the reference store re-validates the
+stored history each time it loads the file. The store writes a replacement
 file in the destination directory and atomically replaces the previous file only
 after validation and file synchronization succeed.
 

@@ -39,8 +39,36 @@ uv run --frozen itself bundle create \
 
 `--artifact` must be repeated once for every artifact-reference record in the
 ledger. Input files are placed under `inputs/`, and supplemental files are
-placed under `supplemental/`. Their media types are inferred from their
-filenames, with `application/octet-stream` as the fallback.
+placed under `supplemental/`. Their media types come from a fixed table of
+filename suffixes, matched without regard to case, and any other suffix gets
+`application/octet-stream`. The table does not consult the host's MIME
+database, so the same command writes the same manifest on every machine:
+
+| Suffix | Media type |
+| --- | --- |
+| `.csv` | `text/csv` |
+| `.gif` | `image/gif` |
+| `.htm`, `.html` | `text/html` |
+| `.jpeg`, `.jpg` | `image/jpeg` |
+| `.json` | `application/json` |
+| `.jsonl`, `.ndjson` | `application/x-ndjson` |
+| `.log`, `.txt` | `text/plain` |
+| `.md` | `text/markdown` |
+| `.pdf` | `application/pdf` |
+| `.png` | `image/png` |
+| `.svg` | `image/svg+xml` |
+| `.tsv` | `text/tab-separated-values` |
+| `.webp` | `image/webp` |
+| `.xml` | `application/xml` |
+| `.yaml`, `.yml` | `application/yaml` |
+| `.zip` | `application/zip` |
+
+The Python API accepts any explicit media type.
+
+The builder refuses `%`, `?`, and `#` anywhere in a bundle path. Artifact paths
+double as URIs, and URI readers decode percent escapes and drop queries and
+fragments, so such a path could name a different file for them. The validator
+still accepts existing bundles that contain these characters.
 
 The creation time defaults to the current UTC time. Supplying `--created-at`
 makes deterministic regeneration possible. The builder includes two baseline
@@ -108,10 +136,18 @@ Before making a completed bundle available, the builder verifies:
 - a one-to-one binding between artifact-reference records and materialized
   artifact files.
 
+The validator decodes the ledger and the receipt only from bytes it has just
+checked against their inventory sizes and digests. Verification runs once, on
+the private staging directory. After the atomic rename, the builder re-hashes
+every published file and compares the published manifest with the one it
+wrote, which proves that the destination holds the bytes that passed
+verification.
+
 Only a fully verified bundle becomes available at the destination. If validation
-or writing fails, no partial bundle is left there. Final publication is atomic
-and refuses replacement, including when another process creates the destination
-during bundle construction.
+or writing fails, no partial bundle is left there, and a bundle whose published
+files no longer match what was verified is removed before the error is raised.
+Final publication is atomic and refuses replacement, including when another
+process creates the destination during bundle construction.
 
 ## Resource limits
 
@@ -130,7 +166,7 @@ The default `EvidenceBundleLimits` are:
 | One general file | 256 MiB |
 | All inventoried files | 512 MiB |
 | Ledger | 128 MiB |
-| Reasoning receipt | 64 MiB |
+| Reasoning receipt | 128 MiB |
 | Ledger records | 100,000 |
 
 Applications should lower these ceilings when their expected artifacts are
@@ -154,12 +190,29 @@ field and applies the same limits before creating its staging directory.
 `EvidenceBundleFile.from_path` also accepts `max_bytes` and defaults to the
 general 256 MiB file ceiling.
 
+The `itself` commands that read a ledger apply the default ledger ceilings:
+`bundle create`, `ledger validate`, `ledger replay`, `ledger summary`,
+`receipt generate`, and `receipt validate --ledger` refuse a ledger larger than
+128 MiB or longer than 100,000 records. `receipt validate` refuses a receipt
+larger than 128 MiB, and `receipt generate --output` refuses to write one, so
+every receipt it writes can be validated and bundled. A receipt can be nearly
+as large as its ledger, which is why the two ceilings match. `ledger append`
+rewrites a local ledger and applies no read limit.
+
 The independent verification command uses the same public format but does not
 trust builder state:
 
 ```bash
 uv run --frozen itself bundle validate run/evidence-bundle
 ```
+
+A verifier that knows which actor ids may authorize evidence-backed
+transitions can pass each one with `--trusted-authorizer ID`, to `bundle
+validate` and to `bundle create`, and the command then fails with
+`untrusted_authorizer` when any other declared id authorizes one. The list
+compares declared ids; the
+[protocol-record guide](PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions)
+describes what it can and cannot establish.
 
 ## Assurance and privacy boundary
 

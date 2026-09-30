@@ -63,7 +63,7 @@ def test_sdk_exercise_reports_end_to_end_and_mutation_behavior(
     )
 
     assert report.outcome is EvaluationOutcome.PASSED
-    assert len(report.checks) == 23
+    assert len(report.checks) == 31
     assert not [
         check for check in report.checks if check.status is EvaluationStatus.FAILED
     ]
@@ -80,9 +80,11 @@ def test_sdk_exercise_reports_end_to_end_and_mutation_behavior(
         for check in report.checks
         if check.check_id.startswith("mutation.ledger.")
     } == {
+        "mutation.ledger.blank-transition-subject",
         "mutation.ledger.dangling-reference",
         "mutation.ledger.duplicate-id",
         "mutation.ledger.invalid-transition",
+        "mutation.ledger.proto-scope-mismatch",
         "mutation.ledger.state-drift",
         "mutation.ledger.test-plan-kind-mismatch",
         "mutation.ledger.transition-subject-mismatch",
@@ -153,5 +155,5 @@ def test_sdk_exercise_cli_reports_completed_run(
 
     captured = capsys.readouterr()
     assert result == 0
-    assert captured.out.startswith(f"PASSED {output}: 23 checks, urn:sha256:")
+    assert captured.out.startswith(f"PASSED {output}: 31 checks, urn:sha256:")
     assert not captured.err
