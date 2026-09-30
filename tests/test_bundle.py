@@ -24,9 +24,11 @@ VALID_BUNDLES = sorted((ROOT / "conformance" / "bundles" / "valid").glob("*.json
 INVALID_BUNDLES = sorted((ROOT / "conformance" / "bundles" / "invalid").glob("*.json"))
 
 EXPECTED_CODES = {
+    "blank-transition-subject.json": IntegrityCode.INVALID_TRANSITION,
     "dangling-reference.json": IntegrityCode.UNRESOLVED_REFERENCE,
     "duplicate-id.json": IntegrityCode.DUPLICATE_ID,
     "invalid-transition.json": IntegrityCode.INVALID_TRANSITION,
+    "proto-scope-mismatch.json": IntegrityCode.SCOPE_MISMATCH,
     "state-drift.json": IntegrityCode.STATE_MISMATCH,
     "test-plan-kind-mismatch.json": IntegrityCode.REFERENCE_KIND_MISMATCH,
     "transition-subject-mismatch.json": IntegrityCode.TRANSITION_SUBJECT_MISMATCH,
@@ -212,6 +214,32 @@ def test_bundle_validation_does_not_mutate_records() -> None:
     BundleValidator().validate(records)
 
     assert json.dumps(records, sort_keys=True) == before
+
+
+def test_fully_schema_checked_prefix_still_replays_every_record() -> None:
+    records = _load_bundle(VALID_BUNDLES[0])
+
+    snapshot = BundleValidator().validate(
+        records,
+        schema_checked_prefix=len(records),
+    )
+
+    assert snapshot == BundleValidator().validate(records)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [-1, 3, True, 1.0, "1", None],
+    ids=["negative", "past-end", "bool", "float", "string", "none"],
+)
+def test_invalid_schema_checked_prefix_is_rejected(prefix: object) -> None:
+    records = _load_bundle(VALID_BUNDLES[0])[:2]
+    validator = BundleValidator()
+
+    with pytest.raises(ValueError, match="schema_checked_prefix must be an integer"):
+        validator.validate(records, schema_checked_prefix=cast(int, prefix))
+    with pytest.raises(ValueError, match="schema_checked_prefix must be an integer"):
+        validator.errors(records, schema_checked_prefix=cast(int, prefix))
 
 
 def test_bundle_fixture_sets_are_not_empty() -> None:

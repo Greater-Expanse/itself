@@ -24,7 +24,7 @@ network service.
 
 ### SDK exercise
 
-The SDK exercise performs 23 checks:
+The SDK exercise performs 29 checks:
 
 - exports and identifies all six schemas across the current and retained
   immutable publication lines;
@@ -33,8 +33,8 @@ The SDK exercise performs 23 checks:
 - recomputes the reasoning receipt from its ledger;
 - independently validates every inventoried evidence-bundle byte;
 - reproduces the deterministic lifecycle bundle byte for byte;
-- rejects five invalid record fixtures;
-- rejects nine invalid ledgers with their exact integrity codes; and
+- rejects nine invalid record fixtures;
+- rejects eleven invalid ledgers with their exact integrity codes; and
 - rejects artifact tampering, a re-digested but ledger-divergent receipt, an
   uninventoryed file, and a symbolic-link artifact.
 

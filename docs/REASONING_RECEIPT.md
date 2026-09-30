@@ -98,5 +98,11 @@ Generate a receipt atomically with:
 itself receipt generate assurance.jsonl --output receipt.json
 ```
 
+`--output` atomically replaces an existing receipt. The command exits with
+status 1 without writing when the output path is the source ledger itself,
+including a hard link or symbolic link to it. Both commands read ledgers of at
+most 128 MiB and 100,000 records, and `receipt validate` reads receipts of at
+most 64 MiB; these are the default evidence-bundle ceilings.
+
 When a source ledger declares external references, pass the same repeated
 `--external-ref ID` arguments during generation and ledger-bound validation.

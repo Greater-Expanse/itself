@@ -13,25 +13,26 @@ import stat
 import tempfile
 from collections.abc import Iterator, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Final, Protocol, cast
 
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from ._filesystem import publish_path_no_replace, write_file_exclusive
+from ._formats import schema_format_checker
 from ._json import format_json_path as _format_path
 from ._json import strict_json_loads
-from .ledger import JsonlLedgerStore, Ledger
+from .ledger import Ledger, decode_jsonl_records
 from .receipts import (
-    JsonReceiptStore,
     ReasoningReceiptValidator,
     build_reasoning_receipt,
     canonical_ledger_bytes,
+    decode_receipt_document,
 )
 from .types import JsonObject, JsonValue, StrPath
 
@@ -47,6 +48,10 @@ DEFAULT_EVIDENCE_BUNDLE_LIMITATIONS: Final = (
     ),
 )
 _DIGEST_CHUNK_BYTES: Final = 1024 * 1024
+# Bundle paths double as artifact URIs. URI readers decode percent escapes and
+# drop queries and fragments, so the builder refuses these characters; the
+# validator still accepts them, which leaves the published format unchanged.
+_BUILDER_REJECTED_PATH_CHARACTERS: Final = frozenset("%?#")
 
 
 class _SchemaValidator(Protocol):
@@ -121,6 +126,10 @@ class EvidenceBundleFile:
             parse_bundle_path(self.path)
         except EvidenceBundleValidationError as error:
             raise EvidenceBundleBuildError(str(error)) from error
+        if not _BUILDER_REJECTED_PATH_CHARACTERS.isdisjoint(self.path):
+            raise EvidenceBundleBuildError(
+                f"bundle file path {self.path!r} must not contain '%', '?', or '#'"
+            )
         if self.path in {
             BUNDLE_MANIFEST_NAME,
             EVIDENCE_BUNDLE_LEDGER_PATH,
@@ -419,6 +428,152 @@ class VerifiedEvidenceBundle:
     receipt: JsonObject
 
 
+def _actual_file_paths(root: Path, limits: EvidenceBundleLimits) -> set[str]:
+    actual_paths: set[str] = set()
+    pending = [root]
+    entry_count = 0
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as descendants:
+                for descendant in descendants:
+                    entry_count += 1
+                    if entry_count > limits.max_directory_entries:
+                        raise EvidenceBundleValidationError(
+                            "bundle directory entry count exceeds limit "
+                            f"{limits.max_directory_entries}"
+                        )
+                    relative = Path(descendant.path).relative_to(root).as_posix()
+                    if descendant.is_symlink():
+                        raise EvidenceBundleValidationError(
+                            f"bundle must not contain symbolic link {relative!r}"
+                        )
+                    if descendant.is_dir(follow_symlinks=False):
+                        pending.append(Path(descendant.path))
+                    elif descendant.is_file(follow_symlinks=False):
+                        actual_paths.add(relative)
+                    else:
+                        raise EvidenceBundleValidationError(
+                            f"bundle contains non-regular entry {relative!r}"
+                        )
+        except EvidenceBundleValidationError:
+            raise
+        except OSError as error:
+            raise EvidenceBundleValidationError(
+                f"{directory}: cannot inspect bundle directory: {error}"
+            ) from error
+    return actual_paths
+
+
+def _validate_inventory(
+    root: Path,
+    entries: tuple[JsonObject, ...],
+    limits: EvidenceBundleLimits,
+) -> None:
+    """Check the exact file set and every inventoried size and digest."""
+
+    if len(entries) > limits.max_files:
+        raise EvidenceBundleValidationError(
+            f"bundle file count {len(entries)} exceeds limit {limits.max_files}"
+        )
+    entry_paths = tuple(_string(entry["path"], "path") for entry in entries)
+    if len(entry_paths) != len(set(entry_paths)):
+        raise EvidenceBundleValidationError(
+            "bundle file inventory contains duplicate paths"
+        )
+
+    declared_total = 0
+    for entry in entries:
+        relative = _string(entry["path"], "path")
+        declared_size = entry["size_bytes"]
+        # The schema's "integer" also admits 3302.0, which canonical_bundle_json
+        # would hash differently from the integer 3302.
+        if isinstance(declared_size, bool) or not isinstance(declared_size, int):
+            raise EvidenceBundleValidationError(
+                f"bundle inventory file {relative!r} must write size_bytes as an "
+                f"integer literal, not {declared_size!r}"
+            )
+        byte_limit = _file_byte_limit(limits, _string(entry["role"], "role"))
+        if declared_size > byte_limit:
+            raise EvidenceBundleValidationError(
+                f"bundle inventory file {relative!r} declares {declared_size} "
+                f"bytes, exceeding limit {byte_limit}"
+            )
+        declared_total += declared_size
+        if declared_total > limits.max_total_bytes:
+            raise EvidenceBundleValidationError(
+                f"bundle inventoried byte total exceeds limit {limits.max_total_bytes}"
+            )
+
+    root_resolved = root.resolve()
+    for entry, relative in zip(entries, entry_paths, strict=True):
+        relative_path = parse_bundle_path(relative)
+        candidate = root.joinpath(*relative_path.parts)
+        # A manifest path can make these probes fail, for example with a name
+        # longer than NAME_MAX; Path.resolve raises RuntimeError on a symlink
+        # loop before Python 3.13.
+        try:
+            regular = not candidate.is_symlink() and candidate.is_file()
+            resolved = candidate.resolve() if regular else None
+        except (OSError, RuntimeError) as error:
+            raise EvidenceBundleValidationError(
+                f"bundle inventory file {relative!r} cannot be inspected: {error}"
+            ) from error
+        if resolved is None:
+            raise EvidenceBundleValidationError(
+                f"bundle inventory file {relative!r} is missing or not regular"
+            )
+        if not resolved.is_relative_to(root_resolved):
+            raise EvidenceBundleValidationError(
+                f"bundle inventory file {relative!r} escapes the bundle root"
+            )
+        observed_digest = _digest_bounded_regular_file(
+            candidate,
+            display_path=relative,
+            expected_size=_integer(entry["size_bytes"], "size_bytes"),
+            max_bytes=_file_byte_limit(limits, _string(entry["role"], "role")),
+        )
+        digest = _object(entry["digest"], "digest")
+        if _string(digest["value"], "digest.value") != observed_digest:
+            raise EvidenceBundleValidationError(
+                f"bundle inventory digest mismatch for {relative!r}"
+            )
+
+    actual_paths = _actual_file_paths(root, limits)
+    expected_paths = set(entry_paths) | {BUNDLE_MANIFEST_NAME}
+    if actual_paths != expected_paths:
+        missing = sorted(expected_paths.difference(actual_paths))
+        extra = sorted(actual_paths.difference(expected_paths))
+        raise EvidenceBundleValidationError(
+            f"bundle file inventory mismatch; missing={missing}, extra={extra}"
+        )
+
+
+def _read_inventoried_file(
+    root: Path,
+    entry: JsonObject,
+    limits: EvidenceBundleLimits,
+) -> tuple[Path, bytes]:
+    """Read one inventoried file once and return the bytes its entry binds."""
+
+    relative = _string(entry["path"], "path")
+    path = root.joinpath(*parse_bundle_path(relative).parts)
+    content = _read_bounded_regular_file(
+        path,
+        max_bytes=_file_byte_limit(limits, _string(entry["role"], "role")),
+    )
+    if len(content) != _integer(entry["size_bytes"], "size_bytes"):
+        raise EvidenceBundleValidationError(
+            f"bundle inventory size mismatch for {relative!r}"
+        )
+    digest = _object(entry["digest"], "digest")
+    if _sha256(content) != _string(digest["value"], "digest.value"):
+        raise EvidenceBundleValidationError(
+            f"bundle inventory digest mismatch for {relative!r}"
+        )
+    return path, content
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceBundleValidator:
     """Verify inventory, bytes, protocol history, receipt, and artifacts."""
@@ -433,12 +588,12 @@ class EvidenceBundleValidator:
         )
         schema = cast(
             JsonObject,
-            json.loads(schema_resource.read_text(encoding="utf-8")),
+            strict_json_loads(schema_resource.read_text(encoding="utf-8")),
         )
         Draft202012Validator.check_schema(schema)
         return cast(
             _SchemaValidator,
-            Draft202012Validator(schema, format_checker=FormatChecker()),
+            Draft202012Validator(schema, format_checker=schema_format_checker()),
         )
 
     def errors(self, manifest: JsonValue) -> list[str]:
@@ -459,115 +614,6 @@ class EvidenceBundleValidator:
         issues = self.errors(manifest)
         if issues:
             raise EvidenceBundleValidationError("\n".join(issues))
-
-    def _actual_file_paths(self, root: Path) -> set[str]:
-        actual_paths: set[str] = set()
-        pending = [root]
-        entry_count = 0
-        while pending:
-            directory = pending.pop()
-            try:
-                with os.scandir(directory) as descendants:
-                    for descendant in descendants:
-                        entry_count += 1
-                        if entry_count > self.limits.max_directory_entries:
-                            raise EvidenceBundleValidationError(
-                                "bundle directory entry count exceeds limit "
-                                f"{self.limits.max_directory_entries}"
-                            )
-                        relative = Path(descendant.path).relative_to(root).as_posix()
-                        if descendant.is_symlink():
-                            raise EvidenceBundleValidationError(
-                                f"bundle must not contain symbolic link {relative!r}"
-                            )
-                        if descendant.is_dir(follow_symlinks=False):
-                            pending.append(Path(descendant.path))
-                        elif descendant.is_file(follow_symlinks=False):
-                            actual_paths.add(relative)
-                        else:
-                            raise EvidenceBundleValidationError(
-                                f"bundle contains non-regular entry {relative!r}"
-                            )
-            except EvidenceBundleValidationError:
-                raise
-            except OSError as error:
-                raise EvidenceBundleValidationError(
-                    f"{directory}: cannot inspect bundle directory: {error}"
-                ) from error
-        return actual_paths
-
-    def _validate_inventory(
-        self,
-        root: Path,
-        entries: tuple[JsonObject, ...],
-    ) -> None:
-        if len(entries) > self.limits.max_files:
-            raise EvidenceBundleValidationError(
-                f"bundle file count {len(entries)} exceeds limit "
-                f"{self.limits.max_files}"
-            )
-        entry_paths = tuple(_string(entry["path"], "path") for entry in entries)
-        if len(entry_paths) != len(set(entry_paths)):
-            raise EvidenceBundleValidationError(
-                "bundle file inventory contains duplicate paths"
-            )
-
-        declared_total = 0
-        for entry in entries:
-            relative = _string(entry["path"], "path")
-            declared_size = _integer(entry["size_bytes"], "size_bytes")
-            byte_limit = _file_byte_limit(
-                self.limits,
-                _string(entry["role"], "role"),
-            )
-            if declared_size > byte_limit:
-                raise EvidenceBundleValidationError(
-                    f"bundle inventory file {relative!r} declares {declared_size} "
-                    f"bytes, exceeding limit {byte_limit}"
-                )
-            declared_total += declared_size
-            if declared_total > self.limits.max_total_bytes:
-                raise EvidenceBundleValidationError(
-                    "bundle inventoried byte total exceeds limit "
-                    f"{self.limits.max_total_bytes}"
-                )
-
-        root_resolved = root.resolve()
-        for entry, relative in zip(entries, entry_paths, strict=True):
-            relative_path = parse_bundle_path(relative)
-            candidate = root.joinpath(*relative_path.parts)
-            if candidate.is_symlink() or not candidate.is_file():
-                raise EvidenceBundleValidationError(
-                    f"bundle inventory file {relative!r} is missing or not regular"
-                )
-            if not candidate.resolve().is_relative_to(root_resolved):
-                raise EvidenceBundleValidationError(
-                    f"bundle inventory file {relative!r} escapes the bundle root"
-                )
-            expected_size = _integer(entry["size_bytes"], "size_bytes")
-            observed_digest = _digest_bounded_regular_file(
-                candidate,
-                display_path=relative,
-                expected_size=expected_size,
-                max_bytes=_file_byte_limit(
-                    self.limits,
-                    _string(entry["role"], "role"),
-                ),
-            )
-            digest = _object(entry["digest"], "digest")
-            if _string(digest["value"], "digest.value") != observed_digest:
-                raise EvidenceBundleValidationError(
-                    f"bundle inventory digest mismatch for {relative!r}"
-                )
-
-        actual_paths = self._actual_file_paths(root)
-        expected_paths = set(entry_paths) | {BUNDLE_MANIFEST_NAME}
-        if actual_paths != expected_paths:
-            missing = sorted(expected_paths.difference(actual_paths))
-            extra = sorted(actual_paths.difference(expected_paths))
-            raise EvidenceBundleValidationError(
-                f"bundle file inventory mismatch; missing={missing}, extra={extra}"
-            )
 
     @staticmethod
     def _single_role(
@@ -644,7 +690,7 @@ class EvidenceBundleValidator:
         )
         self.validate_manifest(manifest)
         entries = _objects(manifest["files"], "files")
-        self._validate_inventory(root, entries)
+        _validate_inventory(root, entries, self.limits)
 
         identity = {
             key: deepcopy(value)
@@ -667,19 +713,27 @@ class EvidenceBundleValidator:
                 "reasoning receipt file must use application/json"
             )
 
-        ledger_path = root.joinpath(
-            *parse_bundle_path(_string(ledger_entry["path"], "path")).parts
+        # Decode only bytes checked against the manifest in the same read, so a
+        # file replaced after the inventory pass fails here instead of parsing.
+        ledger_path, ledger_content = _read_inventoried_file(
+            root,
+            ledger_entry,
+            self.limits,
         )
-        receipt_path = root.joinpath(
-            *parse_bundle_path(_string(receipt_entry["path"], "path")).parts
+        ledger = Ledger(
+            decode_jsonl_records(
+                ledger_content,
+                path=ledger_path,
+                max_records=self.limits.max_ledger_records,
+                max_bytes=_file_byte_limit(self.limits, "ledger"),
+            )
         )
-        ledger = JsonlLedgerStore(ledger_path).load(
-            max_records=self.limits.max_ledger_records,
-            max_bytes=_file_byte_limit(self.limits, "ledger"),
+        receipt_path, receipt_content = _read_inventoried_file(
+            root,
+            receipt_entry,
+            self.limits,
         )
-        receipt = JsonReceiptStore(receipt_path).load(
-            max_bytes=_file_byte_limit(self.limits, "reasoning_receipt")
-        )
+        receipt = decode_receipt_document(receipt_content, path=receipt_path)
         ReasoningReceiptValidator().validate_against_ledger(receipt, ledger)
         self._validate_artifacts(ledger, entries)
         return VerifiedEvidenceBundle(
@@ -873,11 +927,28 @@ class EvidenceBundleBuilder:
             _write_file(staging, EVIDENCE_BUNDLE_LEDGER_PATH, ledger_content)
             _write_file(staging, EVIDENCE_BUNDLE_RECEIPT_PATH, receipt_content)
             _write_file(staging, BUNDLE_MANIFEST_NAME, manifest_content)
-            self.validator.validate(staging)
+            verified = self.validator.validate(staging)
+            if verified.manifest["bundle_id"] != manifest["bundle_id"]:
+                raise EvidenceBundleBuildError(
+                    f"{staging}: staging directory changed before verification"
+                )
 
             publish_path_no_replace(staging, target)
             published = True
-            return self.validator.validate(target)
+            # Full validation ran once, on staging, and saw the manifest written
+            # above. Its result depends only on the file set and the file bytes,
+            # so re-checking the published inventory digests and manifest bytes
+            # proves the target is what was validated without parsing it again.
+            _validate_inventory(target, tuple(entries), self.validator.limits)
+            published_manifest = _read_bounded_regular_file(
+                target / BUNDLE_MANIFEST_NAME,
+                max_bytes=self.validator.limits.max_manifest_bytes,
+            )
+            if published_manifest != manifest_content:
+                raise EvidenceBundleValidationError(
+                    f"{target}: published manifest differs from the verified manifest"
+                )
+            return replace(verified, path=target)
         finally:
             if not published and staging.exists():
                 shutil.rmtree(staging)

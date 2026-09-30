@@ -9,7 +9,17 @@ The runner:
 - compiles the canonical Draft 2020-12 JSON Schema with Ajv;
 - accepts every individual record fixture under `conformance/valid`;
 - rejects every record fixture under `conformance/invalid`;
-- rejects duplicate object keys and non-interoperable JSON inputs;
+- reads JSON with its own strict parser: bytes must be UTF-8 without a
+  byte-order mark, every repeated object key is rejected even when the values
+  are equal, a `__proto__` key stays an ordinary member, nesting is limited to
+  128 levels, and numbers must be interoperable I-JSON;
+- accepts every document under `conformance/json/accept` and rejects every
+  document under `conformance/json/reject`, the reader rules the Python
+  reference also checks;
+- checks the schema's `date-time` and `uri-reference` formats with the same
+  grammars as the Python reference (rfc3339-validator after upper-casing, and
+  rfc3987's `URI_reference` rule, vendored in `uri-reference.mjs`), so both
+  runners accept exactly the same records;
 - independently resolves typed cross-record references;
 - enforces verdict scope, evidence-relation, and transition-authorization
   policy;

@@ -84,6 +84,126 @@ ledger = Ledger((hypothesis, testable, prediction))
 The constructor validates each record independently. `Ledger` then validates
 cross-record references, kinds, ordering constraints, and replayed state.
 
+## Record a test and its evidence
+
+A planned test and its execution are separate immutable records. The completed
+record names its plan in `plan_ref` and must cite the evidence it produced in
+`evidence_refs`. The schema rejects a `completed` test without evidence, and
+the constructor reports `$: 'evidence_refs' is a required property`.
+
+The evidence names the completed test in `test_ref`, so the two records
+reference each other. References resolve against the complete candidate
+history, so appending either record alone fails with `unresolved_reference`.
+Records that reference each other must enter in one `Ledger.extend` or
+`JsonlLedgerStore.extend` batch, in either order.
+
+Continuing the hypothesis example:
+
+```python
+from itself import (
+    Authority,
+    AuthorityType,
+    EvidenceRelation,
+    EvidenceRelationType,
+    EvidenceType,
+    Oracle,
+    TestDesign,
+    TestStatus,
+    VerdictOutcome,
+    evidence_record,
+    protocol_test_record,
+    verdict_record,
+)
+
+operator = Actor("ci-runner", ActorType.SOFTWARE, ActorRole.OPERATOR)
+evaluator = Actor("bypass-checker", ActorType.SOFTWARE, ActorRole.EVALUATOR)
+oracle = Oracle("revision-equality", "1", AuthorityType.DETERMINISTIC_TOOL)
+authority = Authority(
+    AuthorityType.DETERMINISTIC_TOOL,
+    actor_ref="bypass-checker",
+    basis="Exact comparison of the returned and current revisions",
+)
+
+
+def header(record_id: str, second: int, actor: Actor) -> RecordHeader:
+    return RecordHeader(
+        record_id=record_id,
+        created_at=datetime(2026, 7, 23, 12, 0, second, tzinfo=UTC),
+        created_by=actor,
+    )
+
+
+plan = protocol_test_record(
+    header("test-cache-bypass-plan", 3, operator),
+    question="Does bypassing the proxy return the current revision?",
+    design=TestDesign.DETERMINISTIC_CHECK,
+    status=TestStatus.PLANNED,
+    oracle=oracle,
+    scope=scope,
+    subject_refs=("hypothesis-cache-key",),
+    prediction_refs=("prediction-cache-bypass",),
+)
+under_test = status_transition_record(
+    header("transition-cache-under-test", 4, operator),
+    subject_ref="hypothesis-cache-key",
+    from_status=ClaimStatus.TESTABLE,
+    to_status=ClaimStatus.UNDER_TEST,
+    authorized_by=operator,
+    reason="The planned bypass check is running.",
+)
+ledger.extend((plan, under_test))
+
+run = protocol_test_record(
+    header("test-cache-bypass-run", 5, operator),
+    question="Does bypassing the proxy return the current revision?",
+    design=TestDesign.DETERMINISTIC_CHECK,
+    status=TestStatus.COMPLETED,
+    oracle=oracle,
+    scope=scope,
+    subject_refs=("hypothesis-cache-key",),
+    prediction_refs=("prediction-cache-bypass",),
+    plan_ref="test-cache-bypass-plan",
+    evidence_refs=("evidence-cache-bypass",),
+)
+evidence = evidence_record(
+    header("evidence-cache-bypass", 6, evaluator),
+    evidence_type=EvidenceType.DETERMINISTIC_TEST,
+    relations=(
+        EvidenceRelation("hypothesis-cache-key", EvidenceRelationType.SUPPORTS),
+    ),
+    authority=authority,
+    scope=scope,
+    test_ref="test-cache-bypass-run",
+    result={"returned_current_revision": True},
+)
+ledger.extend((run, evidence))
+
+verdict = verdict_record(
+    header("verdict-cache-key", 7, evaluator),
+    subject_ref="hypothesis-cache-key",
+    outcome=VerdictOutcome.SUPPORTED,
+    evidence_refs=("evidence-cache-bypass",),
+    authority=authority,
+    scope=scope,
+    public_rationale="Bypassing the proxy returned the current revision.",
+)
+supported = status_transition_record(
+    header("transition-cache-supported", 8, evaluator),
+    subject_ref="hypothesis-cache-key",
+    from_status=ClaimStatus.UNDER_TEST,
+    to_status=ClaimStatus.SUPPORTED,
+    authorized_by=evaluator,
+    reason="The deterministic check supported the scoped hypothesis.",
+    evidence_refs=("evidence-cache-bypass",),
+    verdict_ref="verdict-cache-key",
+)
+ledger.extend((verdict, supported))
+```
+
+The hypothesis replays to `ClaimStatus.SUPPORTED`. A verdict and its
+transition may also arrive in separate appends, because each only cites
+records that precede it.
+
 ## Typed value objects
 
 The repeated nested structures are represented by immutable typed values:

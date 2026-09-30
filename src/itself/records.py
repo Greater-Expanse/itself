@@ -153,7 +153,12 @@ def _timestamp(value: datetime, field_name: str) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _string_values(values: Sequence[str]) -> list[JsonValue]:
+def _string_values(values: Sequence[str], field_name: str) -> list[JsonValue]:
+    # A str is itself a Sequence[str], so type checkers accept one here.
+    if isinstance(values, str):
+        raise RecordConstructionError(
+            f"{field_name} must be a sequence of strings, not a single string"
+        )
     return [value for value in values]
 
 
@@ -204,6 +209,11 @@ class Actor:
 
     def __post_init__(self) -> None:
         _nonempty(self.actor_id, "actor_id")
+        try:
+            object.__setattr__(self, "actor_type", ActorType(self.actor_type))
+            object.__setattr__(self, "role", ActorRole(self.role))
+        except ValueError as error:
+            raise RecordConstructionError(str(error)) from error
         if self.implementation_ref is not None:
             _nonempty(self.implementation_ref, "implementation_ref")
 
@@ -429,7 +439,9 @@ def artifact_reference_record(
     if captured_at is not None:
         value["captured_at"] = _timestamp(captured_at, "captured_at")
     if derived_from_refs:
-        value["derived_from_refs"] = _string_values(derived_from_refs)
+        value["derived_from_refs"] = _string_values(
+            derived_from_refs, "derived_from_refs"
+        )
     return _validated_record(value)
 
 
@@ -465,7 +477,7 @@ def claim_record(
         ("invalidation_conditions", invalidation_conditions),
     ):
         if references:
-            value[field_name] = _string_values(references)
+            value[field_name] = _string_values(references, field_name)
     return _validated_record(value)
 
 
@@ -497,7 +509,7 @@ def hypothesis_record(
         ("dependency_refs", dependency_refs),
     ):
         if references:
-            value[field_name] = _string_values(references)
+            value[field_name] = _string_values(references, field_name)
     return _validated_record(value)
 
 
@@ -543,7 +555,13 @@ def protocol_test_record(
     evidence_refs: Sequence[str] = (),
     cost: TestCost | None = None,
 ) -> JsonObject:
-    """Construct and schema-validate one planned or executed test record."""
+    """Construct and schema-validate one planned or executed test record.
+
+    A ``TestStatus.COMPLETED`` test must cite the evidence it produced in
+    ``evidence_refs`` and should name its plan in ``plan_ref``. The evidence
+    usually cites this test back through ``test_ref``, so append the two
+    records in one ``Ledger.extend`` or ``JsonlLedgerStore.extend`` batch.
+    """
 
     value = _record(header, "test")
     value.update(
@@ -556,13 +574,13 @@ def protocol_test_record(
         }
     )
     if subject_refs:
-        value["subject_refs"] = _string_values(subject_refs)
+        value["subject_refs"] = _string_values(subject_refs, "subject_refs")
     if prediction_refs:
-        value["prediction_refs"] = _string_values(prediction_refs)
+        value["prediction_refs"] = _string_values(prediction_refs, "prediction_refs")
     if plan_ref is not None:
         value["plan_ref"] = plan_ref
     if evidence_refs:
-        value["evidence_refs"] = _string_values(evidence_refs)
+        value["evidence_refs"] = _string_values(evidence_refs, "evidence_refs")
     if cost is not None:
         value["cost"] = cost.to_json_object()
     return _validated_record(value)
@@ -594,7 +612,7 @@ def evidence_record(
         }
     )
     if artifact_refs:
-        value["artifact_refs"] = _string_values(artifact_refs)
+        value["artifact_refs"] = _string_values(artifact_refs, "artifact_refs")
     if test_ref is not None:
         value["test_ref"] = test_ref
     if result is not None:
@@ -622,7 +640,7 @@ def verdict_record(
         {
             "subject_ref": subject_ref,
             "outcome": outcome.value,
-            "evidence_refs": _string_values(evidence_refs),
+            "evidence_refs": _string_values(evidence_refs, "evidence_refs"),
             "authority": authority.to_json_object(),
             "scope": scope.to_json_object(),
             "public_rationale": public_rationale,
@@ -660,11 +678,15 @@ def decision_record(
     if policy_ref is not None:
         value["policy_ref"] = policy_ref
     if relied_on_claim_refs:
-        value["relied_on_claim_refs"] = _string_values(relied_on_claim_refs)
+        value["relied_on_claim_refs"] = _string_values(
+            relied_on_claim_refs, "relied_on_claim_refs"
+        )
     if unresolved_claim_refs:
-        value["unresolved_claim_refs"] = _string_values(unresolved_claim_refs)
+        value["unresolved_claim_refs"] = _string_values(
+            unresolved_claim_refs, "unresolved_claim_refs"
+        )
     if reconsider_when:
-        value["reconsider_when"] = _string_values(reconsider_when)
+        value["reconsider_when"] = _string_values(reconsider_when, "reconsider_when")
     if public_rationale is not None:
         value["public_rationale"] = public_rationale
     return _validated_record(value)
@@ -712,7 +734,7 @@ def status_transition_record(
         }
     )
     if evidence_refs:
-        value["evidence_refs"] = _string_values(evidence_refs)
+        value["evidence_refs"] = _string_values(evidence_refs, "evidence_refs")
     if verdict_ref is not None:
         value["verdict_ref"] = verdict_ref
     if policy_ref is not None:

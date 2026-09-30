@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import cast
 
@@ -11,13 +12,17 @@ import pytest
 
 from itself import (
     BundleIntegrityError,
+    BundleValidator,
     ClaimStatus,
+    IntegrityCode,
     JsonlLedgerStore,
     JsonObject,
     JsonValue,
     Ledger,
     LedgerFormatError,
+    ProtocolValidator,
 )
+from itself.ledger import decode_jsonl_records
 
 ROOT = Path(__file__).resolve().parents[1]
 VALID_HISTORY = (
@@ -30,6 +35,22 @@ def _records() -> list[JsonObject]:
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise TypeError("valid history fixture must contain a JSON object array")
     return cast(list[JsonObject], value)
+
+
+class _CountingProtocolValidator(ProtocolValidator):
+    """Count per-record schema checks without changing their results."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.checked = 0
+
+    def errors(self, record: JsonValue) -> list[str]:
+        self.checked += 1
+        return super().errors(record)
+
+
+def _issue_codes(error: BundleIntegrityError) -> list[IntegrityCode]:
+    return [issue.code for issue in error.issues]
 
 
 def test_ledger_extends_and_replays_complete_history() -> None:
@@ -70,6 +91,62 @@ def test_invalid_batch_does_not_partially_mutate_ledger() -> None:
     assert ledger.snapshot.current_states["claim-cache-cause"] is ClaimStatus.PROPOSED
 
 
+def test_append_schema_checks_only_the_new_record() -> None:
+    records = _records()
+    schema = _CountingProtocolValidator()
+    ledger = Ledger(records[:-1], validator=BundleValidator(schema))
+    schema.checked = 0
+
+    snapshot = ledger.append(records[-1])
+
+    assert schema.checked == 1
+    assert (
+        snapshot.current_states["claim-cache-cause"]
+        is ClaimStatus.CORROBORATED_WITHIN_SCOPE
+    )
+
+
+def test_append_still_rejects_a_schema_invalid_record() -> None:
+    records = _records()
+    ledger = Ledger(records[:1])
+    invalid = deepcopy(records[1])
+    del invalid["reason"]
+
+    with pytest.raises(BundleIntegrityError) as raised:
+        ledger.append(invalid)
+
+    issues = raised.value.issues
+    assert {issue.code for issue in issues} == {IntegrityCode.SCHEMA_INVALID}
+    assert {issue.record_id for issue in issues} == {"transition-cache-testable"}
+    assert "$: 'reason' is a required property" in [issue.message for issue in issues]
+    assert len(ledger) == 1
+
+
+def test_append_still_rejects_a_duplicate_of_an_earlier_record() -> None:
+    records = _records()
+    ledger = Ledger(records)
+    duplicate = deepcopy(records[0])
+    duplicate["proposition"] = "A different proposition under a reused identifier."
+
+    with pytest.raises(BundleIntegrityError) as raised:
+        ledger.append(duplicate)
+
+    assert _issue_codes(raised.value) == [IntegrityCode.DUPLICATE_ID]
+    assert len(ledger) == len(records)
+
+
+def test_append_still_replays_state_across_the_existing_history() -> None:
+    records = _records()
+    ledger = Ledger(records)
+    stale = deepcopy(records[1])
+    stale["id"] = "transition-cache-testable-again"
+
+    with pytest.raises(BundleIntegrityError) as raised:
+        ledger.append(stale)
+
+    assert _issue_codes(raised.value) == [IntegrityCode.STATE_MISMATCH]
+
+
 def test_ledger_owns_defensive_record_copies() -> None:
     original = _records()[0]
     ledger = Ledger([original])
@@ -103,6 +180,22 @@ def test_jsonl_store_round_trips_order_and_state(tmp_path: Path) -> None:
     assert loaded.records == tuple(records)
     assert loaded.snapshot.record_ids == written_snapshot.record_ids
     assert loaded.snapshot.current_states == written_snapshot.current_states
+
+
+def test_jsonl_store_append_runs_one_full_validation(tmp_path: Path) -> None:
+    records = _records()
+    schema = _CountingProtocolValidator()
+    store = JsonlLedgerStore(
+        tmp_path / "assurance.jsonl",
+        validator=BundleValidator(schema),
+    )
+    store.extend(records[:-1])
+    schema.checked = 0
+
+    store.append(records[-1])
+
+    # Loading checks the persisted history once; the append checks only itself.
+    assert schema.checked == len(records)
 
 
 def test_jsonl_store_stops_at_configured_record_limit(tmp_path: Path) -> None:
@@ -186,6 +279,40 @@ def test_jsonl_store_rejects_malformed_lines(
         JsonlLedgerStore(path).load()
 
     assert expected_detail in raised.value.detail
+
+
+@pytest.mark.parametrize(
+    ("content", "max_records", "max_bytes"),
+    [
+        (b"{}\n\n", None, None),
+        (b"[]\n", None, None),
+        (b'{"value":\n', None, None),
+        (b"\xff\n", None, None),
+        (b"{}\n{}\n", 1, None),
+        (b"{}\n{}\n", None, 5),
+    ],
+)
+def test_bytes_decoder_reports_file_loader_errors(
+    tmp_path: Path,
+    content: bytes,
+    max_records: int | None,
+    max_bytes: int | None,
+) -> None:
+    path = tmp_path / "ledger.jsonl"
+    path.write_bytes(content)
+
+    with pytest.raises(LedgerFormatError) as from_file:
+        JsonlLedgerStore(path).load(max_records=max_records, max_bytes=max_bytes)
+    with pytest.raises(LedgerFormatError) as from_bytes:
+        decode_jsonl_records(
+            content,
+            path=path,
+            max_records=max_records,
+            max_bytes=max_bytes,
+        )
+
+    assert str(from_bytes.value) == str(from_file.value)
+    assert from_bytes.value.line_number == from_file.value.line_number
 
 
 def test_jsonl_error_reports_exact_line_number(tmp_path: Path) -> None:

@@ -201,6 +201,19 @@ def _references(record: JsonObject, field: str) -> tuple[str, ...]:
     )
 
 
+def _schema_checked_prefix(value: int, record_count: int) -> int:
+    runtime_value = cast(object, value)
+    if (
+        isinstance(runtime_value, bool)
+        or not isinstance(runtime_value, int)
+        or not 0 <= runtime_value <= record_count
+    ):
+        raise ValueError(
+            f"schema_checked_prefix must be an integer from 0 to {record_count}"
+        )
+    return runtime_value
+
+
 class BundleValidator:
     """Validate references and replay state across ordered protocol records."""
 
@@ -212,10 +225,22 @@ class BundleValidator:
         records: Iterable[JsonObject],
         *,
         external_refs: Collection[str] = (),
+        schema_checked_prefix: int = 0,
     ) -> list[IntegrityIssue]:
-        """Return every deterministic integrity issue found in an ordered bundle."""
+        """Return every deterministic integrity issue found in an ordered bundle.
 
-        _, issues = self._analyze(tuple(records), frozenset(external_refs))
+        The first ``schema_checked_prefix`` records must be unmodified records
+        this validator's protocol schema already accepted, such as a ledger's
+        existing history. They skip only the per-record schema check; every
+        cross-record check still covers the whole sequence.
+        """
+
+        candidate = tuple(records)
+        _, issues = self._analyze(
+            candidate,
+            frozenset(external_refs),
+            _schema_checked_prefix(schema_checked_prefix, len(candidate)),
+        )
         return issues
 
     def validate(
@@ -223,10 +248,19 @@ class BundleValidator:
         records: Iterable[JsonObject],
         *,
         external_refs: Collection[str] = (),
+        schema_checked_prefix: int = 0,
     ) -> BundleSnapshot:
-        """Return replayed state or raise BundleIntegrityError for an invalid bundle."""
+        """Return replayed state or raise BundleIntegrityError for an invalid bundle.
 
-        snapshot, issues = self._analyze(tuple(records), frozenset(external_refs))
+        ``schema_checked_prefix`` has the same meaning as for ``errors``.
+        """
+
+        candidate = tuple(records)
+        snapshot, issues = self._analyze(
+            candidate,
+            frozenset(external_refs),
+            _schema_checked_prefix(schema_checked_prefix, len(candidate)),
+        )
         if issues:
             raise BundleIntegrityError(issues)
         if snapshot is None:
@@ -237,8 +271,9 @@ class BundleValidator:
         self,
         records: tuple[JsonObject, ...],
         external_refs: frozenset[str],
+        schema_checked_prefix: int,
     ) -> tuple[BundleSnapshot | None, list[IntegrityIssue]]:
-        issues = self._schema_issues(records)
+        issues = self._schema_issues(records, schema_checked_prefix)
         if issues:
             return None, issues
 
@@ -262,9 +297,13 @@ class BundleValidator:
         )
         return snapshot, issues
 
-    def _schema_issues(self, records: tuple[JsonObject, ...]) -> list[IntegrityIssue]:
+    def _schema_issues(
+        self,
+        records: tuple[JsonObject, ...],
+        start: int,
+    ) -> list[IntegrityIssue]:
         issues: list[IntegrityIssue] = []
-        for position, record in enumerate(records):
+        for position, record in enumerate(records[start:], start):
             for message in self._protocol_validator.errors(record):
                 issues.append(
                     IntegrityIssue(

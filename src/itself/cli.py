@@ -7,18 +7,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import mimetypes
+import os
 import sys
 from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from types import MappingProxyType
+from typing import Final, cast
 
 from ._json import strict_json_loads
 from ._version import __version__
 from .bundle import BundleIntegrityError
 from .evidence_bundle import (
     DEFAULT_EVIDENCE_BUNDLE_LIMITATIONS,
+    DEFAULT_EVIDENCE_BUNDLE_LIMITS,
     EvidenceBundleBuilder,
     EvidenceBundleBuildError,
     EvidenceBundleFile,
@@ -42,6 +44,41 @@ from .validation import ProtocolValidator
 
 class _RecordFileError(ValueError):
     pass
+
+
+# Ledgers and receipts loaded here use the documented evidence-bundle ceilings,
+# the bounds a default closed bundle enforces. `ledger append` loads through
+# JsonlLedgerStore.extend, which takes no limits.
+_CLI_LIMITS: Final = DEFAULT_EVIDENCE_BUNDLE_LIMITS
+
+# Media types for --input and --supplemental files by lowercase suffix. The
+# mimetypes module reads host files such as /etc/mime.types and changes across
+# Python releases, which would make --created-at regeneration host-dependent.
+_MEDIA_TYPES: Final = MappingProxyType(
+    {
+        ".csv": "text/csv",
+        ".gif": "image/gif",
+        ".htm": "text/html",
+        ".html": "text/html",
+        ".jpeg": "image/jpeg",
+        ".jpg": "image/jpeg",
+        ".json": "application/json",
+        ".jsonl": "application/x-ndjson",
+        ".log": "text/plain",
+        ".md": "text/markdown",
+        ".ndjson": "application/x-ndjson",
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
+        ".tsv": "text/tab-separated-values",
+        ".txt": "text/plain",
+        ".webp": "image/webp",
+        ".xml": "application/xml",
+        ".yaml": "application/yaml",
+        ".yml": "application/yaml",
+        ".zip": "application/zip",
+    }
+)
 
 
 def _timestamp_argument(value: str) -> datetime:
@@ -250,7 +287,11 @@ def _load_existing_ledger(
 ) -> Ledger:
     if not path.is_file():
         raise _RecordFileError(f"{path}: ledger file does not exist")
-    return JsonlLedgerStore(path).load(external_refs=external_refs)
+    return JsonlLedgerStore(path).load(
+        external_refs=external_refs,
+        max_records=_CLI_LIMITS.max_ledger_records,
+        max_bytes=_CLI_LIMITS.max_ledger_bytes,
+    )
 
 
 def _record_string(record: JsonObject, field: str) -> str:
@@ -277,8 +318,7 @@ def _artifact_source_map(specifications: Sequence[str]) -> dict[str, Path]:
 
 
 def _media_type(path: Path) -> str:
-    media_type, _ = mimetypes.guess_type(path.as_posix(), strict=False)
-    return media_type or "application/octet-stream"
+    return _MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
 def _named_bundle_file(
@@ -468,7 +508,16 @@ def _receipt_generate(
     output_path: Path | None,
     external_refs: Collection[str],
 ) -> int:
-    receipt = build_reasoning_receipt(_load_existing_ledger(ledger_path, external_refs))
+    ledger = _load_existing_ledger(ledger_path, external_refs)
+    if (
+        output_path is not None
+        and output_path.exists()
+        and os.path.samefile(output_path, ledger_path)
+    ):
+        raise _RecordFileError(
+            f"{output_path}: receipt output would replace the source ledger"
+        )
+    receipt = build_reasoning_receipt(ledger)
     if output_path is None:
         print(
             json.dumps(
@@ -490,7 +539,9 @@ def _receipt_validate(
     ledger_path: Path | None,
     external_refs: Collection[str],
 ) -> int:
-    receipt = JsonReceiptStore(receipt_path).load()
+    receipt = JsonReceiptStore(receipt_path).load(
+        max_bytes=_CLI_LIMITS.max_receipt_bytes
+    )
     if ledger_path is None:
         print(f"PASS {receipt_path}: schema-valid receipt")
         return 0

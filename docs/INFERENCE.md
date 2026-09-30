@@ -14,6 +14,10 @@ endpoint, model, credential, and capability configuration. A native API with a
 different wire format can implement the same adapter protocol without changing
 Itself records, ledgers, or evidence rules.
 
+Decision models, which answer typed questions with probability distributions
+instead of text, use a separate adapter with the same transport, credential,
+and artifact rules. See [decision-model adapters](DECISION_MODELS.md).
+
 ## Minimal configuration
 
 ```python
@@ -120,11 +124,31 @@ loopback host.
 - accepted finish-state declarations for compatible local servers;
 - bounded Server-Sent Event streaming for endpoints that require it;
 - non-secret extra headers and JSON request fields;
+- an optional `deadline_seconds` for the whole request, beside the per-read
+  `timeout_seconds`;
 - a replaceable synchronous HTTP transport with no implicit retry.
 
 The built-in transport does not follow redirects. It returns a 3xx response to
 the client as an HTTP-status failure, so authentication headers are never
 forwarded to a redirect target. A custom transport owns the same obligation.
+
+Requests to loopback hosts always connect directly, even when `HTTP_PROXY` or
+`HTTPS_PROXY` is set, so traffic for a local server never passes through a
+proxy. Requests to other hosts use the proxy that Python's `urllib` selects
+from `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY`, or from the operating
+system's settings when those variables are unset; many networks reach hosted
+endpoints only through such a proxy. An HTTPS request crosses a proxy as a
+`CONNECT` tunnel, so the proxy sees the host and port but not the headers or
+body. The built-in transport sends only `http` and `https` URLs.
+
+`timeout_seconds` bounds each connection attempt and each read, not the whole
+request. A server that keeps sending, for example keep-alive comments on a
+stalled event stream or an endless run of chunked trailer lines, never trips
+it. Set `deadline_seconds` to bound the request as a whole: once that much
+time has passed, the built-in transport shuts the connection down and reports
+a retryable transport failure. Connecting remains bounded by
+`timeout_seconds`. The deadline is off by default. A custom transport receives
+it as `HttpRequest.deadline_seconds`.
 
 For example, an endpoint whose supplied URL is already complete can use:
 
@@ -160,9 +184,12 @@ endpoint = OpenAICompatibleEndpoint(
 )
 ```
 
-Streaming does not weaken the evidence boundary. The transport reads at most
-its configured response-byte limit, the artifact sink captures the exact event
-stream before interpretation, and the client then assembles its text locally.
+Streaming does not weaken the evidence boundary. The transport keeps at most
+its configured response-byte limit of body bytes, the artifact sink captures
+the exact event stream before interpretation, and the client then assembles its
+text locally. Chunked trailer lines, which `http.client` discards, do not count
+toward that limit, so a deployment that talks to untrusted servers should also
+set `deadline_seconds`.
 It requires one terminal `[DONE]` marker, one completion choice, a stable model
 identity and finish reason, and internally consistent token usage when usage is
 reported. It does not expose partial output as a successful result.
@@ -181,7 +208,8 @@ The schema is included in the user message in every mode. The client never
 silently downgrades modes. It does not strip Markdown fences, repair JSON,
 change prompts, retry, or switch models after a failure.
 
-Local parsing rejects duplicate object keys and non-standard numeric constants.
+Local parsing rejects duplicate object keys, non-standard numeric constants,
+byte encodings other than UTF-8, and values nested more than 128 levels deep.
 Local schema validation is authoritative for output shape even when the
 endpoint claims strict generation.
 

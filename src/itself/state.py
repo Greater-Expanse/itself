@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import cast
 
 
 class ClaimStatus(StrEnum):
@@ -120,6 +121,19 @@ class TransitionRequest:
     evidence_refs: tuple[str, ...] = ()
     verdict_ref: str | None = None
     policy_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        # Values decoded from JSON arrive as plain strings and lists. Normalize
+        # them so policy checks compare enum members, and reject unknown names.
+        object.__setattr__(self, "from_status", ClaimStatus(self.from_status))
+        object.__setattr__(self, "to_status", ClaimStatus(self.to_status))
+        object.__setattr__(self, "actor_type", ActorType(self.actor_type))
+        object.__setattr__(self, "actor_role", ActorRole(self.actor_role))
+        if isinstance(cast(object, self.evidence_refs), str):
+            raise ValueError(
+                "evidence_refs must be a sequence of references, not a single string"
+            )
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
 
 
 class TransitionError(ValueError):

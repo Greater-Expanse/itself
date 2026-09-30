@@ -12,42 +12,75 @@ always parsed locally as strict JSON and validated against the caller's schema.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
-import math
 import os
 import re
+import socket
+import ssl
 import stat
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.message import Message
 from enum import StrEnum
-from http.client import HTTPMessage
+from functools import cache
+from http.client import (
+    HTTPConnection,
+    HTTPException,
+    HTTPMessage,
+    HTTPResponse,
+    HTTPSConnection,
+)
 from pathlib import Path
 from types import MappingProxyType
 from typing import IO, Final, Protocol, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.parse import urlsplit
+from urllib.request import (
+    BaseHandler,
+    HTTPHandler,
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    OpenerDirector,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError, ValidationError
 
+from ._endpoints import (
+    HEADER_NAME_PATTERN,
+    IDENTIFIER_PATTERN,
+    content_type,
+    defensive_extra_body,
+    endpoint_url,
+    frozen_extra_headers,
+    frozen_query_parameters,
+    is_loopback_hostname,
+    normalized_base_url,
+    normalized_resource_path,
+    token_counts,
+    validate_deadline,
+    validate_timeout,
+)
 from ._filesystem import publish_path_no_replace
 from ._json import strict_json_loads
 from .types import JsonObject, JsonValue
 
 ADAPTER_ID: Final = "openai-compatible-chat-completions"
-ADAPTER_VERSION: Final = "0.3.0"
+ADAPTER_VERSION: Final = "0.3.1"
 
-_IDENTIFIER_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_HEADER_NAME_PATTERN: Final = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-_RESERVED_HEADERS: Final = frozenset({"accept", "content-type", "user-agent"})
+_CREDENTIAL_VALUE_PATTERN: Final = re.compile(
+    r"[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?"
+)
 _RESERVED_BODY_FIELDS: Final = frozenset(
     {"messages", "model", "response_format", "stream"}
 )
@@ -104,33 +137,6 @@ def _empty_body() -> Mapping[str, JsonValue]:
     return {}
 
 
-class _DefensiveJsonObject(Mapping[str, JsonValue]):
-    """Read-only mapping whose nested values are returned as defensive copies."""
-
-    def __init__(self, value: Mapping[str, JsonValue]) -> None:
-        self._value: JsonObject = deepcopy(dict(value))
-
-    def __getitem__(self, key: str) -> JsonValue:
-        return deepcopy(self._value[key])
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._value)
-
-    def __len__(self) -> int:
-        return len(self._value)
-
-
-def _is_loopback_hostname(hostname: str | None) -> bool:
-    if hostname is None:
-        return False
-    if hostname == "localhost" or hostname.endswith(".localhost"):
-        return True
-    try:
-        return ipaddress.ip_address(hostname).is_loopback
-    except ValueError:
-        return False
-
-
 def _empty_query() -> Mapping[str, str]:
     return {}
 
@@ -185,6 +191,13 @@ class InferenceError(RuntimeError):
         self.artifact: ArtifactReference | None = artifact
         super().__init__(f"{failure.value}: {detail}")
 
+    def __reduce__(
+        self,
+    ) -> tuple[type[InferenceError], tuple[InferenceFailure, str], dict[str, object]]:
+        # The default reduction replays only the rendered message, which cannot
+        # rebuild an error that requires its failure and detail.
+        return (type(self), (self.failure, self.detail), self.__dict__)
+
     @property
     def retryable(self) -> bool:
         """Whether a later, separately recorded attempt may be reasonable."""
@@ -203,10 +216,12 @@ class EnvironmentCredential:
     def __post_init__(self) -> None:
         if _ENVIRONMENT_NAME_PATTERN.fullmatch(self.variable) is None:
             raise ValueError("credential variable must be an environment variable name")
-        if _HEADER_NAME_PATTERN.fullmatch(self.header) is None:
+        if HEADER_NAME_PATTERN.fullmatch(self.header) is None:
             raise ValueError("credential header must be a valid HTTP field name")
         if "\r" in self.prefix or "\n" in self.prefix:
             raise ValueError("credential prefix must be a single line")
+        if any(not " " <= character <= "~" for character in self.prefix):
+            raise ValueError("credential prefix must be printable ASCII")
 
     def render(self, environment: Mapping[str, str]) -> tuple[str, str]:
         """Resolve the secret only while rendering a request header."""
@@ -218,7 +233,16 @@ class EnvironmentCredential:
                 f"credential environment variable {self.variable!r} "
                 "is missing or empty",
             )
-        return self.header, f"{self.prefix}{value}"
+        rendered = f"{self.prefix}{value}"
+        # http.client would either raise with the secret in its message or send
+        # a folded header line, so the value is refused here without echoing it.
+        if _CREDENTIAL_VALUE_PATTERN.fullmatch(rendered) is None:
+            raise InferenceError(
+                InferenceFailure.CONFIGURATION,
+                f"credential environment variable {self.variable!r} "
+                "contains characters not allowed in an HTTP header",
+            )
+        return self.header, rendered
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,53 +274,36 @@ class OpenAICompatibleEndpoint:
         default_factory=_empty_body,
         repr=False,
     )
+    deadline_seconds: float | None = None
 
     def __post_init__(self) -> None:
-        if _IDENTIFIER_PATTERN.fullmatch(self.actor_id) is None:
+        if IDENTIFIER_PATTERN.fullmatch(self.actor_id) is None:
             raise ValueError("actor_id must be a valid identifier")
 
-        normalized_url = self.base_url.rstrip("/")
-        parsed_url = urlsplit(normalized_url)
-        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-            raise ValueError("base_url must be an absolute HTTP or HTTPS URL")
-        if parsed_url.username is not None or parsed_url.password is not None:
-            raise ValueError("base_url must not contain credentials")
-        if parsed_url.query or parsed_url.fragment:
-            raise ValueError("base_url must not contain a query or fragment")
-        if type(self.allow_insecure_http) is not bool:
-            raise ValueError("allow_insecure_http must be a boolean")
-        if parsed_url.scheme == "http":
-            if self.credential is not None:
-                raise ValueError("credential-bearing endpoints must use HTTPS")
-            if not self.allow_insecure_http:
-                raise ValueError("HTTP endpoints require allow_insecure_http=True")
-            if not _is_loopback_hostname(parsed_url.hostname):
-                raise ValueError(
-                    "insecure HTTP endpoints are limited to loopback hosts"
-                )
-        object.__setattr__(self, "base_url", normalized_url)
-
-        normalized_resource = self.resource_path.strip("/")
-        if normalized_resource and (
-            "\\" in normalized_resource
-            or any(part in {"", ".", ".."} for part in normalized_resource.split("/"))
-        ):
-            raise ValueError("resource_path must be a normalized relative URL path")
-        object.__setattr__(self, "resource_path", normalized_resource)
+        object.__setattr__(
+            self,
+            "base_url",
+            normalized_base_url(
+                self.base_url,
+                credential_bearing=self.credential is not None,
+                allow_insecure_http=self.allow_insecure_http,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "resource_path",
+            normalized_resource_path(self.resource_path),
+        )
 
         if not self.model or self.model != self.model.strip():
             raise ValueError("model must be non-empty without outer space")
-        if (
-            isinstance(self.timeout_seconds, bool)
-            or not math.isfinite(self.timeout_seconds)
-            or self.timeout_seconds <= 0
-        ):
-            raise ValueError("timeout_seconds must be finite and greater than zero")
+        validate_timeout(self.timeout_seconds)
+        validate_deadline(self.deadline_seconds)
         if self.max_output_tokens is not None and (
             isinstance(self.max_output_tokens, bool) or self.max_output_tokens <= 0
         ):
             raise ValueError("max_output_tokens must be positive or None")
-        if _IDENTIFIER_PATTERN.fullmatch(self.max_output_tokens_field) is None:
+        if IDENTIFIER_PATTERN.fullmatch(self.max_output_tokens_field) is None:
             raise ValueError("max_output_tokens_field must be a valid field name")
 
         finish_reasons = tuple(self.accepted_finish_reasons)
@@ -310,63 +317,35 @@ class OpenAICompatibleEndpoint:
         if type(self.stream) is not bool:
             raise ValueError("stream must be a boolean")
 
-        query_parameters = dict(self.query_parameters)
-        for name, value in query_parameters.items():
-            if (
-                not name
-                or name != name.strip()
-                or "\r" in name
-                or "\n" in name
-                or "\r" in value
-                or "\n" in value
-            ):
-                raise ValueError("query parameters must contain single-line values")
         object.__setattr__(
             self,
             "query_parameters",
-            MappingProxyType(query_parameters),
+            frozen_query_parameters(self.query_parameters),
         )
-
-        reserved_headers = set(_RESERVED_HEADERS)
-        if self.credential is not None:
-            reserved_headers.add(self.credential.header.lower())
-        headers = dict(self.extra_headers)
-        for name, value in headers.items():
-            if name.lower() in reserved_headers:
-                raise ValueError(f"extra_headers cannot override {name!r}")
-            if _HEADER_NAME_PATTERN.fullmatch(name) is None:
-                raise ValueError("extra header names must be valid HTTP field names")
-            if "\r" in value or "\n" in value:
-                raise ValueError("extra header values must be single lines")
-        object.__setattr__(self, "extra_headers", MappingProxyType(headers))
-
-        body = deepcopy(dict(self.extra_body))
+        object.__setattr__(
+            self,
+            "extra_headers",
+            frozen_extra_headers(
+                self.extra_headers,
+                credential_header=(
+                    None if self.credential is None else self.credential.header
+                ),
+            ),
+        )
         reserved_body_fields = set(_RESERVED_BODY_FIELDS)
         if self.max_output_tokens is not None:
             reserved_body_fields.add(self.max_output_tokens_field)
-        conflicts = sorted(reserved_body_fields.intersection(body))
-        if conflicts:
-            raise ValueError(
-                "extra_body cannot override reserved fields: " + ", ".join(conflicts)
-            )
-        try:
-            json.dumps(body, allow_nan=False)
-        except (TypeError, ValueError) as error:
-            raise ValueError("extra_body must contain finite JSON values") from error
-        object.__setattr__(self, "extra_body", _DefensiveJsonObject(body))
+        object.__setattr__(
+            self,
+            "extra_body",
+            defensive_extra_body(self.extra_body, reserved=reserved_body_fields),
+        )
 
     @property
     def url(self) -> str:
         """Return the fully rendered endpoint URL without credentials."""
 
-        target = (
-            self.base_url
-            if not self.resource_path
-            else f"{self.base_url}/{self.resource_path}"
-        )
-        if not self.query_parameters:
-            return target
-        return f"{target}?{urlencode(self.query_parameters)}"
+        return endpoint_url(self.base_url, self.resource_path, self.query_parameters)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -395,7 +374,7 @@ class StructuredOutputProfile:
             ("profile_id", profile_id),
             ("schema_name", schema_name),
         ):
-            if _IDENTIFIER_PATTERN.fullmatch(value) is None:
+            if IDENTIFIER_PATTERN.fullmatch(value) is None:
                 raise ValueError(f"{field_name} must be a valid identifier")
         for field_name, value in (
             ("system_prompt", system_prompt),
@@ -488,6 +467,7 @@ class HttpRequest:
     headers: Mapping[str, str] = field(repr=False)
     body: bytes = field(repr=False)
     timeout_seconds: float
+    deadline_seconds: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "headers", MappingProxyType(dict(self.headers)))
@@ -528,6 +508,177 @@ class _NoRedirectHandler(HTTPRedirectHandler):
         return None
 
 
+@cache
+def _direct_opener() -> OpenerDirector:
+    """Return the shared opener for loopback hosts, which never uses a proxy."""
+
+    return build_opener(ProxyHandler({}), _NoRedirectHandler())
+
+
+class _SocketTracker:
+    """The sockets of one request, shut down together when its deadline passes."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sockets: list[socket.socket] = []
+        self.expired = threading.Event()
+
+    def add(self, connection_socket: socket.socket) -> None:
+        with self._lock:
+            self._sockets.append(connection_socket)
+            expired = self.expired.is_set()
+        # A connection that opens after the deadline is closed at once.
+        if expired:
+            _shut_down(connection_socket)
+
+    def expire(self) -> None:
+        with self._lock:
+            self.expired.set()
+            sockets = tuple(self._sockets)
+        for connection_socket in sockets:
+            _shut_down(connection_socket)
+
+
+def _shut_down(connection_socket: socket.socket) -> None:
+    # The base method also reaches a TLS socket's descriptor without touching
+    # the TLS object that a blocked read is still using.
+    with suppress(OSError):
+        socket.socket.shutdown(connection_socket, socket.SHUT_RDWR)
+
+
+@cache
+def _https_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.set_alpn_protocols(["http/1.1"])
+    return context
+
+
+class _TrackedHTTPConnection(HTTPConnection):
+    def __init__(
+        self,
+        host: str,
+        *,
+        tracker: _SocketTracker,
+        port: int | None = None,
+        timeout: float | None = None,
+        source_address: tuple[str, int] | None = None,
+        blocksize: int = 8192,
+    ) -> None:
+        super().__init__(
+            host,
+            port=port,
+            timeout=timeout,
+            source_address=source_address,
+            blocksize=blocksize,
+        )
+        self._tracker = tracker
+
+    def connect(self) -> None:
+        super().connect()
+        self._tracker.add(self.sock)
+
+
+class _TrackedHTTPSConnection(HTTPSConnection):
+    def __init__(
+        self,
+        host: str,
+        *,
+        tracker: _SocketTracker,
+        port: int | None = None,
+        timeout: float | None = None,
+        source_address: tuple[str, int] | None = None,
+        blocksize: int = 8192,
+    ) -> None:
+        super().__init__(
+            host,
+            port=port,
+            timeout=timeout,
+            source_address=source_address,
+            context=_https_context(),
+            blocksize=blocksize,
+        )
+        self._tracker = tracker
+
+    def connect(self) -> None:
+        super().connect()
+        self._tracker.add(self.sock)
+
+
+class _TrackedHTTPHandler(HTTPHandler):
+    def __init__(self, tracker: _SocketTracker) -> None:
+        super().__init__()
+        self._tracker = tracker
+
+    def http_open(self, req: Request) -> HTTPResponse:
+        tracker = self._tracker
+
+        def connection(
+            host: str,
+            /,
+            *,
+            port: int | None = None,
+            timeout: float | None = None,
+            source_address: tuple[str, int] | None = None,
+            blocksize: int = 8192,
+        ) -> HTTPConnection:
+            return _TrackedHTTPConnection(
+                host,
+                tracker=tracker,
+                port=port,
+                timeout=timeout,
+                source_address=source_address,
+                blocksize=blocksize,
+            )
+
+        return self.do_open(connection, req)
+
+
+class _TrackedHTTPSHandler(HTTPSHandler):
+    def __init__(self, tracker: _SocketTracker) -> None:
+        super().__init__(context=_https_context())
+        self._tracker = tracker
+
+    def https_open(self, req: Request) -> HTTPResponse:
+        tracker = self._tracker
+
+        def connection(
+            host: str,
+            /,
+            *,
+            port: int | None = None,
+            timeout: float | None = None,
+            source_address: tuple[str, int] | None = None,
+            blocksize: int = 8192,
+        ) -> HTTPConnection:
+            return _TrackedHTTPSConnection(
+                host,
+                tracker=tracker,
+                port=port,
+                timeout=timeout,
+                source_address=source_address,
+                blocksize=blocksize,
+            )
+
+        return self.do_open(connection, req)
+
+
+def _opener(url: str, tracker: _SocketTracker | None = None) -> OpenerDirector:
+    loopback = is_loopback_hostname(urlsplit(url).hostname)
+    if tracker is None:
+        if loopback:
+            return _direct_opener()
+        # Other hosts honor the proxy environment, which is read on every request.
+        return build_opener(_NoRedirectHandler())
+    handlers: list[BaseHandler] = [
+        _NoRedirectHandler(),
+        _TrackedHTTPHandler(tracker),
+        _TrackedHTTPSHandler(tracker),
+    ]
+    if loopback:
+        handlers.insert(0, ProxyHandler({}))
+    return build_opener(*handlers)
+
+
 @dataclass(frozen=True, slots=True)
 class UrllibHttpTransport:
     """Standard-library transport with bounded reads, no redirect, and no retry."""
@@ -556,6 +707,14 @@ class UrllibHttpTransport:
                 InferenceFailure.RESPONSE_TOO_LARGE,
                 "inference endpoint response exceeded the configured byte limit",
             )
+        # A bounded read does not raise when a declared Content-Length is cut
+        # short, so the undelivered remainder is checked explicitly.
+        remaining: object = getattr(response, "length", None)
+        if isinstance(remaining, int) and remaining > 0:
+            raise InferenceError(
+                InferenceFailure.TRANSPORT,
+                "inference endpoint response ended before its declared length",
+            )
         return body
 
     @staticmethod
@@ -570,32 +729,83 @@ class UrllibHttpTransport:
         return {}
 
     def send(self, request: HttpRequest, /) -> HttpResponse:
-        """Send one POST and return success or HTTP-error bodies uniformly."""
+        """Send one POST and return success or HTTP-error bodies uniformly.
 
+        ``timeout_seconds`` bounds each socket operation.  When the request
+        carries ``deadline_seconds``, a timer also shuts the connection down
+        once that much time has passed, however the peer keeps it busy.
+        """
+
+        if urlsplit(request.url).scheme not in {"http", "https"}:
+            raise InferenceError(
+                InferenceFailure.CONFIGURATION,
+                "inference transport requests must use HTTP or HTTPS",
+            )
         wire_request = Request(
             request.url,
             data=request.body,
             headers=dict(request.headers),
             method="POST",
         )
-        try:
-            opener = build_opener(_NoRedirectHandler())
-            with opener.open(
+        if request.deadline_seconds is None:
+            return self._exchange(
+                _opener(request.url),
                 wire_request,
-                timeout=request.timeout_seconds,
-            ) as response:
-                return HttpResponse(
-                    status_code=response.status,
-                    headers=self._headers(response),
-                    body=self._read_body(response),
-                )
-        except HTTPError as error:
-            return HttpResponse(
-                status_code=error.code,
-                headers=self._headers(error),
-                body=self._read_body(error),
+                request.timeout_seconds,
             )
-        except (TimeoutError, URLError, OSError) as error:
+
+        tracker = _SocketTracker()
+        timer = threading.Timer(request.deadline_seconds, tracker.expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            response = self._exchange(
+                _opener(request.url, tracker),
+                wire_request,
+                request.timeout_seconds,
+            )
+        except InferenceError:
+            if tracker.expired.is_set():
+                raise InferenceError(
+                    InferenceFailure.TRANSPORT,
+                    "inference endpoint exceeded the request deadline",
+                ) from None
+            raise
+        finally:
+            timer.cancel()
+        # A shut-down connection can still end in a complete-looking response.
+        if tracker.expired.is_set():
+            raise InferenceError(
+                InferenceFailure.TRANSPORT,
+                "inference endpoint exceeded the request deadline",
+            )
+        return response
+
+    def _exchange(
+        self,
+        opener: OpenerDirector,
+        wire_request: Request,
+        timeout_seconds: float,
+    ) -> HttpResponse:
+        try:
+            try:
+                with opener.open(
+                    wire_request,
+                    timeout=timeout_seconds,
+                ) as response:
+                    return HttpResponse(
+                        status_code=response.status,
+                        headers=self._headers(response),
+                        body=self._read_body(response),
+                    )
+            except HTTPError as error:
+                with error:
+                    return HttpResponse(
+                        status_code=error.code,
+                        headers=self._headers(error),
+                        body=self._read_body(error),
+                    )
+        except (TimeoutError, URLError, OSError, HTTPException) as error:
             raise InferenceError(
                 InferenceFailure.TRANSPORT,
                 "inference endpoint request failed",
@@ -724,8 +934,10 @@ class DirectoryArtifactSink:
             )
             temporary_path = Path(temporary_name)
             try:
-                os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
                 with os.fdopen(descriptor, "wb") as handle:
+                    # Windows has no fchmod before Python 3.13 and no POSIX modes.
+                    if os.name == "posix":
+                        os.fchmod(handle.fileno(), stat.S_IRUSR | stat.S_IWUSR)
                     handle.write(content)
                     handle.flush()
                     os.fsync(handle.fileno())
@@ -766,22 +978,6 @@ def _string(value: JsonValue) -> str:
     if not isinstance(value, str):
         raise TypeError("expected a JSON string")
     return value
-
-
-def _optional_non_negative_integer(value: JsonValue | None) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise TypeError("expected a non-negative JSON integer or null")
-    return value
-
-
-def _content_type(headers: Mapping[str, str]) -> str:
-    for name, value in headers.items():
-        if name.lower() == "content-type":
-            media_type = value.partition(";")[0].strip().lower()
-            return media_type or "application/octet-stream"
-    return "application/json"
 
 
 def _http_failure(status_code: int) -> InferenceFailure:
@@ -894,7 +1090,7 @@ def _message_content(value: JsonValue) -> str:
         part_type = part.get("type")
         if part_type not in {"text", "output_text"}:
             raise TypeError("message content contained a non-text part")
-        texts.append(_string(part["text"]))
+        texts.append(_string(part.get("text")))
     if not texts:
         raise TypeError("message content did not contain text")
     return "".join(texts)
@@ -924,21 +1120,6 @@ def _sse_data_events(body: bytes) -> tuple[str, ...]:
     if not events or events[-1] != "[DONE]" or "[DONE]" in events[:-1]:
         raise ValueError("SSE response did not end with one terminal marker")
     return tuple(events[:-1])
-
-
-def _usage_counts(
-    value: JsonValue,
-) -> tuple[int | None, int | None, int | None]:
-    usage = _object(value)
-    return (
-        _optional_non_negative_integer(
-            usage.get("prompt_tokens", usage.get("input_tokens"))
-        ),
-        _optional_non_negative_integer(
-            usage.get("completion_tokens", usage.get("output_tokens"))
-        ),
-        _optional_non_negative_integer(usage.get("total_tokens")),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1003,6 +1184,7 @@ class StructuredInferenceClient:
             headers=headers,
             body=body,
             timeout_seconds=self.endpoint.timeout_seconds,
+            deadline_seconds=self.endpoint.deadline_seconds,
         )
 
     def _capture(
@@ -1013,7 +1195,7 @@ class StructuredInferenceClient:
         try:
             return self.artifact_sink.capture(
                 response.body,
-                media_type=_content_type(response.headers),
+                media_type=content_type(response.headers),
                 captured_at=captured_at,
             )
         except (OSError, ValueError) as error:
@@ -1084,7 +1266,7 @@ class StructuredInferenceClient:
         usage_value = envelope.get("usage")
         if usage_value is not None:
             try:
-                input_tokens, output_tokens, total_tokens = _usage_counts(usage_value)
+                input_tokens, output_tokens, total_tokens = token_counts(usage_value)
             except TypeError:
                 raise InferenceError(
                     InferenceFailure.RESPONSE_USAGE,
@@ -1156,7 +1338,7 @@ class StructuredInferenceClient:
             usage_value = chunk.get("usage")
             if usage_value is not None:
                 try:
-                    observed_usage = _usage_counts(usage_value)
+                    observed_usage = token_counts(usage_value)
                 except TypeError:
                     raise InferenceError(
                         InferenceFailure.RESPONSE_USAGE,

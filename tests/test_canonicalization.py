@@ -12,7 +12,7 @@ import pytest
 import rfc8785
 
 from itself import JsonObject, JsonValue, ProtocolValidationError, ProtocolValidator
-from itself._json import IJsonError, strict_json_loads
+from itself._json import IJsonError, ensure_i_json, strict_json_loads
 
 ROOT = Path(__file__).resolve().parents[1]
 VECTORS = ROOT / "conformance" / "canonicalization" / "rfc8785-jsonl-v1.json"
@@ -76,6 +76,79 @@ def test_strict_json_rejects_non_interoperable_values(
 ) -> None:
     with pytest.raises(IJsonError, match=detail):
         strict_json_loads(source)
+
+
+def test_strict_json_accepts_the_nesting_limit() -> None:
+    source = "[" * 128 + "]" * 128
+
+    assert json.dumps(strict_json_loads(source)) == source
+
+
+@pytest.mark.parametrize("depth", [129, 10_000, 100_000])
+def test_strict_json_rejects_deeper_nesting(depth: int) -> None:
+    source = "[" * depth + "]" * depth
+
+    with pytest.raises(IJsonError, match="JSON nesting exceeds") as raised:
+        strict_json_loads(source)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__ or raised.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b'\xef\xbb\xbf{"value":1}',
+        '{"value":1}'.encode("utf-16"),
+        '{"value":1}'.encode("utf-16-le"),
+        '{"value":1}'.encode("utf-32"),
+        bytearray('{"value":1}'.encode("utf-32-be")),
+    ],
+    ids=["utf-8-bom", "utf-16", "utf-16-le", "utf-32", "utf-32-be-bytearray"],
+)
+def test_strict_json_bytes_must_be_utf8(source: bytes | bytearray) -> None:
+    with pytest.raises(ValueError):
+        strict_json_loads(source)
+
+
+def test_strict_json_decodes_utf8_bytes_and_bytearrays() -> None:
+    assert strict_json_loads(b'{"value":"\xc3\xa9"}') == {"value": "\u00e9"}
+    assert strict_json_loads(bytearray(b'{"value":1}')) == {"value": 1}
+
+
+def test_i_json_check_walks_deep_values_without_recursion() -> None:
+    value: JsonValue = []
+    for _ in range(10_000):
+        value = [value]
+
+    ensure_i_json(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "detail"),
+    [
+        ({"outer": [1, {"inner": float("nan")}]}, r"^\$\.outer\[1\]\.inner: .*finite"),
+        ({"first": [float("inf")], "\ud800": 1}, r"^\$\.first\[0\]: .*finite"),
+        ({"value": (1, 2)}, r"^\$\.value: tuple is not a JSON value"),
+        ({"value": {1, 2}}, r"^\$\.value: set is not a JSON value"),
+        ({"value": b"bytes"}, r"^\$\.value: bytes is not a JSON value"),
+        ({1: "value"}, r"^\$: object key is not a string"),
+    ],
+)
+def test_i_json_check_reports_the_first_violation_in_document_order(
+    value: object,
+    detail: str,
+) -> None:
+    with pytest.raises(IJsonError, match=detail):
+        ensure_i_json(cast(JsonValue, value))
+
+
+def test_protocol_validator_reports_non_json_values_without_crashing() -> None:
+    record = cast(JsonValue, {"kind": "claim", "scope": ("tuple", "value")})
+
+    assert ProtocolValidator().errors(record) == [
+        "$: $.scope: tuple is not a JSON value"
+    ]
 
 
 def test_programmatic_protocol_records_reject_negative_zero() -> None:

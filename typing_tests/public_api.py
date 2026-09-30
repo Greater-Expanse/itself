@@ -15,7 +15,13 @@ from itself import (
     AuthorityType,
     BundleSnapshot,
     BundleValidator,
+    ChoiceQuestion,
     ClaimStatus,
+    DecisionModelAdapter,
+    DecisionModelAttempt,
+    DecisionModelClient,
+    DecisionModelEndpoint,
+    DecisionModelResult,
     DirectoryArtifactSink,
     EnvironmentCredential,
     EvidenceBundleBuilder,
@@ -30,11 +36,14 @@ from itself import (
     JsonValue,
     Ledger,
     LedgerSummary,
+    NoulQuestion,
     OpenAICompatibleEndpoint,
+    OptionOrder,
     ProtocolValidator,
     ReasoningReceiptValidator,
     RecordHeader,
     Scope,
+    ScoreQuestion,
     StructuredInferenceAdapter,
     StructuredInferenceClient,
     StructuredInferenceResult,
@@ -42,6 +51,7 @@ from itself import (
     SubjectReplay,
     TransitionRequest,
     VerifiedEvidenceBundle,
+    build_decision_payload,
     build_reasoning_receipt,
     canonical_ledger_bytes,
     hypothesis_record,
@@ -156,6 +166,40 @@ inference_adapter: StructuredInferenceAdapter = inference_client
 assert_type(
     inference_adapter.invoke(record, profile),
     StructuredInferenceResult,
+)
+
+decision_endpoint = DecisionModelEndpoint(
+    actor_id="example-decision-model",
+    base_url="https://decisions.example.test/v1",
+    model="example-decider",
+    credential=EnvironmentCredential("EXAMPLE_API_KEY"),
+)
+decision_questions = {
+    "route": ChoiceQuestion("Which team?", {"billing": None, "technical": None}),
+    "urgent": NoulQuestion("Is this urgent?"),
+    "tone": ScoreQuestion("How upset is the customer?", ["Calm", "Angry"]),
+}
+decision_client = DecisionModelClient(
+    endpoint=decision_endpoint,
+    artifact_sink=DirectoryArtifactSink(Path("artifacts")),
+)
+decision_adapter: DecisionModelAdapter = decision_client
+assert_type(
+    decision_adapter.decide("A customer message.", decision_questions),
+    DecisionModelResult,
+)
+assert_type(
+    decision_client.ask("A customer message.", decision_questions),
+    DecisionModelAttempt,
+)
+assert_type(
+    build_decision_payload(
+        decision_endpoint,
+        "A customer message.",
+        decision_questions,
+        order=OptionOrder.REVERSED,
+    ),
+    JsonObject,
 )
 
 transition = TransitionRequest(

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import stat
@@ -12,6 +13,7 @@ import tempfile
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from copy import deepcopy
 from pathlib import Path
+from typing import BinaryIO
 
 import rfc8785
 
@@ -32,6 +34,101 @@ class LedgerFormatError(ValueError):
         self.line_number: int = line_number
         self.detail: str = detail
         super().__init__(f"{path}:{line_number}: {detail}")
+
+
+def _decode_record_stream(
+    handle: BinaryIO,
+    *,
+    path: Path,
+    max_records: int | None,
+    max_bytes: int | None,
+) -> tuple[list[JsonObject], int]:
+    """Decode JSON Lines records, returning them with the number of bytes read."""
+
+    records: list[JsonObject] = []
+    observed_bytes = 0
+    line_number = 0
+    while True:
+        read_size = -1 if max_bytes is None else max_bytes - observed_bytes + 1
+        raw_line = handle.readline(read_size)
+        if not raw_line:
+            break
+        line_number += 1
+        observed_bytes += len(raw_line)
+        if max_bytes is not None and observed_bytes > max_bytes:
+            raise LedgerFormatError(
+                path,
+                line_number,
+                f"ledger size exceeds limit {max_bytes} bytes",
+            )
+        if max_records is not None and line_number > max_records:
+            raise LedgerFormatError(
+                path,
+                line_number,
+                f"ledger record count exceeds limit {max_records}",
+            )
+        try:
+            line = raw_line.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise LedgerFormatError(
+                path,
+                line_number,
+                f"ledger line is not valid UTF-8: {error}",
+            ) from error
+        if not line.strip():
+            raise LedgerFormatError(
+                path,
+                line_number,
+                "blank lines are not valid ledger records",
+            )
+        try:
+            value = strict_json_loads(line)
+        except (json.JSONDecodeError, ValueError) as error:
+            raise LedgerFormatError(
+                path,
+                line_number,
+                f"invalid JSON: {error}",
+            ) from error
+        if not isinstance(value, dict):
+            raise LedgerFormatError(
+                path,
+                line_number,
+                "each line must contain one JSON object",
+            )
+        records.append(value)
+    return records, observed_bytes
+
+
+def decode_jsonl_records(
+    content: bytes,
+    *,
+    path: StrPath,
+    max_records: int | None = None,
+    max_bytes: int | None = None,
+) -> list[JsonObject]:
+    """Decode complete ledger bytes with the file loader's limits and messages.
+
+    ``path`` names the source in diagnostics only; nothing is read from it.
+    """
+
+    if max_records is not None and max_records < 0:
+        raise ValueError("max_records must not be negative")
+    if max_bytes is not None and max_bytes < 0:
+        raise ValueError("max_bytes must not be negative")
+    source = Path(path)
+    if max_bytes is not None and len(content) > max_bytes:
+        raise LedgerFormatError(
+            source,
+            1,
+            f"ledger size exceeds limit {max_bytes} bytes",
+        )
+    records, _ = _decode_record_stream(
+        io.BytesIO(content),
+        path=source,
+        max_records=max_records,
+        max_bytes=max_bytes,
+    )
+    return records
 
 
 class Ledger:
@@ -77,16 +174,24 @@ class Ledger:
         return self.extend((record,))
 
     def extend(self, records: Iterable[JsonObject]) -> BundleSnapshot:
-        """Validate and append a batch as one all-or-nothing operation."""
+        """Validate and append a batch as one all-or-nothing operation.
+
+        References resolve against the complete candidate history, so records
+        that reference each other, such as a completed test and its evidence,
+        must arrive in the same batch.
+        """
 
         additions = tuple(_clone(record) for record in records)
         if not additions:
             return self._snapshot
 
         candidate = self._records + additions
+        # Held records are private copies this validator already accepted, so
+        # only the additions need the per-record schema check.
         snapshot = self._validator.validate(
             candidate,
             external_refs=self._external_refs,
+            schema_checked_prefix=len(self._records),
         )
         self._records = candidate
         self._snapshot = snapshot
@@ -139,7 +244,11 @@ class JsonlLedgerStore:
         *,
         external_refs: Collection[str] = (),
     ) -> BundleSnapshot:
-        """Validate and atomically persist a batch of logical appends."""
+        """Validate and atomically persist a batch of logical appends.
+
+        As with ``Ledger.extend``, records that reference each other must
+        arrive in the same batch.
+        """
 
         additions = tuple(records)
         ledger = self.load(external_refs=external_refs)
@@ -156,11 +265,10 @@ class JsonlLedgerStore:
         max_records: int | None = None,
         max_bytes: int | None = None,
     ) -> list[JsonObject]:
-        records: list[JsonObject] = []
         try:
             metadata = self.path.lstat()
         except FileNotFoundError:
-            return records
+            return []
         if stat.S_ISLNK(metadata.st_mode):
             raise OSError(f"ledger path must not be a symbolic link: {self.path}")
         if not stat.S_ISREG(metadata.st_mode):
@@ -187,56 +295,12 @@ class JsonlLedgerStore:
             raise
 
         with os.fdopen(descriptor, "rb") as handle:
-            observed_bytes = 0
-            line_number = 0
-            while True:
-                read_size = -1 if max_bytes is None else max_bytes - observed_bytes + 1
-                raw_line = handle.readline(read_size)
-                if not raw_line:
-                    break
-                line_number += 1
-                observed_bytes += len(raw_line)
-                if max_bytes is not None and observed_bytes > max_bytes:
-                    raise LedgerFormatError(
-                        self.path,
-                        line_number,
-                        f"ledger size exceeds limit {max_bytes} bytes",
-                    )
-                if max_records is not None and line_number > max_records:
-                    raise LedgerFormatError(
-                        self.path,
-                        line_number,
-                        f"ledger record count exceeds limit {max_records}",
-                    )
-                try:
-                    line = raw_line.decode("utf-8")
-                except UnicodeDecodeError as error:
-                    raise LedgerFormatError(
-                        self.path,
-                        line_number,
-                        f"ledger line is not valid UTF-8: {error}",
-                    ) from error
-                if not line.strip():
-                    raise LedgerFormatError(
-                        self.path,
-                        line_number,
-                        "blank lines are not valid ledger records",
-                    )
-                try:
-                    value = strict_json_loads(line)
-                except (json.JSONDecodeError, ValueError) as error:
-                    raise LedgerFormatError(
-                        self.path,
-                        line_number,
-                        f"invalid JSON: {error}",
-                    ) from error
-                if not isinstance(value, dict):
-                    raise LedgerFormatError(
-                        self.path,
-                        line_number,
-                        "each line must contain one JSON object",
-                    )
-                records.append(value)
+            records, observed_bytes = _decode_record_stream(
+                handle,
+                path=self.path,
+                max_records=max_records,
+                max_bytes=max_bytes,
+            )
             if (
                 observed_bytes != opened_metadata.st_size
                 or os.fstat(handle.fileno()).st_size != opened_metadata.st_size

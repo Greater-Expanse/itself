@@ -24,6 +24,7 @@ from itself import (
     canonical_ledger_bytes,
     ledger_sha256,
 )
+from itself.receipts import decode_receipt_document
 
 ROOT = Path(__file__).resolve().parents[1]
 VALID_HISTORY = (
@@ -211,6 +212,22 @@ def test_receipt_store_rejects_duplicate_object_keys(tmp_path: Path) -> None:
 
     with pytest.raises(ReasoningReceiptFormatError, match="duplicate JSON object key"):
         JsonReceiptStore(path).load()
+
+
+@pytest.mark.parametrize("content", [b"\xff{}", b"{not-json}", b"[]", b'{"a":1,"a":2}'])
+def test_bytes_decoder_reports_receipt_store_errors(
+    tmp_path: Path,
+    content: bytes,
+) -> None:
+    path = tmp_path / "receipt.json"
+    path.write_bytes(content)
+
+    with pytest.raises(ReasoningReceiptFormatError) as from_file:
+        JsonReceiptStore(path).load()
+    with pytest.raises(ReasoningReceiptFormatError) as from_bytes:
+        decode_receipt_document(content, path=path)
+
+    assert str(from_bytes.value) == str(from_file.value)
 
 
 def test_receipt_store_rejects_symbolic_link_path(tmp_path: Path) -> None:
