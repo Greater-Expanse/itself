@@ -403,7 +403,12 @@ def test_validator_reports_inventory_paths_it_cannot_inspect(tmp_path: Path) -> 
     entry["path"] = f"inputs/{'a' * 300}.json"
     _rebind_manifest(destination, manifest)
 
-    with pytest.raises(EvidenceBundleValidationError, match="cannot be inspected"):
+    # Most Python versions raise for the overlong name and the validator reports
+    # it; Python 3.14's pathlib reports such a path as absent instead.
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="cannot be inspected|is missing or not regular",
+    ):
         EvidenceBundleValidator().validate(destination)
 
 

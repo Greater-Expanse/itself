@@ -294,7 +294,10 @@ def test_deadline_ends_a_request_the_peer_keeps_busy(behavior: str) -> None:
     assert isinstance(error, InferenceError)
     assert error.failure is InferenceFailure.TRANSPORT
     assert error.retryable
-    assert "deadline" in str(error)
+    # Only the deadline can end a stream of keep-alive comments. Some Python
+    # versions' http.client refuses an endless trailer section on its own.
+    if behavior == "heartbeat":
+        assert "deadline" in str(error)
     assert elapsed < 3.0
 
 
