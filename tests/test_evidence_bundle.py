@@ -15,6 +15,7 @@ import pytest
 
 import itself.evidence_bundle as evidence_bundle_module
 from itself import (
+    BundleIntegrityError,
     EvidenceBundleBuilder,
     EvidenceBundleBuildError,
     EvidenceBundleFile,
@@ -605,3 +606,23 @@ def test_builder_rejects_uri_sensitive_paths_the_validator_accepts(value: str) -
             media_type="application/json",
             record_ref="artifact-diagnostician-output",
         )
+
+
+def test_bundle_validation_can_require_trusted_authorizers() -> None:
+    trusted = EvidenceBundleValidator(
+        trusted_authorizers=["case-001-promotion-policy"]
+    ).validate(REFERENCE_BUNDLE)
+
+    assert (
+        trusted.manifest["bundle_id"]
+        == (EvidenceBundleValidator().validate(REFERENCE_BUNDLE).manifest["bundle_id"])
+    )
+    with pytest.raises(BundleIntegrityError) as raised:
+        EvidenceBundleValidator(trusted_authorizers=()).validate(REFERENCE_BUNDLE)
+    issues = raised.value.issues
+    assert issues
+    assert {issue.code.value for issue in issues} == {"untrusted_authorizer"}
+    assert {issue.reference for issue in issues} == {"case-001-promotion-policy"}
+    assert EvidenceBundleValidator(
+        trusted_authorizers=["a", "a"]
+    ).trusted_authorizers == frozenset({"a"})

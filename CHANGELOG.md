@@ -86,6 +86,10 @@ versions, each versioned independently of the package:
 - `decode_jsonl_records` in `itself.ledger` and `decode_receipt_document` in
   `itself.receipts`, which decode ledger and receipt bytes under the same rules
   as the file loaders.
+- An opt-in `trusted_authorizers` for `BundleValidator` and
+  `EvidenceBundleValidator`. When a deployment lists the actor ids it trusts to
+  promote claims, validation refuses evidence-backed transitions authorized by
+  any other identifier with the new `untrusted_authorizer` integrity code.
 - An opt-in `deadline_seconds` on `OpenAICompatibleEndpoint`,
   `DecisionModelEndpoint`, and `HttpRequest`. The built-in transport shuts a
   request down once it passes, so a server that keeps a connection busy with

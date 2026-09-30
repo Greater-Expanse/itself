@@ -211,7 +211,9 @@ Each record declares its actors' types rather than binding them to an
 identity, so `v0alpha2` validation does not detect one identifier declared as
 a model in one record and as software in another. Deployments that rely on the
 model-authorization rule in section 6 need identity controls outside the
-protocol.
+protocol. The reference SDK's bundle and ledger validators accept a list of the
+actor identifiers a deployment trusts to authorize evidence-backed transitions
+and reject promotions by any other identifier.
 
 ## 11. Conformance
 

@@ -84,6 +84,28 @@ ledger = Ledger((hypothesis, testable, prediction))
 The constructor validates each record independently. `Ledger` then validates
 cross-record references, kinds, ordering constraints, and replayed state.
 
+## Restrict who may promote a claim
+
+Every record declares its own actors, so a validator cannot tell whether an
+identifier that calls itself `software` belongs to a policy engine or to a
+model. When a deployment knows which identities may promote claims, it can say
+so, and the validators then refuse every evidence-backed transition that any
+other actor authorizes:
+
+```python
+from itself import BundleValidator, EvidenceBundleValidator, Ledger
+
+trusted = {"release-policy", "reviewer-alex"}
+ledger = Ledger(validator=BundleValidator(trusted_authorizers=trusted))
+bundle = EvidenceBundleValidator(trusted_authorizers=trusted).validate("bundle")
+```
+
+A refused transition is reported with the integrity code
+`untrusted_authorizer` and does not apply. Transitions to `testable`,
+`under_test`, `blocked`, and the other states that need no evidence are not
+restricted. Without `trusted_authorizers`, validation accepts any authorizer
+whose declared type and role the protocol allows, as before.
+
 ## Record a test and its evidence
 
 A planned test and its execution are separate immutable records. The completed

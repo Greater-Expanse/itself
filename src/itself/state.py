@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import cast
+from typing import Final, cast
 
 
 class ClaimStatus(StrEnum):
@@ -95,7 +95,7 @@ _ALLOWED_TRANSITIONS: dict[ClaimStatus, frozenset[ClaimStatus]] = {
     ClaimStatus.WITHDRAWN: frozenset(),
 }
 
-_EVIDENCE_BACKED_STATES = frozenset(
+EVIDENCE_BACKED_STATUSES: Final = frozenset(
     {
         ClaimStatus.SUPPORTED,
         ClaimStatus.REFUTED,
@@ -151,7 +151,7 @@ def validate_transition(request: TransitionRequest) -> None:
         raise TransitionError(
             f"transition {request.from_status.value} -> {request.to_status.value} is not allowed"
         )
-    if request.to_status in _EVIDENCE_BACKED_STATES:
+    if request.to_status in EVIDENCE_BACKED_STATUSES:
         if not request.evidence_refs:
             raise TransitionError(
                 f"transition to {request.to_status.value} requires at least one evidence reference"

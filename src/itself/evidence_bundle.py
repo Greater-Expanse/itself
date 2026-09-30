@@ -11,7 +11,7 @@ import os
 import shutil
 import stat
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -27,6 +27,7 @@ from ._filesystem import publish_path_no_replace, write_file_exclusive
 from ._formats import schema_format_checker
 from ._json import format_json_path as _format_path
 from ._json import strict_json_loads
+from .bundle import BundleValidator
 from .ledger import Ledger, decode_jsonl_records
 from .receipts import (
     ReasoningReceiptValidator,
@@ -576,9 +577,24 @@ def _read_inventoried_file(
 
 @dataclass(frozen=True, slots=True)
 class EvidenceBundleValidator:
-    """Verify inventory, bytes, protocol history, receipt, and artifacts."""
+    """Verify inventory, bytes, protocol history, receipt, and artifacts.
+
+    ``trusted_authorizers`` has the meaning it has for ``BundleValidator``: when
+    set, only those actor ids may authorize the ledger's evidence-backed
+    transitions.
+    """
 
     limits: EvidenceBundleLimits = field(default_factory=EvidenceBundleLimits)
+    trusted_authorizers: Collection[str] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "trusted_authorizers",
+            BundleValidator(
+                trusted_authorizers=self.trusted_authorizers
+            ).trusted_authorizers,
+        )
 
     def _schema_validator(self) -> _SchemaValidator:
         schema_resource = files("itself").joinpath(
@@ -726,7 +742,8 @@ class EvidenceBundleValidator:
                 path=ledger_path,
                 max_records=self.limits.max_ledger_records,
                 max_bytes=_file_byte_limit(self.limits, "ledger"),
-            )
+            ),
+            validator=BundleValidator(trusted_authorizers=self.trusted_authorizers),
         )
         receipt_path, receipt_content = _read_inventoried_file(
             root,

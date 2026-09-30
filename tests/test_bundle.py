@@ -17,6 +17,7 @@ from itself import (
     IntegrityCode,
     JsonObject,
     JsonValue,
+    Ledger,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -246,3 +247,89 @@ def test_bundle_fixture_sets_are_not_empty() -> None:
     assert VALID_BUNDLES
     assert INVALID_BUNDLES
     assert {fixture.name for fixture in INVALID_BUNDLES} == set(EXPECTED_CODES)
+
+
+HISTORY = ROOT / "conformance" / "bundles" / "valid" / "evidence-backed-history.json"
+
+
+def test_default_validator_accepts_any_declared_authorizer() -> None:
+    validator = BundleValidator()
+
+    assert validator.trusted_authorizers is None
+    assert validator.errors(_load_bundle(HISTORY)) == []
+
+
+def test_trusted_authorizers_accept_listed_actors() -> None:
+    validator = BundleValidator(
+        trusted_authorizers=["default-transition-policy", "reviewer-alex"]
+    )
+
+    snapshot = validator.validate(_load_bundle(HISTORY))
+
+    assert validator.trusted_authorizers == frozenset(
+        {"default-transition-policy", "reviewer-alex"}
+    )
+    assert (
+        snapshot.current_states["claim-cache-cause"]
+        is ClaimStatus.CORROBORATED_WITHIN_SCOPE
+    )
+
+
+def test_trusted_authorizers_reject_other_evidence_backed_authorizers() -> None:
+    issues = BundleValidator(trusted_authorizers={"default-transition-policy"}).errors(
+        _load_bundle(HISTORY)
+    )
+
+    assert [(issue.code, issue.record_id, issue.reference) for issue in issues] == [
+        (
+            IntegrityCode.UNTRUSTED_AUTHORIZER,
+            "transition-cache-corroborated",
+            "reviewer-alex",
+        )
+    ]
+
+
+def test_trusted_authorizers_leave_other_transitions_alone() -> None:
+    issues = BundleValidator(trusted_authorizers=()).errors(_load_bundle(HISTORY))
+
+    # The model's move to testable and the runner's move to under_test are not
+    # evidence-backed, so only the two promotions are refused. A refused
+    # transition does not apply, so the later one also starts from the wrong
+    # state.
+    untrusted = [
+        issue for issue in issues if issue.code is IntegrityCode.UNTRUSTED_AUTHORIZER
+    ]
+    assert sorted(issue.reference or "" for issue in untrusted) == [
+        "default-transition-policy",
+        "reviewer-alex",
+    ]
+    assert {issue.code for issue in issues} == {
+        IntegrityCode.UNTRUSTED_AUTHORIZER,
+        IntegrityCode.STATE_MISMATCH,
+    }
+
+
+@pytest.mark.parametrize("value", ["reviewer-alex", [""], ["  "], [3], None])
+def test_trusted_authorizers_must_be_actor_ids(value: object) -> None:
+    if value is None:
+        assert BundleValidator(trusted_authorizers=None).trusted_authorizers is None
+        return
+    with pytest.raises(ValueError, match="trusted_authorizers"):
+        BundleValidator(trusted_authorizers=value)  # type: ignore[arg-type]
+
+
+def test_ledger_refuses_a_promotion_by_an_untrusted_actor() -> None:
+    records = _load_bundle(HISTORY)
+    position = [record["id"] for record in records].index("transition-cache-supported")
+    ledger = Ledger(
+        records[:position],
+        validator=BundleValidator(trusted_authorizers={"reviewer-alex"}),
+    )
+
+    with pytest.raises(BundleIntegrityError) as raised:
+        ledger.append(records[position])
+
+    assert [issue.code for issue in raised.value.issues] == [
+        IntegrityCode.UNTRUSTED_AUTHORIZER
+    ]
+    assert len(ledger) == position

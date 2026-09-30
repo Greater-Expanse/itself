@@ -14,6 +14,7 @@ from typing import Final, cast
 import rfc8785
 
 from .state import (
+    EVIDENCE_BACKED_STATUSES,
     ActorRole,
     ActorType,
     ClaimStatus,
@@ -40,6 +41,7 @@ class IntegrityCode(StrEnum):
     TRANSITION_SUBJECT_MISMATCH = "transition_subject_mismatch"
     VERDICT_MISMATCH = "verdict_mismatch"
     SCOPE_MISMATCH = "scope_mismatch"
+    UNTRUSTED_AUTHORIZER = "untrusted_authorizer"
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,11 +216,45 @@ def _schema_checked_prefix(value: int, record_count: int) -> int:
     return runtime_value
 
 
-class BundleValidator:
-    """Validate references and replay state across ordered protocol records."""
+def _trusted_authorizers(value: object) -> frozenset[str]:
+    if isinstance(value, str) or not isinstance(value, Collection):
+        raise ValueError("trusted_authorizers must be a collection of actor ids")
+    authorizers = frozenset(cast(Collection[object], value))
+    if not all(
+        isinstance(actor_id, str) and actor_id.strip() for actor_id in authorizers
+    ):
+        raise ValueError("trusted_authorizers must contain non-empty actor ids")
+    return cast(frozenset[str], authorizers)
 
-    def __init__(self, protocol_validator: ProtocolValidator | None = None) -> None:
+
+class BundleValidator:
+    """Validate references and replay state across ordered protocol records.
+
+    Records declare their own actors, so by default any identifier may
+    authorize an evidence-backed transition if its declared type and role
+    allow it.  ``trusted_authorizers`` lists the only actor ids that may:
+    identity is established outside the protocol, and the validator then
+    rejects every other authorizer with ``untrusted_authorizer``.
+    """
+
+    def __init__(
+        self,
+        protocol_validator: ProtocolValidator | None = None,
+        *,
+        trusted_authorizers: Collection[str] | None = None,
+    ) -> None:
         self._protocol_validator = protocol_validator or ProtocolValidator()
+        self._trusted_authorizers = (
+            None
+            if trusted_authorizers is None
+            else _trusted_authorizers(trusted_authorizers)
+        )
+
+    @property
+    def trusted_authorizers(self) -> frozenset[str] | None:
+        """The only actor ids allowed to authorize evidence-backed transitions."""
+
+        return self._trusted_authorizers
 
     def errors(
         self,
@@ -638,6 +674,21 @@ class BundleValidator:
                         record_id=record_id,
                         reference=subject_ref,
                         message=str(error),
+                    )
+                )
+                can_apply = False
+            if (
+                self._trusted_authorizers is not None
+                and to_status in EVIDENCE_BACKED_STATUSES
+                and request.authorized_by not in self._trusted_authorizers
+            ):
+                issues.append(
+                    IntegrityIssue(
+                        code=IntegrityCode.UNTRUSTED_AUTHORIZER,
+                        record_id=record_id,
+                        reference=request.authorized_by,
+                        message="evidence-backed transition is authorized by an actor "
+                        "that is not trusted to authorize it",
                     )
                 )
                 can_apply = False

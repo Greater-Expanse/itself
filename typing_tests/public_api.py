@@ -75,6 +75,10 @@ assert_type(validator.validate(json_value), None)
 records: list[JsonObject] = []
 assert_type(BundleValidator().validate(records), BundleSnapshot)
 assert_type(BundleValidator().errors(records), list[IntegrityIssue])
+assert_type(
+    BundleValidator(trusted_authorizers={"release-policy"}).trusted_authorizers,
+    frozenset[str] | None,
+)
 
 ledger = Ledger(records)
 assert_type(ledger.records, tuple[JsonObject, ...])
