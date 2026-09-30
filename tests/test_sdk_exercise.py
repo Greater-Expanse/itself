@@ -63,7 +63,7 @@ def test_sdk_exercise_reports_end_to_end_and_mutation_behavior(
     )
 
     assert report.outcome is EvaluationOutcome.PASSED
-    assert len(report.checks) == 29
+    assert len(report.checks) == 31
     assert not [
         check for check in report.checks if check.status is EvaluationStatus.FAILED
     ]
@@ -155,5 +155,5 @@ def test_sdk_exercise_cli_reports_completed_run(
 
     captured = capsys.readouterr()
     assert result == 0
-    assert captured.out.startswith(f"PASSED {output}: 29 checks, urn:sha256:")
+    assert captured.out.startswith(f"PASSED {output}: 31 checks, urn:sha256:")
     assert not captured.err

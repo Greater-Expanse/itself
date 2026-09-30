@@ -26,7 +26,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "jsonschema[format]>=4.10",
+  "jsonschema[format-nongpl]>=4.10",
   "rfc8785>=0.1.4,<0.2",
 ]
 

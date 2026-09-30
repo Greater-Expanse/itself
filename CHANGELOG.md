@@ -106,12 +106,14 @@ versions, each versioned independently of the package:
   published schema line cannot change in place.
 - Shared JSON reader fixtures under `conformance/json/accept` and
   `conformance/json/reject` that both the Python reference and the JavaScript
-  validator must accept or refuse, plus invalid record fixtures for timestamps
-  with a space separator, a leap second, or a trailing newline and for a URI
-  with a malformed port, and invalid bundle fixtures for a `__proto__` scope
-  dimension and a blank transition subject. The reader fixtures also cover a
-  zero and an underflowing number written with exponents beyond the range of
-  any float, and an escaped `NUL` with uppercase hexadecimal digits.
+  validator must accept or refuse, plus a valid record fixture with an IPv6
+  artifact host, invalid record fixtures for timestamps with a space separator,
+  a leap second, or a trailing newline and for URIs with a malformed port, an
+  IPv6 literal written with `{,2}`, or an IPv4 octet with a leading zero inside
+  an IPv6 literal, and invalid bundle fixtures for a `__proto__` scope dimension
+  and a blank transition subject. The reader fixtures also cover a zero and an
+  underflowing number written with exponents beyond the range of any float, and
+  an escaped `NUL` with uppercase hexadecimal digits.
 
 ### Changed
 
@@ -176,6 +178,13 @@ versions, each versioned independently of the package:
   records or 128 MiB per ledger and 128 MiB per receipt, and `receipt generate
   --output` refuses to write a receipt over its ceiling. Larger ledgers remain
   available through the Python API.
+- Schema format checks use jsonschema's `format-nongpl` extra, so the SDK
+  installs no GPL-licensed dependency, and `uri-reference` is checked with the
+  SDK's own pattern for RFC 3986's URI-reference rule, whichever URI library is
+  installed. The pattern follows the RFC in two cases the earlier checker
+  decided the other way: an IPv4 octet with a leading zero inside an IPv6
+  literal is refused, and an IPvFuture literal may begin with an uppercase
+  `V`.
 - The default receipt ceiling in `EvidenceBundleLimits` is 128 MiB, up from
   64 MiB, matching the ledger ceiling, because a receipt can be nearly as large
   as its ledger.
@@ -252,10 +261,10 @@ versions, each versioned independently of the package:
   It rejects repeated keys even when their values are equal, keeps `__proto__`
   keys so its ledger digests match Python's, rejects invalid UTF-8 and
   byte-order marks instead of decoding them, and limits nesting to 128 levels.
-  It checks `date-time` and `uri-reference` with the Python reference's
-  grammars, refuses blank transition subjects as the reference does, and no
-  longer accepts a lone high surrogate at the end of a string. `lossless-json`
-  is no longer a dependency.
+  It checks `date-time` with the Python reference's grammar and
+  `uri-reference` with the reference's own RFC 3986 pattern, refuses blank
+  transition subjects as the reference does, and no longer accepts a lone high
+  surrogate at the end of a string. `lossless-json` is no longer a dependency.
 - Protocol, receipt, and bundle validation refuse a `date-time` or
   `uri-reference` value that ends in a newline, which the underlying regular
   expressions accepted.

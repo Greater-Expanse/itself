@@ -154,7 +154,7 @@ const JSON_NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
 // upper-casing, and refuses a value ending in a line break.
 const RFC3339_DATE_TIME =
   /^(\d{4})-(0[1-9]|1[0-2])-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
-const URI_REFERENCE = new RegExp(URI_REFERENCE_PATTERN);
+const URI_REFERENCE = new RegExp(`^(?:${URI_REFERENCE_PATTERN})$`);
 
 // Python's str.strip() whitespace, which the reference implementation uses to
 // refuse a blank transition subject or authorizing actor.

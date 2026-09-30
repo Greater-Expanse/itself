@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (C) 2026 Greater Expanse LLC
 
-"""Typed questions for decision models over the System One wire format.
+"""Typed questions for decision models and a client for their endpoints.
 
 A decision model answers closed questions about a state with probability
 distributions over declared options and generates no text.  The client in this

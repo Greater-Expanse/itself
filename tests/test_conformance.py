@@ -4,17 +4,21 @@
 from __future__ import annotations
 
 import json
+import random
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from itertools import product
 from pathlib import Path
 from typing import Protocol, cast
 
 import pytest
-import rfc3987  # type: ignore[import-untyped]
 from jsonschema import Draft202012Validator
+from rfc3986_validator import (  # type: ignore[import-untyped]
+    validate_rfc3986,  # pyright: ignore[reportUnknownVariableType]
+)
 
 from itself import JsonObject, JsonValue, ProtocolValidationError, ProtocolValidator
-from itself._formats import schema_format_checker
+from itself._formats import URI_REFERENCE_PATTERN, schema_format_checker
 from itself._json import strict_json_loads
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,16 +139,135 @@ def test_reader_rejects_conformance_document(document: Path) -> None:
         strict_json_loads(document.read_bytes())
 
 
-def test_javascript_uri_reference_grammar_matches_the_python_checker() -> None:
+def test_javascript_uri_reference_pattern_is_the_reference_pattern() -> None:
     source = URI_REFERENCE_MODULE.read_text(encoding="utf-8")
     literals = re.findall(r'^  (".*")(?: \+|;)$', source, flags=re.MULTILINE)
-    vendored = "".join(json.loads(literal) for literal in literals)
-    installed = cast(
-        re.Pattern[str],
-        rfc3987.get_compiled_pattern("^%(URI_reference)s$"),  # pyright: ignore[reportUnknownMemberType]
-    )
 
-    assert vendored == installed.pattern
+    assert "".join(json.loads(literal) for literal in literals) == URI_REFERENCE_PATTERN
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://[2001:db8::1]/runs/184/trace.jsonl", True),
+        ("//[::ffff:192.0.2.1]/trace.jsonl", True),
+        ("//[1:2:3:4:5:6:7::]/trace.jsonl", True),
+        ("//[v1.custom-host]/trace.jsonl", True),
+        ("//[V1.custom-host]/trace.jsonl", True),
+        ("runs/run-184/trace.jsonl", True),
+        ("urn:example:trace", True),
+        ("", True),
+        ("//[1:{,2}1::1:1:1:1]/trace.jsonl", False),
+        ("//[::ffff:192.0.02.1]/trace.jsonl", False),
+        ("//[1:2:3:4:5:6:7:8:9]/trace.jsonl", False),
+        ("//[1::2::3]/trace.jsonl", False),
+        ("//host:port/", False),
+        ("1a:b", False),
+        ("runs/%zz", False),
+        ("runs/a b", False),
+        ("runs/\u00e9", False),
+        ("runs/trace.jsonl\n", False),
+    ],
+)
+def test_uri_reference_checks_rfc_3986(value: str, expected: bool) -> None:
+    assert schema_format_checker().conforms(value, "uri-reference") is expected
+
+
+def _uri_candidates() -> list[str]:
+    ipv6 = [
+        "::",
+        "::1",
+        "1:2:3:4:5:6:7:8",
+        "1:2:3:4:5:6:7::",
+        "::2:3:4:5:6:7:8",
+        "1::8",
+        "1:2:3:4:5:6:1.2.3.4",
+        "::ffff:192.0.2.1",
+        "::ffff:192.0.02.1",
+        "::ffff:256.0.2.1",
+        "1:2:3:4:5:6:7:8:9",
+        "1::2::3",
+        ":::",
+        "12345::",
+        "g::",
+        "1:{,2}1::1:1:1:1",
+        "fe80::1%25en0",
+    ]
+    hosts = [
+        "",
+        "example.com",
+        "ex%20ample",
+        "ex%2",
+        "ex ample",
+        "192.0.2.1",
+        "h_st~!$&'()*+,;=",
+        "\u00e9x",
+        *(f"[{value}]" for value in ipv6),
+        "[v1.x]",
+        "[V1.x]",
+        "[v.x]",
+        "[vG.x]",
+        "[]",
+    ]
+    authorities = [
+        "",
+        *(
+            f"//{user}{host}{port}"
+            for user, host, port in product(
+                ["", "user:pw@", "u%40@", "u@v@"], hosts, ["", ":", ":80", ":8a"]
+            )
+        ),
+    ]
+    tails = list(
+        product(
+            ["http:", "a+b.c-d:", "1a:", ""],
+            ["", "/", "/a/b", "a:b", "%41", "%4", "a b", "a|b"],
+            ["", "?", "?a=b&c", "?a/b?c", "?%zz"],
+            ["", "#", "#x", "#x#y"],
+        )
+    )
+    generator = random.Random(3986)
+    candidates = {f"//{host}/p" for host in hosts}
+    for _ in range(8_000):
+        scheme, path, query, fragment = generator.choice(tails)
+        authority = generator.choice(authorities)
+        if authority and path and not path.startswith("/"):
+            path = f"/{path}"
+        candidates.add(scheme + authority + path + query + fragment)
+    return sorted(candidates)
+
+
+def _rfc_difference(candidate: str, accepted: bool) -> str:
+    """Name the rule that RFC 3986 decides unlike rfc3986-validator."""
+
+    if not accepted and re.search(r"\[[^\]]*[:.]0[0-9][^\]]*\]", candidate):
+        return "leading zero in an IPv4 octet inside an IPv6 literal"
+    if accepted and "[V" in candidate:
+        return "uppercase IPvFuture version prefix"
+    return f"unexplained: {candidate!r}"
+
+
+def test_uri_reference_agrees_with_an_independent_checker_except_where_it_errs() -> (
+    None
+):
+    independent = cast(Callable[..., object], validate_rfc3986)
+    checker = schema_format_checker()
+    differences: set[str] = set()
+
+    for candidate in _uri_candidates():
+        accepted = checker.conforms(candidate, "uri-reference")
+        # Its anchored pattern's $ also matches before a final newline.
+        expected = bool(independent(candidate, rule="URI_reference"))
+        expected = expected and not candidate.endswith("\n")
+        if accepted != expected:
+            differences.add(_rfc_difference(candidate, accepted))
+
+    # RFC 3986 allows no leading zero in a dec-octet, and ABNF strings such as
+    # IPvFuture's "v" are case-insensitive; the independent checker errs on both.
+    assert differences == {
+        "leading zero in an IPv4 octet inside an IPv6 literal",
+        "uppercase IPvFuture version prefix",
+    }
 
 
 def _deployment_policy() -> JsonObject:

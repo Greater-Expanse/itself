@@ -16,10 +16,10 @@ The runner:
 - accepts every document under `conformance/json/accept` and rejects every
   document under `conformance/json/reject`, the reader rules the Python
   reference also checks;
-- checks the schema's `date-time` and `uri-reference` formats with the same
-  grammars as the Python reference (rfc3339-validator after upper-casing, and
-  rfc3987's `URI_reference` rule, vendored in `uri-reference.mjs`), so both
-  runners accept exactly the same records;
+- checks the schema's `date-time` format with the Python reference's grammar
+  (rfc3339-validator after upper-casing) and `uri-reference` with the
+  reference's own pattern for RFC 3986's URI-reference rule, kept in
+  `uri-reference.mjs`, so both runners accept exactly the same records;
 - independently resolves typed cross-record references;
 - enforces verdict scope, evidence-relation, and transition-authorization
   policy;
