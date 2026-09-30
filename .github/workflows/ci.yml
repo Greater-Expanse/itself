@@ -179,14 +179,14 @@ jobs:
 
       - name: Smoke-test built wheel
         run: |
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             itself --version
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             itself validate conformance/valid/proposed-claim.json
 
       - name: Smoke-test built-wheel schema export
         run: |
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             itself schema export "${{ runner.temp }}/itself-schema-export"
           cmp \
             src/itself/schemas/v0alpha/protocol.schema.json \
@@ -197,7 +197,7 @@ jobs:
 
       - name: Smoke-test built-wheel bundle workflow
         run: |
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             itself bundle create \
             examples/cache-key-diagnosis/bundle/ledger.jsonl \
             "${{ runner.temp }}/itself-evidence-bundle" \
@@ -205,7 +205,7 @@ jobs:
             --created-at 2026-07-23T12:00:00Z \
             --artifact artifact-diagnostician-output=examples/cache-key-diagnosis/bundle/artifacts/model-assertion.json \
             --input examples/cache-key-diagnosis/bundle/inputs/diagnosis-request.json
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             itself bundle validate "${{ runner.temp }}/itself-evidence-bundle"
 
       - name: Smoke-test built-wheel CI cookbook
@@ -213,7 +213,7 @@ jobs:
           approved="${{ runner.temp }}/itself-cookbook-approved"
           rejected="${{ runner.temp }}/itself-cookbook-rejected"
 
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             python cookbook/agent-change-gate/run.py \
             --assertion cookbook/fixtures/model-assertion.json \
             --output "$approved" \
@@ -223,7 +223,7 @@ jobs:
             -- python -c 'raise SystemExit(0)'
 
           set +e
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             python cookbook/agent-change-gate/run.py \
             --assertion cookbook/fixtures/model-assertion.json \
             --output "$rejected" \
@@ -239,7 +239,7 @@ jobs:
             exit 1
           fi
 
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             itself bundle validate "$approved/bundle"
-          uv run --isolated --no-project --with dist/itself_sdk-*.whl \
+          uv run --isolated --no-project --with dist/itself-*.whl \
             itself bundle validate "$rejected/bundle"

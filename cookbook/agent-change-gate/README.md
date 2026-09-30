@@ -19,7 +19,7 @@ It never asks a model to grade its own assertion.
 ## Adapt the recipe
 
 Copy [`run.py`](run.py) into a stable tools directory in the consuming
-repository, add a pinned `itself-sdk` dependency to the CI environment, and
+repository, add a pinned `itself` dependency to the CI environment, and
 choose one platform wrapper:
 
 - [GitHub Actions](github-actions.yml)

@@ -6,7 +6,7 @@ Python distribution version.
 
 ## 0.2.0
 
-The first public release of `itself-sdk`. It implements these format
+The first public release of `itself`. It implements these format
 versions, each versioned independently of the package:
 
 | Surface | Version |
