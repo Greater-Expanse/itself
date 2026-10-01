@@ -4,9 +4,9 @@
 
 **Make model assertions testable before software acts on them.**
 
-Itself is an open-source, provider-neutral assurance SDK for AI agents,
-decision models, and AI-driven workflows. It makes model assertions
-independently testable before an application acts on them.
+Itself is an open-source, provider-neutral assurance SDK for AI agents and
+AI-driven workflows. It makes model assertions independently testable before
+an application acts on them.
 
 > **New in 0.2: decision models.** Itself sends typed questions to decision
 > models, also called System One models, including TypeSafe's Jev. It records
