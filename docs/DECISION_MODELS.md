@@ -1,11 +1,12 @@
-# System One models
+# Decision models
 
-A System One model, also called a decision model, answers a closed question
+A decision model, also called a System One model, answers a closed question
 about a state with a typed decision: a probability distribution over declared
 options, and no generated text. Itself's decision adapter sends such questions
-to an endpoint that implements the `/v1/systemone` request format, captures
-each request and response, and returns validated distributions that an
-application can record as predictions.
+to an endpoint that implements the `/v1/systemone` request format, such as
+TypeSafe's hosted Jev or a local server. It captures each request and response
+and returns validated distributions that an application can record as
+predictions.
 
 A decision model's answer is a model assertion like any other. It can decide
 which external check runs first; it is never evidence, a verdict, or
@@ -71,6 +72,28 @@ headers and request fields cannot override adapter-owned values: the `model`,
 default resource path is `systemone`, so a base URL ending in `/v1` reaches
 `/v1/systemone`. `timeout_seconds` bounds each read, and the optional
 `deadline_seconds` bounds each request as a whole.
+
+## Use Jev
+
+TypeSafe's hosted Jev implements the same request format. Point the endpoint at
+TypeSafe's API and read the key from the environment:
+
+```python
+from itself import DecisionModelEndpoint, EnvironmentCredential
+
+endpoint = DecisionModelEndpoint(
+    actor_id="support-router",
+    base_url="https://api.typesafe.ai/v1",
+    model="jev-latest",
+    credential=EnvironmentCredential("TYPESAFE_API_KEY"),
+)
+```
+
+Itself 0.2.0 was checked on 2026-09-30 against TypeSafe's hosted `jev-1.13.0`
+and a local [Jeff](https://github.com/firelex/jeff) server (Jeff-Qwen3.5-2B
+v1.1), and every answer passed the adapter's validation with its default
+settings. Jev accepts at most 10 levels in a score question. Itself is an
+independent project and is not affiliated with TypeSafe.
 
 ## Questions
 

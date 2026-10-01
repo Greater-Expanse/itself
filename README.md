@@ -5,13 +5,13 @@
 **Make model assertions testable before software acts on them.**
 
 Itself is an open-source, provider-neutral assurance SDK for AI agents,
-System One models, and AI-driven workflows. It makes model assertions
+decision models, and AI-driven workflows. It makes model assertions
 independently testable before an application acts on them.
 
-> **New in 0.2: System One models.** Itself sends typed questions to System One
-> decision models, records each decision as a testable prediction, and measures
-> whether option order changed it. See
-> [Connect a System One model](#connect-a-system-one-model).
+> **New in 0.2: decision models.** Itself sends typed questions to decision
+> models, also called System One models, including TypeSafe's Jev. It records
+> each decision as a testable prediction and measures whether option order
+> changed it. See [Connect a decision model](#connect-a-decision-model).
 
 Use Itself when an agent reviews code, diagnoses a failed build, opens a pull or
 merge request, recommends a remediation, or participates in an automated
@@ -355,12 +355,13 @@ capability fallback.
 See the [inference guide](docs/INFERENCE.md) for configuration patterns,
 guarantees, and the boundary for native provider protocols.
 
-### Connect a System One model
+### Connect a decision model
 
-System One models, also called decision models, answer typed questions about a
+Decision models, also called System One models, answer typed questions about a
 state with typed decisions and probabilities instead of text.
 `DecisionModelClient` sends `choice`, `noul`, and `score` questions to any
-endpoint that implements the `/v1/systemone` request format:
+endpoint that implements the `/v1/systemone` request format, such as TypeSafe's
+Jev or a local server:
 
 ```python
 from pathlib import Path
@@ -399,7 +400,21 @@ report how far option position moved the answer; a yes-or-no `NoulQuestion`
 is asked once. Every request and response is captured
 before interpretation, and every distribution is validated locally. The
 probability is a prediction to test, never a verdict. See the
-[System One model guide](docs/DECISION_MODELS.md).
+[decision-model guide](docs/DECISION_MODELS.md).
+
+To ask Jev, point the endpoint at TypeSafe's API and read the key from the
+environment:
+
+```python
+from itself import DecisionModelEndpoint, EnvironmentCredential
+
+endpoint = DecisionModelEndpoint(
+    actor_id="support-router",
+    base_url="https://api.typesafe.ai/v1",
+    model="jev-latest",
+    credential=EnvironmentCredential("TYPESAFE_API_KEY"),
+)
+```
 
 The repository also contains a transparent controlled incident investigation.
 A report-generation system advances from source revision `A` to `B`, but keeps

@@ -26,9 +26,10 @@ Choose the path that matches what you are trying to do:
 - [Connect a model endpoint](INFERENCE.md) — use the generic structured
   inference boundary to capture an assertion without giving the model evidence
   or decision authority.
-- [Ask a System One model](DECISION_MODELS.md) — send typed choice, yes-or-no,
-  and score questions to a decision-model endpoint, ask each question with its
-  options in both orders, and capture every request and response.
+- [Ask a decision model](DECISION_MODELS.md) — send typed choice, yes-or-no,
+  and score questions to a decision-model endpoint such as Jev, ask each
+  question with its options in both orders, and capture every request and
+  response.
 - [Create evidence bundles](EVIDENCE_BUNDLES.md) — package a ledger, receipt,
   inputs, and referenced artifacts into a closed, independently verifiable
   directory.
