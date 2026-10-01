@@ -1,11 +1,11 @@
-# Decision-model adapters
+# System One models
 
-A decision model answers a closed question about a state with a probability
-distribution over declared options, and it generates no text. Itself's
-decision adapter sends such questions to an endpoint that implements the
-`/v1/systemone` decision format, captures each request and response, and
-returns validated distributions that an application can record as
-predictions.
+A System One model, also called a decision model, answers a closed question
+about a state with a typed decision: a probability distribution over declared
+options, and no generated text. Itself's decision adapter sends such questions
+to an endpoint that implements the `/v1/systemone` request format, captures
+each request and response, and returns validated distributions that an
+application can record as predictions.
 
 A decision model's answer is a model assertion like any other. It can decide
 which external check runs first; it is never evidence, a verdict, or

@@ -16,7 +16,7 @@ Itself records, ledgers, or evidence rules.
 
 Decision models, which answer typed questions with probability distributions
 instead of text, use a separate adapter with the same transport, credential,
-and artifact rules. See [decision-model adapters](DECISION_MODELS.md).
+and artifact rules. See [System One models](DECISION_MODELS.md).
 
 ## Minimal configuration
 
