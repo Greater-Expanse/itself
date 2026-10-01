@@ -144,6 +144,19 @@ includes one configurable OpenAI-compatible input adapter, but that wire format
 is not the architecture and a model does not become a verifier merely because
 it returns structured JSON.
 
+## Install
+
+Itself needs Python 3.11 or later and is published on PyPI:
+
+```bash
+pip install itself
+itself --version
+```
+
+`import itself` provides the Python SDK, and the `itself` command validates
+protocol records, ledgers, reasoning receipts, and evidence bundles. The
+commands below use the fixtures and examples in a clone of this repository.
+
 ## Try it locally
 
 The repository uses Python 3.11 or later and
