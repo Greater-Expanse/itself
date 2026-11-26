@@ -63,11 +63,12 @@ from itself.inference import (
 ADAPTER_ID: Final = "openai-chat-completions"
 ADAPTER_VERSION: Final = "0.2.0"
 # Registered manifests record the binding identity above, but the shipped
-# ``itself.inference`` client sends every request.  This binding version was
-# verified against the shipped adapter named here, and a test pins the pairing,
-# so a change to the shipped client cannot run under the old binding version.
+# ``itself.inference`` client sends every request, and no registered result
+# names it.  This binding version was re-verified offline against the shipped
+# adapter named here, and a test pins the pairing, so a change to the shipped
+# client cannot run under the old binding version without being re-verified.
 SHIPPED_ADAPTER_ID: Final = "openai-compatible-chat-completions"
-SHIPPED_ADAPTER_VERSION: Final = "0.3.1"
+SHIPPED_ADAPTER_VERSION: Final = "0.4.0"
 PROTOCOL_ID: Final = "openai-chat-completions"
 SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_2_0"
 CONSTRAINED_SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_3_0"

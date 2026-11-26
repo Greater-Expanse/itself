@@ -59,7 +59,7 @@ from .inference import (
 from .types import JsonObject, JsonValue
 
 DECISION_MODEL_ADAPTER_ID: Final = "systemone-compatible-decisions"
-DECISION_MODEL_ADAPTER_VERSION: Final = "0.1.0"
+DECISION_MODEL_ADAPTER_VERSION: Final = "0.2.0"
 
 _MAX_OPTIONS: Final = 255
 _MAX_PROBABILITY_TOLERANCE: Final = 0.01

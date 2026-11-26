@@ -420,9 +420,8 @@ def test_ask_captures_both_sides_and_maps_answers_to_declared_terms(
     wire_request = server.requests[0]
     assert wire_request.url == "https://decisions.example.test/v1/systemone"
     assert wire_request.headers["Authorization"] == f"Bearer {SECRET}"
-    assert wire_request.headers["User-Agent"] == (
-        f"itself-decisions/{DECISION_MODEL_ADAPTER_VERSION}"
-    )
+    # Results record this version, so a change to it is deliberate.
+    assert wire_request.headers["User-Agent"] == "itself-decisions/0.2.0"
     assert wire_request.timeout_seconds == 30.0
     assert _criteria(wire_request, "r1") == {
         "false": "No. The implementation violates R1.",

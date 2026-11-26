@@ -136,8 +136,11 @@ loopback host.
 
 `base_url` and `resource_path` must be printable ASCII without spaces or
 control characters: encode an international host name with IDNA and other
-characters with percent-encoding first. Extra headers cannot set `Host`,
-`Content-Length`, or `Transfer-Encoding`, which the transport owns. A URL or
+characters with percent-encoding first. `base_url` must name a host and must
+not contain credentials, a query, or a fragment, even an empty `?` or `#`
+marker, because the resource path is appended to it. Extra headers cannot set
+`Host`, `Content-Length`, or `Transfer-Encoding`, which the transport owns, or
+`Accept`, `Content-Type`, and `User-Agent`, which the adapter owns. A URL or
 header value that HTTP cannot carry is a configuration failure, never a
 retryable transport failure.
 

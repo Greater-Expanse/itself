@@ -6,19 +6,100 @@ Python distribution version.
 
 ## Unreleased
 
+## 0.3.0
+
+An opt-in validation policy for deployments that need more than `v0alpha2`
+conformance, faster ledger appends, a default request deadline, and hardening
+of the ledger and receipt stores, the endpoints, the CLI's output, the
+agent-change gate, and the research harness. The formats are unchanged, and
+without a validation policy or trust list the reference validators accept
+exactly the histories 0.2.0 accepted. Both adapters have new versions because
+their requests run differently. This release implements:
+
+| Surface | Version |
+| --- | --- |
+| Claim and Evidence Protocol | `0.1.0-alpha.3` |
+| Reasoning receipt | `0.1.0-alpha.2` |
+| Evidence bundle | `0.1.0-alpha.2` |
+| Schema publication line | `v0alpha2` |
+| Ledger canonicalization | `rfc8785-jsonl-v1` |
+| Chat Completions adapter | `0.4.0` |
+| Decision-model adapter | `0.2.0` |
+
+### Migrating from 0.2.0
+
+- **Trust lists.** With `trusted_authorizers` or `--trusted-authorizer`, a
+  transition out of an evidence-backed status (`supported`, `refuted`,
+  `inconclusive`, `mixed_evidence`, or `corroborated_within_scope`) must also
+  be authorized by a listed actor id, and an actor id declared with more than
+  one `actor_type` is refused with `actor_type_conflict`. Add the ids that
+  move claims out of those statuses, and declare each actor id with one actor
+  type throughout a history. Validation without a trust list is unchanged.
+- **Request deadline.** `OpenAICompatibleEndpoint` and `DecisionModelEndpoint`
+  default to `deadline_seconds=600.0` instead of no deadline. Give a request
+  that legitimately runs longer a larger value, or `None` for no deadline.
+- **Adapter versions.** Results record Chat Completions adapter `0.4.0` and
+  decision-model adapter `0.2.0`, and requests send the `User-Agent` values
+  `itself-inference/0.4.0` and `itself-decisions/0.2.0`. Update anything that
+  matches on either.
+- **`base_url`.** An endpoint `base_url` must name a host, and one with an
+  empty query or fragment marker, such as `https://h.example/v1/?` or
+  `https://h.example/v1#`, is refused with `ValueError`. Remove the marker.
+- **Loopback names.** Host names compare without case and ignore one trailing
+  dot, so `localhost.`, `LOCALHOST`, and `api.localhost.` are loopback hosts:
+  opted-in insecure HTTP accepts them, and the built-in transport no longer
+  sends them through a configured proxy.
+- **Referenced schemas.** `StructuredOutputProfile` and
+  `ProtocolValidator(schema_path)` raise `ValueError` for a schema whose `$ref`
+  or `$dynamicRef` names a resource outside the schema, including a JSON Schema
+  meta-schema. Include what such a schema references in the schema itself.
+- **Inference errors.** A request header value that `http.client` refuses
+  raises `InferenceError` with `InferenceFailure.CONFIGURATION` instead of
+  `ValueError`, and `UrllibHttpTransport` refuses a `max_response_bytes` that
+  is not an integer.
+- **Ledger store writes.** `JsonlLedgerStore.append` and `extend` raise
+  `OSError` and write nothing when another writer created, removed, or changed
+  the ledger after the append read it.
+- **Directory sync.** A ledger, receipt, inference artifact, evidence bundle,
+  or schema export that has been put in place can now be followed by an
+  `OSError`, such as `EIO`, from synchronizing its directory.
+- **`itself ledger append`.** It refuses, before writing anything, an append
+  whose ledger as read or as it would be written exceeds 128 MiB or 100,000
+  records. Use `JsonlLedgerStore` for larger ledgers.
+- **CLI output.** Text output and error messages escape control characters,
+  DEL, and the Unicode line and paragraph separators as `\xNN` or `\uNNNN`.
+  JSON written to standard output, by `--format json` and by
+  `receipt generate` without `--output`, escapes DEL, the C1 controls, U+2028,
+  and U+2029 as `\uXXXX`; its parsed value is unchanged, but a comparison of
+  raw bytes sees the escapes. Usage and `--version` output name the program
+  `itself` however it is started, and a blank `--trusted-authorizer` or an
+  out-of-range `--created-at` or `--as-of` is a usage error with exit status 2.
+- **Agent-change gate.** The gate approves only when the check returns the
+  passing exit code, `0` unless `--passing-exit-code` says otherwise, so a
+  correctly predicted failing check is rejected with status 1 where 0.2.0
+  approved it with 0. A check ended by a signal is inconclusive and deferred
+  with status 2 where 0.2.0 refuted it with 1. A `--model-actor-id` that names
+  `ci-check-runner` or `ci-assurance-policy`, a `--timeout-seconds` that is not
+  a finite positive number, and an assertion nested too deeply to parse each
+  exit with status 2 and write nothing. The GitHub Actions wrapper fails in the
+  step that runs the gate.
+- **Verification recipes.** The evidence-bundle verification recipes set
+  `pipefail`, so a job whose validation failed behind `tee` and still passed
+  now fails.
+- **`itself.inference` source.** `inspect.getsource` no longer finds the
+  source of the nine classes `itself.inference` re-exports from private
+  modules. They are the same objects with the same `__module__`, so imports,
+  pickles, and reprs are unchanged.
+- **Research harness and evaluations.** Both runner CLIs exit with status 2
+  for every error. An attempt quarantined at `<destination>.quarantined` keeps
+  its slot, so a second attempt at that destination is refused before any
+  request. The SDK exercise names its artifact mutation
+  `artifact-same-length-byte-change`, rejected at `inventory_digest`, and
+  capacity-curve timings no longer include constructing validators and
+  builders.
+
 ### Added
 
-- `--passing-exit-code` for the agent-change gate recipe, which defaults to
-  `0`. A model that correctly predicts any other exit code still has its
-  assertion supported, but the action is rejected.
-- `conformance/transitions.json`, the 37 allowed status transitions. The Python
-  tests and the JavaScript validator check every ordered pair of the twelve
-  statuses against it, and the specification now publishes the whole table.
-- Invalid bundle fixtures for a blank transition authorizer, a transition
-  before its subject, a verdict before its evidence, `mixed_evidence` and
-  `refuted` verdicts without contradicting evidence, a transition that does
-  not match its verdict's outcome, and evidence scoped differently from its
-  verdict.
 - `ValidationPolicy`, one frozen object for the opt-in checks of the reference
   validators. These checks are outside `v0alpha2` conformance, and without a
   policy every history validates exactly as before. `BundleValidator` and
@@ -27,14 +108,17 @@ Python distribution version.
   `trusted_authorizers=` still works as shorthand for a policy with only that
   list, and passing both raises `ValueError`. Besides `trusted_authorizers`, a
   policy can set:
-  - `require_supported_reliance`, which refuses with `unsupported_reliance` an
-    `approved` or `executed` decision that relies on a claim not `supported` or
-    `corroborated_within_scope` at the decision's position. References declared
-    external are skipped.
-  - `as_of`, a timezone-aware datetime. It refuses with `expired_support` a
-    subject that ends `supported` or `corroborated_within_scope` when its scope
-    `valid_until`, or the `expires_at` or scope `valid_until` of evidence cited
-    by the transition behind its current status, is at or before that time.
+  - `require_supported_reliance`, which refuses with the new code
+    `unsupported_reliance` an `approved` or `executed` decision that relies on
+    a claim not `supported` or `corroborated_within_scope` at the decision's
+    position. References declared external are skipped, and because
+    `relied_on_claim_refs` is optional, a decision that names no claims is not
+    refused.
+  - `as_of`, a timezone-aware datetime. It refuses with the new code
+    `expired_support` a subject that ends `supported` or
+    `corroborated_within_scope` when its scope `valid_until`, or the
+    `expires_at` or scope `valid_until` of evidence cited by the transition
+    behind its current status, is at or before that time.
 - `--require-supported-reliance` and `--as-of TIMESTAMP`, an RFC 3339
   date-time with an offset, on every `itself` command that accepts
   `--trusted-authorizer`. As with the trust list, `receipt validate` accepts
@@ -42,8 +126,20 @@ Python distribution version.
 - `max_records` and `max_bytes` on `JsonlLedgerStore.append` and `extend`. They
   mean what they mean on `load`, and apply to both the stored ledger and the
   result.
-- The agent-change gate recipe validates what it writes with a trust list
-  naming its policy actor and with supported reliance required.
+- `issues` on `ReasoningReceiptValidationError` and
+  `EvidenceBundleValidationError`: the individual schema errors that a schema
+  failure's message joins one per line, empty for any other failure.
+- `--passing-exit-code` for the agent-change gate recipe, `0` by default. A
+  model that correctly predicts any other exit code still has its assertion
+  supported, but the action is rejected.
+- `conformance/transitions.json`, the 37 allowed status transitions. The Python
+  tests and the JavaScript validator check every ordered pair of the twelve
+  statuses against it, and the specification now publishes the whole table.
+- Invalid bundle fixtures for a blank transition authorizer, a transition
+  before its subject, a verdict before its evidence, `mixed_evidence` and
+  `refuted` verdicts without contradicting evidence, a transition that does
+  not match its verdict's outcome, and evidence scoped differently from its
+  verdict.
 
 ### Changed
 
@@ -56,51 +152,44 @@ Python distribution version.
   `actor_type`, in any record's `created_by` or any decision's or transition's
   `authorized_by`, is refused with the new code `actor_type_conflict`. The code
   is reported once per id, on the record where the second type appears.
-  To migrate a trust list, add the ids that demote or invalidate supported
-  claims, and declare each actor id with one actor type throughout a history.
-  Validation without a trust list is unaffected. In the agent-change gate, a
-  `--model-actor-id` naming one of the runner's own actors now fails with exit
-  status 2 and writes nothing.
 - `OpenAICompatibleEndpoint.deadline_seconds` and
   `DecisionModelEndpoint.deadline_seconds` default to 600 seconds instead of
   no deadline, so a server that keeps a response trickling can no longer hold a
   request open indefinitely. To keep requests that legitimately run longer,
   set a larger value; `deadline_seconds=None` still removes the deadline. The
   deadline is not recorded in requests, artifacts, or results.
+- The Chat Completions adapter version is `0.4.0` and the decision-model
+  adapter version is `0.2.0`, because the default deadline and the endpoint and
+  transport changes in this release change how their requests run. Results and
+  `User-Agent` headers name the new versions.
 - `itself ledger append` applies the CLI's ledger ceilings, 128 MiB and
   100,000 records, to the ledger it reads and to the ledger it would write,
   and refuses an append that would exceed either before writing anything.
   Before, it applied no limit.
-- A `JsonlLedgerStore` instance now holds the records it last validated or
-  wrote, with the SHA-256 of the file bytes they match. When a later read
-  returns exactly those bytes, it skips decoding and schema validation of the
-  stored history. The cross-record checks still cover the whole history on
-  every append, and any byte difference takes the full path, so results,
-  errors, and written bytes are unchanged. 800 single appends through one
-  instance take about a seventh of the time they did.
+- A `JsonlLedgerStore` instance holds the records it last validated or wrote,
+  with the SHA-256 of the file bytes they match. When a later read returns
+  exactly those bytes, it skips decoding and schema validation of the stored
+  history. The cross-record checks still cover the whole history on every
+  append, and any byte difference takes the full path, so results, errors, and
+  written bytes are unchanged. In one measurement, 800 single appends through
+  one instance took about 9 seconds, against about 62 seconds with 0.2.0.
 - Loopback detection compares host names without case and ignores one
   trailing dot, so `localhost.`, `LOCALHOST`, and `api.localhost.` are loopback
   hosts. Opted-in insecure HTTP now accepts them, and the built-in transport
   connects to them directly instead of through a configured proxy. Address
   literals are unchanged, so `127.0.0.1.` is still not a loopback host.
-
-- `JsonlLedgerStore.extend` and `append` raise `OSError` instead of replacing a
-  ledger that another writer created, removed, or changed after the append
-  read it, judged by device, inode, size, and modification time. Before, the
-  append silently discarded the other writer's records. The store is still
-  single-writer, and the ledger and receipt stores now share one atomic
-  replacement routine.
 - Ledger and receipt replacement, inference-artifact capture, evidence-bundle
   publication, and schema export synchronize the parent directory after the
   rename where the filesystem supports it. A directory sync that the
   filesystem does not support or permit (`EINVAL`, `ENOTSUP`, `EOPNOTSUPP`,
   `EACCES`, or `EPERM`) is skipped, and any other failure, such as `EIO`, is
   raised with the new file or directory already in place.
-- Schema validation never retrieves a referenced schema. `StructuredOutputProfile`
-  and `ProtocolValidator(schema_path)` raise `ValueError` for a schema whose
-  `$ref` or `$dynamicRef` names a resource outside the schema, including a
-  JSON Schema meta-schema. A reference that still cannot be resolved while a
-  response is validated is a configuration failure, not a fetch.
+- Schema validation never retrieves a referenced schema.
+  `StructuredOutputProfile` and `ProtocolValidator(schema_path)` raise
+  `ValueError` for a schema whose `$ref` or `$dynamicRef` names a resource
+  outside the schema, including a JSON Schema meta-schema. A reference that
+  still cannot be resolved while a response is validated is a configuration
+  failure, not a fetch.
 - The packaged receipt and evidence-bundle schemas are compiled once per
   process. The bundle schema was previously recompiled for every manifest.
 - CLI text output and error messages escape C0 and C1 control characters,
@@ -112,21 +201,68 @@ Python distribution version.
   U+2028, and U+2029 as `\uXXXX`. Its parsed value is unchanged, other
   non-ASCII text is still printed as it is, and files the stores write keep
   their bytes.
-- The CLI names itself `itself` in usage and `--version` output however it is
-  started, and a blank `--trusted-authorizer` is a usage error with exit
-  status 2 instead of an uncaught `ValueError`.
-- The agent-change gate recipe treats a check ended by a signal as having no
-  exit code, so the claim is inconclusive and the action deferred. It refuses
-  a `--timeout-seconds` that is not a finite positive number, quotes the model
-  assertion in `summary.md` as one inline code span, and runs the check without
-  the GitHub Actions workflow-command files in its environment. Its GitHub
-  Actions wrapper fails in the step that runs the gate, and its README says how
-  to run the gate from code the change cannot edit.
-- The evidence-bundle verification recipes set `pipefail` and capture standard
-  error, so a failed validation fails the job instead of being hidden by `tee`.
+- The HTTP transport, artifact sinks, and inference errors moved from
+  `itself.inference` into private modules. `itself.inference` re-exports the
+  same nine public classes as the same objects, and they keep
+  `itself.inference` as their `__module__`, but `inspect.getsource` no longer
+  finds their source.
+- The agent-change gate recipe approves only when the check returns the
+  repository's passing exit code. It validates what it writes with a trust
+  list naming its policy actor and with supported reliance required, so a
+  `--model-actor-id` naming one of the runner's own actors fails with exit
+  status 2 and writes nothing. It treats a check ended by a signal as having no
+  exit code, so the claim is inconclusive and the action deferred; refuses a
+  `--timeout-seconds` that is not a finite positive number; treats an
+  assertion nested too deeply to parse as an input error; quotes the model
+  assertion in `summary.md` as one inline code span; and runs the check
+  without the GitHub Actions workflow-command files in its environment. Its
+  GitHub Actions wrapper fails in the step that runs the gate, and its README
+  says how to run the gate from code the change cannot edit.
+- In the research harness under `experiments/`, which is not part of the
+  package, no failure deletes a captured provider response. The trial builder
+  checks its declared metrics, and both builders check the destination, before
+  any request, and both record an HTTP status outside 100–599 as a failed
+  attempt with a null status code. Any other failure after capture moves
+  staging to `<destination>.quarantined` and raises `AttemptQuarantinedError`
+  naming it, or lets an interrupt such as `KeyboardInterrupt` propagate
+  unchanged, and a later attempt at that destination is refused before any
+  request.
+- `TrialBundleValidator` replays the recorded diagnosis through the case,
+  requires the stored ledger and scorecard to equal the replay, and binds the
+  trial manifest to the recorded request and diagnostician. Both harness
+  bundle validators refuse a root that is a link or not a directory, check
+  each path with `lstat` before reading it, bound every read and the number of
+  directory entries walked, follow no links, and reject entries that are
+  neither regular files nor directories. `receipt_recomputes` is measured
+  rather than written as a literal, an accepted premature promotion is counted
+  instead of ending the run, and a failed attempt records the time it failed
+  as `completed_at`.
+- Both harness runner CLIs print every error on one line and exit with status
+  2, so status 1 means only a valid failed-attempt bundle. The comparison
+  report derives its streaming mode, hosted-only limitations, and historical
+  banner from the study targets. The binding sends no request deadline,
+  because the registered manifests record none, and a test pins the shipped
+  adapter it was re-verified against. The registered study manifests, results,
+  and v1 contracts are byte-identical, and every manifest still validates.
+- The capacity curve constructs its validators and builder outside the timed
+  regions, so its timings no longer include construction. The SDK exercise
+  flips one artifact bit instead of appending a byte, so the mutation reaches
+  the digest check; its report names it `artifact-same-length-byte-change`,
+  rejected at `inventory_digest`, where it was `artifact-byte-append` at
+  `inventory_size_or_digest`. Evaluation reports and the harness contract
+  schemas are compiled once per process.
+- The README and decision-model guide call decision models by that name,
+  keeping "System One models" as the alias the field also uses, show the PyPI
+  install, and show endpoint configuration for TypeSafe's hosted Jev.
 
 ### Fixed
 
+- `JsonlLedgerStore.extend` and `append` raise `OSError` instead of replacing a
+  ledger that another writer created, removed, or changed after the append
+  read it, judged by device, inode, size, and modification time. Before, the
+  append silently discarded the other writer's records. The store is still
+  single-writer, and the ledger and receipt stores now share one atomic
+  replacement routine.
 - `BundleValidator` reports a record that is not a JSON object, such as `1` or
   `null`, as `schema_invalid` instead of raising `AttributeError`. The
   JavaScript validator no longer raises `TypeError` for a `null` record.
@@ -138,15 +274,20 @@ Python distribution version.
 - An endpoint `base_url` with an empty query or fragment marker, such as
   `https://h.example/v1/?` or `https://h.example/v1#`, is refused. Before, it
   was accepted and the resource path was appended after the marker.
+- `UrllibHttpTransport` refuses a `max_response_bytes` that is not an integer,
+  such as `2.0` or `"3"`, with `ValueError`.
+- The CLI names itself `itself` in usage and `--version` output however it is
+  started, and a blank `--trusted-authorizer` is a usage error with exit
+  status 2 instead of an uncaught `ValueError`.
+- A `--created-at` or `--as-of` value whose offset moves it outside the
+  representable date range is a usage error instead of an uncaught
+  `OverflowError`.
 - `typing.get_type_hints` resolves every class, method, property, and function
   that `itself` exports. Members of `BundleValidator`, `Ledger`,
   `JsonlLedgerStore`, `LedgerSummary`, and `SubjectReplay` raised `NameError`
   for `JsonValue`.
-- A `--created-at` or `--as-of` value whose offset moves it outside the
-  representable date range is a usage error instead of an uncaught
-  `OverflowError`.
-- `UrllibHttpTransport` refuses a `max_response_bytes` that is not an integer,
-  such as `2.0` or `"3"`, with `ValueError`.
+- The evidence-bundle verification recipes set `pipefail` and capture standard
+  error, so a failed validation fails the job instead of being hidden by `tee`.
 
 ## 0.2.0
 

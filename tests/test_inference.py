@@ -320,6 +320,8 @@ def test_client_builds_one_captured_schema_validated_request(tmp_path: Path) -> 
     wire_request = transport.requests[0]
     assert wire_request.url == "https://models.example.test/v1/chat/completions"
     assert wire_request.headers["Authorization"] == f"Bearer {SECRET}"
+    # Results record this version, so a change to it is deliberate.
+    assert wire_request.headers["User-Agent"] == "itself-inference/0.4.0"
     assert SECRET not in repr(wire_request)
     assert SECRET.encode() not in wire_request.body
     payload = cast(JsonObject, json.loads(wire_request.body))

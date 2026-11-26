@@ -66,7 +66,7 @@ from ._schema_references import (
 from .types import JsonObject, JsonValue
 
 ADAPTER_ID: Final = "openai-compatible-chat-completions"
-ADAPTER_VERSION: Final = "0.3.1"
+ADAPTER_VERSION: Final = "0.4.0"
 
 _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CREDENTIAL_VALUE_PATTERN: Final = re.compile(

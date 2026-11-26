@@ -720,7 +720,8 @@ def test_urllib_transport_sanitizes_network_failures(
 def test_the_binding_version_pins_the_shipped_adapter_that_executes_requests() -> None:
     # Registered manifests record the binding identity, and the shipped client
     # sends the requests.  A change to the shipped adapter fails here until the
-    # binding version is deliberately bumped and its pairing re-verified.
+    # pairing is re-verified and the binding version kept or deliberately
+    # bumped.  Binding 0.2.0 was re-verified against shipped 0.4.0.
     assert (model_adapters.ADAPTER_ID, model_adapters.ADAPTER_VERSION) == (
         "openai-chat-completions",
         "0.2.0",
@@ -728,7 +729,7 @@ def test_the_binding_version_pins_the_shipped_adapter_that_executes_requests() -
     assert (
         model_adapters.SHIPPED_ADAPTER_ID,
         model_adapters.SHIPPED_ADAPTER_VERSION,
-    ) == ("openai-compatible-chat-completions", "0.3.1")
+    ) == ("openai-compatible-chat-completions", "0.4.0")
     assert (inference.ADAPTER_ID, inference.ADAPTER_VERSION) == (
         model_adapters.SHIPPED_ADAPTER_ID,
         model_adapters.SHIPPED_ADAPTER_VERSION,

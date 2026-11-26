@@ -98,8 +98,9 @@ def _error_lines(error: Exception) -> tuple[str, ...]:
 
 
 # Ledgers and receipts loaded here use the documented evidence-bundle ceilings,
-# the bounds a default closed bundle enforces. `ledger append` loads through
-# JsonlLedgerStore.extend, which takes no limits.
+# the bounds a default closed bundle enforces. `ledger append` passes the
+# ledger ceilings to JsonlLedgerStore.extend, which applies them to the stored
+# ledger and to the result.
 _CLI_LIMITS: Final = DEFAULT_EVIDENCE_BUNDLE_LIMITS
 
 # Media types for --input and --supplemental files by lowercase suffix. The

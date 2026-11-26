@@ -77,11 +77,17 @@ transport, raw-response storage, schema validation, assertion decoding, and
 diagnosis-contract validation remain separate typed boundaries.
 
 Registered manifests and results record the binding's identity,
-`openai-chat-completions` version `0.2.0`, not the shipped client's
-`openai-compatible-chat-completions` version `0.3.1` that sends the requests. A
-test pins that pairing, so a change to the shipped client fails until the
-binding version is deliberately bumped. The binding also sends requests with no
-total deadline: a registered manifest bounds each read with
+`openai-chat-completions` version `0.2.0`, not the shipped
+`openai-compatible-chat-completions` client that sends the requests, and no
+result names the shipped client's version. Binding `0.2.0` has been
+re-verified offline against shipped adapter `0.4.0`: every registered study
+manifest still validates and reproduces its prompt-payload digests, the
+committed reports re-render byte for byte, and the request body is the one
+shipped `0.3.1` sent, while the `User-Agent` header names the shipped version.
+A test pins that pairing, so a change to the shipped client fails until the
+pairing is re-verified and the binding version kept or deliberately bumped.
+The binding also sends requests with no total deadline: a registered manifest
+bounds each read with
 `execution.timeout_seconds` and registers no deadline, so the shipped client's
 default deadline would change how a registered request runs.
 

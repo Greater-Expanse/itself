@@ -296,14 +296,19 @@ mutating in-memory or persisted state. References resolve against that
 candidate history, so records that cite each other arrive in the same batch.
 Records already accepted into an in-memory ledger are private copies that the
 ledger never exposes, so the reference ledger re-checks cross-record integrity
-across the whole history and applies the schema only to new records; the reference store re-validates the
-stored history each time it loads the file. The store writes a replacement
-file in the destination directory and atomically replaces the previous file only
-after validation and file synchronization succeed, then synchronizes the
-directory where the filesystem supports it. Before it replaces the file, the reference store confirms that the
-path is still the regular file it read, with the same device, inode, size, and
-modification time, or is still absent; otherwise the append fails and leaves
-the other writer's file in place rather than discarding its records.
+across the whole history and applies the schema only to new records. The
+reference store re-checks cross-record integrity across the whole stored
+history each time it reads the file. It also decodes the stored records and
+applies the schema to them, unless the same store instance last validated or
+wrote exactly those bytes, identified by their SHA-256; any byte difference
+takes the full path. The store writes a replacement file in the destination
+directory and atomically replaces the previous file only after validation and
+file synchronization succeed, then synchronizes the directory where the
+filesystem supports it. Before it replaces the file, the reference store
+confirms that the path is still the regular file it read, with the same
+device, inode, size, and modification time, or is still absent; otherwise the
+append fails and leaves the other writer's file in place rather than
+discarding its records.
 
 This profile provides deterministic local persistence and failure atomicity for
 a single writer. The identity check turns most interleaved appends into errors

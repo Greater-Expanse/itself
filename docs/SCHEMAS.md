@@ -10,7 +10,11 @@ a stable discovery and exchange surface for other languages and tools.
 
 `ProtocolValidator`, `ReasoningReceiptValidator`, and
 `EvidenceBundleValidator` load schemas from the installed package. They do not
-make HTTP requests or require the public catalog.
+make HTTP requests or require the public catalog. A schema supplied through
+`ProtocolValidator(schema_path)` or a `StructuredOutputProfile` must resolve
+every `$ref` and `$dynamicRef` within itself: referenced schemas are never
+retrieved, and one that names an outside resource, including a JSON Schema
+meta-schema, raises `ValueError`.
 
 Applications can therefore validate records, receipts, and bundles without
 network access. A non-Python implementation can vendor the published files or
