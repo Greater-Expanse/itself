@@ -1002,3 +1002,76 @@ def test_extend_rejects_negative_limits(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="max_bytes must not be negative"):
         store.extend([_claim(0)], max_bytes=-1)
     assert not store.path.exists()
+
+
+def test_an_empty_extend_applies_the_record_limit_to_the_stored_ledger(
+    tmp_path: Path,
+) -> None:
+    store = _warm_store(tmp_path, 2)
+
+    with pytest.raises(LedgerFormatError, match="record count exceeds limit 1"):
+        store.extend((), max_records=1)
+
+
+def test_extend_checks_the_stored_size_before_decoding_it(tmp_path: Path) -> None:
+    store = _warm_store(tmp_path, 2)
+    stored_size = len(store.path.read_bytes())
+    with store.path.open("ab") as handle:
+        handle.write(b"{not json\n")
+
+    with pytest.raises(
+        LedgerFormatError, match=f"ledger size exceeds limit {stored_size} bytes"
+    ):
+        store.extend([_claim(2)], max_bytes=stored_size)
+
+
+class _StampingValidator(BundleValidator):
+    """Validate, then restamp every record it is given and remember each one.
+
+    Overriding ``validate`` lets a validator see and change the records, so a
+    store must not reuse records such a validator was handed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[JsonObject, ...]] = []
+
+    def validate(
+        self,
+        records: Iterable[JsonObject],
+        *,
+        external_refs: Collection[str] = (),
+    ) -> BundleSnapshot:
+        candidate = tuple(records)
+        snapshot = super().validate(candidate, external_refs=external_refs)
+        self.calls.append(candidate)
+        for record in candidate:
+            record["created_at"] = f"2026-07-22T12:00:{len(self.calls):02d}Z"
+        return snapshot
+
+
+def test_a_store_holds_no_history_for_a_validator_that_overrides_validate(
+    tmp_path: Path,
+) -> None:
+    warm_validator = _StampingValidator()
+    warm = JsonlLedgerStore(tmp_path / "warm.jsonl", validator=warm_validator)
+    fresh_validator = _StampingValidator()
+    fresh_path = tmp_path / "fresh.jsonl"
+
+    for index in range(3):
+        warm.append(_claim(index))
+        JsonlLedgerStore(fresh_path, validator=fresh_validator).append(_claim(index))
+
+    # Each append validates the stored history, then the extended one.  The
+    # history handed over is decoded afresh each time, never an object the
+    # validator was given by an earlier append, so the history is restamped
+    # and rewritten exactly as a store that held nothing would.
+    assert len(warm_validator.calls) == 6
+    for position in range(2, len(warm_validator.calls), 2):
+        history = warm_validator.calls[position]
+        earlier = {
+            id(record) for call in warm_validator.calls[:position] for record in call
+        }
+        assert len(history) == position // 2
+        assert not {id(record) for record in history} & earlier
+    assert warm.path.read_bytes() == fresh_path.read_bytes()

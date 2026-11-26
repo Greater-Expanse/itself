@@ -153,7 +153,9 @@ policy = ValidationPolicy(
 position in the history, is anything other than `supported` or
 `corroborated_within_scope`. The refusal is reported as `unsupported_reliance`.
 A later promotion does not repair an earlier decision, and references declared
-external are skipped, because their status is not in the history.
+external are skipped, because their status is not in the history. The schema
+makes `relied_on_claim_refs` optional, so a decision that names no claims is
+not refused.
 
 `as_of`, a timezone-aware datetime, checks each subject that is `supported` or
 `corroborated_within_scope` at the end of the history. It reports
@@ -161,9 +163,10 @@ external are skipped, because their status is not in the history.
 `as_of`. It does the same for any evidence cited by the transition that gave
 the subject its current status, when that evidence's `expires_at` or scope
 `valid_until` is at or before `as_of`. Timestamps are compared as instants,
-whatever their offsets. A naive datetime raises `ValueError`. On the command line, the same checks are
-`--require-supported-reliance` and `--as-of TIMESTAMP`, an RFC 3339 date-time
-with an offset, on every command that accepts `--trusted-authorizer`.
+whatever their offsets. A naive datetime raises `ValueError`. On the command
+line, the same checks are `--require-supported-reliance` and
+`--as-of TIMESTAMP`, an RFC 3339 date-time with an offset, on every command
+that accepts `--trusted-authorizer`.
 
 ## Record a test and its evidence
 

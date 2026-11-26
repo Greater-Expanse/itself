@@ -317,7 +317,8 @@ class ValidationPolicy:
     more than one ``actor_type`` is also refused.  ``require_supported_reliance``
     refuses an approved or executed decision that relies on a subject whose
     replayed status at the decision is not supported or corroborated within
-    scope.  ``as_of``, a timezone-aware datetime, refuses a supported subject
+    scope; ``relied_on_claim_refs`` is optional, so a decision that names no
+    claims is not refused.  ``as_of``, a timezone-aware datetime, refuses a supported subject
     whose scope, or the evidence behind its current status, has expired by then.
     """
 

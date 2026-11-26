@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -28,6 +29,21 @@ RUNNER_POLICY: Final = ValidationPolicy(
     trusted_authorizers=("ci-assurance-policy",),
     require_supported_reliance=True,
 )
+
+
+def test_runner_validates_with_its_trust_list_and_supported_reliance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The runner's own records always satisfy the policy, so only its constant
+    # shows which checks it applies.
+    spec = importlib.util.spec_from_file_location("agent_change_gate_run", RUNNER)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    # Its dataclasses look their module up while the module executes.
+    monkeypatch.setitem(sys.modules, spec.name, runner)
+    spec.loader.exec_module(runner)
+
+    assert cast(object, runner.VALIDATION_POLICY) == RUNNER_POLICY
 
 
 def _run_gate_command(
