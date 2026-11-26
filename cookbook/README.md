@@ -66,7 +66,9 @@ The model assertion has a deliberately narrow contract:
 The model does not supply the command. A repository owner chooses that command
 in reviewed CI configuration. The runner rejects unknown assertion fields
 before starting a process, executes the configured argument vector without a
-shell, and compares the observed exit code with the declared expectation.
+shell, and compares the observed exit code with the declared expectation. A
+correct expectation supports the assertion, but only the repository's passing
+exit code, `0` unless `--passing-exit-code` says otherwise, approves the action.
 
 This separation is the point of the recipe:
 

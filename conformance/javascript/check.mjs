@@ -162,16 +162,23 @@ const PYTHON_BLANK =
   /^[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
 
 const EXPECTED_BUNDLE_CODES = {
+  "blank-transition-authorizer.json": "invalid_transition",
   "blank-transition-subject.json": "invalid_transition",
   "dangling-reference.json": "unresolved_reference",
   "duplicate-id.json": "duplicate_id",
+  "evidence-scope-mismatch.json": "scope_mismatch",
   "invalid-transition.json": "invalid_transition",
+  "mixed-evidence-without-contradiction.json": "evidence_relation_missing",
   "proto-scope-mismatch.json": "scope_mismatch",
+  "refuted-without-contradiction.json": "evidence_relation_missing",
   "state-drift.json": "state_mismatch",
   "test-plan-kind-mismatch.json": "reference_kind_mismatch",
+  "transition-before-subject.json": "subject_not_available",
   "transition-subject-mismatch.json": "transition_subject_mismatch",
   "unrelated-evidence.json": "evidence_relation_missing",
   "verdict-after-transition.json": "reference_not_available",
+  "verdict-before-evidence.json": "reference_not_available",
+  "verdict-outcome-mismatch.json": "verdict_mismatch",
   "wrong-reference-kind.json": "reference_kind_mismatch",
 };
 
@@ -614,11 +621,14 @@ function verdictIssues(records, index, positions) {
 
 function validateBundle(records, externalRefs = new Set()) {
   const schemaIssues = [];
-  for (const record of records) {
+  records.forEach((record, position) => {
     if (!validateRecord(record)) {
-      schemaIssues.push(issue("schema_invalid", record.id ?? "<unknown>"));
+      // A record that fails the schema need not be an object at all.
+      const recordId =
+        typeof record?.id === "string" ? record.id : `@record[${position}]`;
+      schemaIssues.push(issue("schema_invalid", recordId));
     }
-  }
+  });
   if (schemaIssues.length > 0) {
     return { issues: schemaIssues, states: {} };
   }
@@ -921,6 +931,58 @@ assert(
   ),
   "a transition must match its authorizing verdict",
 );
+
+for (const record of [null, 1, "x", [], true]) {
+  assert.deepEqual(
+    validateBundle([record]).issues.map((entry) => entry.code),
+    ["schema_invalid"],
+    `a ${JSON.stringify(record)} record must be reported as schema_invalid`,
+  );
+}
+
+// The edge list shared with the Python reference. ALLOWED_TRANSITIONS stays an
+// independent copy, and every ordered pair of statuses is checked against it.
+const transitionTable = readJson(
+  path.join(ROOT, "conformance", "transitions.json"),
+);
+assert.deepEqual(
+  transitionTable.statuses.toSorted(),
+  Object.keys(ALLOWED_TRANSITIONS).toSorted(),
+  "the shared transition table must list every status",
+);
+const sharedEdges = new Set(
+  transitionTable.transitions.map((edge) => `${edge.from} -> ${edge.to}`),
+);
+assert.equal(sharedEdges.size, transitionTable.transitions.length);
+assert.equal(sharedEdges.size, 37);
+let transitionPairCount = 0;
+for (const fromStatus of transitionTable.statuses) {
+  for (const toStatus of transitionTable.statuses) {
+    const pair = `${fromStatus} -> ${toStatus}`;
+    // Evidence, a verdict, a policy, and an evaluator satisfy every other rule.
+    const policyIssues = transitionPolicyIssues({
+      id: "transition-pair",
+      subject_ref: "claim-pair",
+      from_status: fromStatus,
+      to_status: toStatus,
+      evidence_refs: ["evidence-pair"],
+      verdict_ref: "verdict-pair",
+      policy_ref: "policy-pair",
+      authorized_by: {
+        id: "pair-evaluator",
+        actor_type: "software",
+        role: "evaluator",
+      },
+    });
+    assert.equal(
+      policyIssues.length === 0,
+      sharedEdges.has(pair),
+      `${pair} must be ${sharedEdges.has(pair) ? "allowed" : "refused"}`,
+    );
+    transitionPairCount += 1;
+  }
+}
+assert.equal(transitionPairCount, 144);
 
 assert.throws(
   () => parseJson('{"kind":"claim","kind":"evidence"}'),

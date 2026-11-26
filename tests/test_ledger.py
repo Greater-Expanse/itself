@@ -3,14 +3,18 @@
 
 from __future__ import annotations
 
+import errno
 import json
-from collections.abc import Collection, Iterable
+import os
+import stat
+from collections.abc import Callable, Collection, Iterable
 from copy import deepcopy
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+import itself._filesystem as filesystem_module
 from itself import (
     BundleIntegrityError,
     BundleSnapshot,
@@ -382,6 +386,221 @@ def test_store_refuses_a_record_its_reader_could_not_read_back(
     assert _issue_codes(error.value) == [IntegrityCode.SCHEMA_INVALID]
     assert store.path.read_bytes() == before
     assert store.load().snapshot.record_count == 4
+
+
+class _InterleavingValidator(BundleValidator):
+    """Let another writer act after the store has read the ledger."""
+
+    def __init__(self, interleave: Callable[[], None]) -> None:
+        super().__init__()
+        self._interleave: Callable[[], None] | None = interleave
+
+    def validate(
+        self,
+        records: Iterable[JsonObject],
+        *,
+        external_refs: Collection[str] = (),
+    ) -> BundleSnapshot:
+        interleave, self._interleave = self._interleave, None
+        if interleave is not None:
+            interleave()
+        return super().validate(records, external_refs=external_refs)
+
+
+def _append_with_another_store(path: Path, record: JsonObject) -> None:
+    JsonlLedgerStore(path).append(record)
+
+
+def _append_in_place(path: Path, record: JsonObject) -> None:
+    with path.open("ab") as handle:
+        handle.write(json.dumps(record).encode() + b"\n")
+
+
+@pytest.mark.parametrize(
+    "other_writer",
+    [_append_with_another_store, _append_in_place],
+    ids=["replaced-by-another-store", "modified-in-place"],
+)
+def test_jsonl_store_refuses_to_overwrite_a_concurrent_append(
+    tmp_path: Path,
+    other_writer: Callable[[Path, JsonObject], None],
+) -> None:
+    records = _records()
+    path = tmp_path / "assurance.jsonl"
+    JsonlLedgerStore(path).append(records[0])
+    other_bytes: list[bytes] = []
+
+    def interleave() -> None:
+        other_writer(path, records[1])
+        other_bytes.append(path.read_bytes())
+
+    store = JsonlLedgerStore(path, validator=_InterleavingValidator(interleave))
+    with pytest.raises(OSError, match="changed concurrently and was not replaced"):
+        store.append(records[1])
+
+    assert path.read_bytes() == other_bytes[0]
+    assert not list(tmp_path.glob(".assurance.jsonl.*.tmp"))
+
+
+def test_jsonl_store_refuses_a_ledger_created_concurrently(tmp_path: Path) -> None:
+    records = _records()
+    path = tmp_path / "assurance.jsonl"
+
+    def interleave() -> None:
+        JsonlLedgerStore(path).append(records[0])
+
+    store = JsonlLedgerStore(path, validator=_InterleavingValidator(interleave))
+    with pytest.raises(OSError, match="created concurrently and was not replaced"):
+        store.append(records[0])
+
+    assert JsonlLedgerStore(path).load().snapshot.record_count == 1
+
+
+def test_jsonl_store_refuses_a_ledger_removed_concurrently(tmp_path: Path) -> None:
+    records = _records()
+    path = tmp_path / "assurance.jsonl"
+    JsonlLedgerStore(path).append(records[0])
+
+    store = JsonlLedgerStore(path, validator=_InterleavingValidator(path.unlink))
+    with pytest.raises(OSError, match="removed concurrently and was not replaced"):
+        store.append(records[1])
+
+    assert not path.exists()
+
+
+def test_jsonl_store_rechecks_for_a_symbolic_link_before_replacing(
+    tmp_path: Path,
+) -> None:
+    records = _records()
+    path = tmp_path / "assurance.jsonl"
+    target = tmp_path / "target.jsonl"
+    target.write_text("{}\n", encoding="utf-8")
+    JsonlLedgerStore(path).append(records[0])
+    try:
+        (tmp_path / "probe").symlink_to(target)
+    except OSError:
+        pytest.skip("symbolic links are unavailable")
+
+    def interleave() -> None:
+        path.unlink()
+        path.symlink_to(target)
+
+    store = JsonlLedgerStore(path, validator=_InterleavingValidator(interleave))
+    with pytest.raises(OSError, match="must not be a symbolic link"):
+        store.append(records[1])
+
+    assert path.is_symlink()
+    assert target.read_text(encoding="utf-8") == "{}\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode semantics")
+def test_jsonl_store_append_keeps_the_ledger_permissions(tmp_path: Path) -> None:
+    records = _records()
+    store = JsonlLedgerStore(tmp_path / "assurance.jsonl")
+    store.append(records[0])
+    store.path.chmod(0o640)
+
+    store.append(records[1])
+
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o640
+
+
+def test_jsonl_store_rejects_a_path_that_is_not_a_regular_file(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "assurance.jsonl"
+    path.mkdir()
+
+    with pytest.raises(OSError, match="must be a regular file"):
+        JsonlLedgerStore(path).load()
+    with pytest.raises(OSError, match="must be a regular file"):
+        JsonlLedgerStore(path).append(_records()[0])
+
+    assert path.is_dir()
+    assert not list(path.iterdir())
+
+
+def test_jsonl_store_synchronizes_the_directory_after_the_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "ledger" / "assurance.jsonl"
+    synchronized: list[tuple[Path, bool]] = []
+    synchronize = filesystem_module.fsync_directory
+
+    def recording_fsync_directory(directory: Path) -> None:
+        synchronized.append((directory, path.is_file()))
+        synchronize(directory)
+
+    monkeypatch.setattr(filesystem_module, "fsync_directory", recording_fsync_directory)
+
+    JsonlLedgerStore(path).append(_records()[0])
+
+    assert synchronized == [(path.parent, True)]
+
+
+def _failing_fsync_directory(code: int) -> Callable[[Path], None]:
+    def fail(directory: Path) -> None:
+        raise OSError(code, os.strerror(code), str(directory))
+
+    return fail
+
+
+@pytest.mark.parametrize("name", ["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EACCES", "EPERM"])
+def test_jsonl_store_append_completes_when_the_directory_cannot_be_synchronized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    records = _records()
+    monkeypatch.setattr(
+        filesystem_module,
+        "fsync_directory",
+        _failing_fsync_directory(getattr(errno, name)),
+    )
+    store = JsonlLedgerStore(tmp_path / "assurance.jsonl")
+
+    store.append(records[0])
+    store.append(records[1])
+
+    assert store.load().records == tuple(records[:2])
+
+
+def test_jsonl_store_append_reports_another_sync_failure_after_storing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = _records()
+    monkeypatch.setattr(
+        filesystem_module, "fsync_directory", _failing_fsync_directory(errno.EIO)
+    )
+    store = JsonlLedgerStore(tmp_path / "assurance.jsonl")
+
+    with pytest.raises(OSError) as raised:
+        store.append(records[0])
+
+    # The replacement had already happened, as the store documents.
+    assert raised.value.errno == errno.EIO
+    assert store.load().records == (records[0],)
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="needs POSIX permissions that bind the current user",
+)
+def test_jsonl_store_appends_in_a_directory_it_cannot_read(tmp_path: Path) -> None:
+    records = _records()
+    directory = tmp_path / "write-only"
+    directory.mkdir()
+    store = JsonlLedgerStore(directory / "assurance.jsonl")
+    directory.chmod(0o300)
+    try:
+        store.append(records[0])
+        store.append(records[1])
+    finally:
+        directory.chmod(0o700)
+
+    assert store.load().records == tuple(records[:2])
 
 
 def test_ledger_gives_a_validator_that_overrides_validate_every_record() -> None:

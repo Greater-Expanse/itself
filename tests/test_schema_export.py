@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+import itself._filesystem as filesystem_module
 import itself.schema_export as schema_export_module
 from itself import (
     SCHEMA_LINE,
@@ -145,6 +148,42 @@ def test_schema_export_preserves_destination_created_during_export(
     assert destination.is_dir()
     assert tuple(destination.iterdir()) == ()
     assert tuple(tmp_path.glob(".export.*")) == ()
+
+
+def test_schema_export_synchronizes_the_parent_after_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "export"
+    synchronized: list[tuple[Path, bool]] = []
+
+    def recording_fsync_directory(directory: Path) -> None:
+        synchronized.append((directory, destination.is_dir()))
+
+    monkeypatch.setattr(filesystem_module, "fsync_directory", recording_fsync_directory)
+
+    export_schemas(destination)
+
+    assert synchronized == [(tmp_path, True)]
+
+
+def test_schema_export_completes_when_the_parent_cannot_be_synchronized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "export"
+
+    def unsupported_fsync_directory(directory: Path) -> None:
+        raise OSError(errno.EINVAL, os.strerror(errno.EINVAL), str(directory))
+
+    monkeypatch.setattr(
+        filesystem_module, "fsync_directory", unsupported_fsync_directory
+    )
+
+    snapshot = export_schemas(destination)
+
+    assert snapshot.destination == destination
+    assert (destination / "itself" / "schemas").is_dir()
 
 
 def test_cli_exports_canonical_schemas(

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
@@ -44,6 +45,36 @@ from .validation import ProtocolValidator
 
 class _RecordFileError(ValueError):
     pass
+
+
+# C0 and C1 controls, DEL, and the Unicode line and paragraph separators. Record
+# identifiers and file names can contain any of them, and printed raw they could
+# forge output lines, CI annotations, or terminal control sequences.
+_UNSAFE_TEXT: Final = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _escape_character(match: re.Match[str]) -> str:
+    code = ord(match.group())
+    return f"\\x{code:02x}" if code <= 0xFF else f"\\u{code:04x}"
+
+
+def _terminal_text(value: object) -> str:
+    """Render text from files or paths as one line without control characters."""
+
+    return _UNSAFE_TEXT.sub(_escape_character, str(value))
+
+
+def _error_lines(error: Exception) -> tuple[str, ...]:
+    """Return each separate issue an error reports as one escaped line."""
+
+    lines: tuple[str, ...] = ()
+    if isinstance(error, BundleIntegrityError):
+        lines = tuple(str(issue) for issue in error.issues)
+    elif isinstance(
+        error, (EvidenceBundleValidationError, ReasoningReceiptValidationError)
+    ):
+        lines = error.issues
+    return tuple(_terminal_text(line) for line in lines or (str(error),))
 
 
 # Ledgers and receipts loaded here use the documented evidence-bundle ceilings,
@@ -103,10 +134,18 @@ def _add_external_refs(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _actor_id_argument(value: str) -> str:
+    # The validators refuse a blank trusted authorizer with a ValueError.
+    if not value.strip():
+        raise argparse.ArgumentTypeError("actor id must not be blank")
+    return value
+
+
 def _add_trusted_authorizers(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--trusted-authorizer",
         action="append",
+        type=_actor_id_argument,
         metavar="ID",
         help=(
             "refuse evidence-backed transitions authorized by any other declared "
@@ -116,8 +155,11 @@ def _add_trusted_authorizers(parser: argparse.ArgumentParser) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
+    # A fixed name keeps usage and --version output the same however the
+    # interface is started, including as `python -m itself.cli`.
     parser = argparse.ArgumentParser(
-        description="Validate and inspect Claim and Evidence Protocol records."
+        prog="itself",
+        description="Validate and inspect Claim and Evidence Protocol records.",
     )
     parser.add_argument(
         "--version",
@@ -286,18 +328,18 @@ def _validate_records(paths: Sequence[Path]) -> int:
         try:
             record = _load_record(path)
         except _RecordFileError as error:
-            print(f"FAIL {error}", file=sys.stderr)
+            print(f"FAIL {_terminal_text(error)}", file=sys.stderr)
             failed = True
             continue
 
         issues = validator.errors(record)
         if issues:
-            print(f"FAIL {path}", file=sys.stderr)
+            print(f"FAIL {_terminal_text(path)}", file=sys.stderr)
             for issue in issues:
-                print(f"  {issue}", file=sys.stderr)
+                print(f"  {_terminal_text(issue)}", file=sys.stderr)
             failed = True
         else:
-            print(f"PASS {path}")
+            print(f"PASS {_terminal_text(path)}")
     return 1 if failed else 0
 
 
@@ -437,8 +479,10 @@ def _bundle_create(
     )
     file_count = len(cast(list[JsonValue], verified.manifest["files"]))
     print(
-        f"PASS {destination}: {verified.ledger.snapshot.record_count} records, "
-        f"{file_count} files, {verified.manifest['bundle_id']}"
+        _terminal_text(
+            f"PASS {destination}: {verified.ledger.snapshot.record_count} records, "
+            f"{file_count} files, {verified.manifest['bundle_id']}"
+        )
     )
     return 0
 
@@ -452,8 +496,10 @@ def _bundle_validate(
     ).validate(path)
     file_count = len(cast(list[JsonValue], verified.manifest["files"]))
     print(
-        f"PASS {path}: {verified.ledger.snapshot.record_count} records, "
-        f"{file_count} files, {verified.manifest['bundle_id']}"
+        _terminal_text(
+            f"PASS {path}: {verified.ledger.snapshot.record_count} records, "
+            f"{file_count} files, {verified.manifest['bundle_id']}"
+        )
     )
     return 0
 
@@ -466,7 +512,10 @@ def _ledger_validate(
     ledger = _load_existing_ledger(path, external_refs, trusted_authorizers)
     summary = summarize_ledger(ledger)
     print(
-        f"PASS {path}: {summary.record_count} records, {summary.subject_count} subjects"
+        _terminal_text(
+            f"PASS {path}: {summary.record_count} records, "
+            f"{summary.subject_count} subjects"
+        )
     )
     return 0
 
@@ -483,8 +532,10 @@ def _ledger_append(
         external_refs=external_refs,
     )
     print(
-        f"PASS {path}: appended {len(records)} records; "
-        f"ledger now contains {snapshot.record_count} records"
+        _terminal_text(
+            f"PASS {path}: appended {len(records)} records; "
+            f"ledger now contains {snapshot.record_count} records"
+        )
     )
     return 0
 
@@ -515,8 +566,9 @@ def _ledger_replay(
         transition_label = (
             "transition" if subject.transition_count == 1 else "transitions"
         )
+        # Tabs separate the fields, so each field is escaped on its own.
         print(
-            f"{subject.subject_id}\t{subject.kind.value}\t"
+            f"{_terminal_text(subject.subject_id)}\t{subject.kind.value}\t"
             f"{subject.initial_status.value} -> {subject.current_status.value}\t"
             f"{subject.transition_count} {transition_label}"
         )
@@ -547,7 +599,7 @@ def _ledger_summary(
     print(f"subjects: {summary.subject_count}")
     print("records_by_kind:")
     for kind, count in summary.record_counts.items():
-        print(f"  {kind}: {count}")
+        print(f"  {_terminal_text(kind)}: {count}")
     print("current_states:")
     for status, count in summary.state_counts.items():
         print(f"  {status.value}: {count}")
@@ -586,7 +638,7 @@ def _receipt_generate(
         receipt,
         max_bytes=_CLI_LIMITS.max_receipt_bytes,
     )
-    print(f"PASS {output_path}: receipt generated from {ledger_path}")
+    print(_terminal_text(f"PASS {output_path}: receipt generated from {ledger_path}"))
     return 0
 
 
@@ -606,12 +658,12 @@ def _receipt_validate(
         max_bytes=_CLI_LIMITS.max_receipt_bytes
     )
     if ledger_path is None:
-        print(f"PASS {receipt_path}: schema-valid receipt")
+        print(_terminal_text(f"PASS {receipt_path}: schema-valid receipt"))
         return 0
 
     ledger = _load_existing_ledger(ledger_path, external_refs, trusted_authorizers)
     ReasoningReceiptValidator().validate_against_ledger(receipt, ledger)
-    print(f"PASS {receipt_path}: bound to {ledger_path}")
+    print(_terminal_text(f"PASS {receipt_path}: bound to {ledger_path}"))
     return 0
 
 
@@ -694,8 +746,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "schema" and args.schema_command == "export":
             snapshot = export_schemas(cast(Path, args.destination))
             print(
-                f"PASS {snapshot.destination}: "
-                f"exported {len(snapshot.schemas)} canonical schemas"
+                _terminal_text(
+                    f"PASS {snapshot.destination}: "
+                    f"exported {len(snapshot.schemas)} canonical schemas"
+                )
             )
             return 0
     except (
@@ -709,7 +763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _RecordFileError,
         OSError,
     ) as error:
-        print(f"FAIL {error}", file=sys.stderr)
+        print("FAIL " + "\n".join(_error_lines(error)), file=sys.stderr)
         return 1
 
     raise RuntimeError("unreachable command dispatch")

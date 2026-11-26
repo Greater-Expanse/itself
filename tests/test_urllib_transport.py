@@ -14,6 +14,8 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Event, Thread
+from typing import cast
+from urllib.request import BaseHandler, HTTPRedirectHandler
 
 import pytest
 
@@ -22,6 +24,13 @@ from itself import (
     InferenceError,
     InferenceFailure,
     UrllibHttpTransport,
+)
+from itself.inference import (
+    _NoRedirectHandler,  # pyright: ignore[reportPrivateUsage]
+    _SocketTracker,  # pyright: ignore[reportPrivateUsage]
+)
+from itself.inference import (
+    _opener as _transport_opener,  # pyright: ignore[reportPrivateUsage]
 )
 
 SECRET = "Bearer redirect-canary"
@@ -109,7 +118,12 @@ def _truncating_handler(status: int, framing: str) -> type[BaseHTTPRequestHandle
 @contextmanager
 def _serve(handler: type[BaseHTTPRequestHandler]) -> Generator[str]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = Thread(target=server.serve_forever, daemon=True)
+    # A short poll interval keeps shutdown from adding half a second per server.
+    thread = Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.05},
+        daemon=True,
+    )
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}"
@@ -143,6 +157,120 @@ def test_default_transport_returns_redirect_without_forwarding_headers() -> None
     assert response.status_code == 302
     assert redirect_headers == [SECRET]
     assert target_headers == []
+
+
+REDIRECT_STATUSES = [301, 302, 303, 307, 308]
+
+
+def _redirect_status_handler(
+    status: int,
+    location: str,
+    received_authorization: list[str | None],
+) -> type[BaseHTTPRequestHandler]:
+    class RedirectStatusHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            received_authorization.append(self.headers.get("Authorization"))
+            self.send_response(status)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            del format, args
+
+    return RedirectStatusHandler
+
+
+@pytest.mark.parametrize("status", REDIRECT_STATUSES)
+@pytest.mark.parametrize("deadline", [None, 5.0], ids=["shared", "tracked"])
+def test_loopback_openers_return_every_redirect_unfollowed(
+    status: int,
+    deadline: float | None,
+) -> None:
+    target_headers: list[str | None] = []
+    redirect_headers: list[str | None] = []
+    with (
+        _serve(_capture_handler(target_headers)) as target,
+        _serve(
+            _redirect_status_handler(status, f"{target}/capture", redirect_headers)
+        ) as redirect,
+    ):
+        request = replace(_request(f"{redirect}/start"), deadline_seconds=deadline)
+        response = UrllibHttpTransport().send(request)
+
+    assert response.status_code == status
+    assert redirect_headers == [SECRET]
+    assert target_headers == []
+
+
+@pytest.mark.parametrize("status", REDIRECT_STATUSES)
+@pytest.mark.parametrize("deadline", [None, 5.0], ids=["per-request", "tracked"])
+def test_proxied_openers_return_every_redirect_unfollowed(
+    status: int,
+    deadline: float | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_headers: list[str | None] = []
+    proxy_headers: list[str | None] = []
+    with (
+        _serve(_capture_handler(target_headers)) as target,
+        _serve(
+            _redirect_status_handler(status, f"{target}/capture", proxy_headers)
+        ) as proxy,
+    ):
+        # A non-loopback host goes through the proxy, which answers for it.
+        _set_proxy_environment(monkeypatch, proxy)
+        request = replace(
+            _request("http://models.example.test/v1"),
+            deadline_seconds=deadline,
+        )
+        response = UrllibHttpTransport().send(request)
+
+    assert response.status_code == status
+    assert proxy_headers == [SECRET]
+    assert target_headers == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:9/v1", "https://models.example.test/v1"],
+    ids=["loopback", "other-host"],
+)
+@pytest.mark.parametrize("tracked", [False, True])
+def test_every_opener_replaces_the_redirect_handler(url: str, tracked: bool) -> None:
+    opener = _transport_opener(url, _SocketTracker() if tracked else None)
+    # The standard library stubs do not declare OpenerDirector.handlers.
+    handlers = cast(list[BaseHandler], vars(opener)["handlers"])
+
+    redirect_handlers = [
+        handler for handler in handlers if isinstance(handler, HTTPRedirectHandler)
+    ]
+    assert len(redirect_handlers) == 1
+    assert type(redirect_handlers[0]) is _NoRedirectHandler
+
+
+@pytest.mark.parametrize("deadline", [None, 5.0])
+def test_response_of_exactly_the_byte_limit_is_accepted(
+    deadline: float | None,
+) -> None:
+    with _serve(_body_handler(b"12345")) as endpoint:
+        request = replace(_request(f"{endpoint}/v1"), deadline_seconds=deadline)
+        response = UrllibHttpTransport(max_response_bytes=5).send(request)
+        with pytest.raises(InferenceError) as raised:
+            UrllibHttpTransport(max_response_bytes=4).send(request)
+
+    assert response.body == b"12345"
+    assert raised.value.failure is InferenceFailure.RESPONSE_TOO_LARGE
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, False, 1.5, 2.0, "3", None])
+def test_response_byte_limit_must_be_a_positive_integer(limit: object) -> None:
+    with pytest.raises(ValueError, match="max_response_bytes must be a positive"):
+        UrllibHttpTransport(max_response_bytes=limit)  # type: ignore[arg-type]
+
+
+def test_smallest_response_byte_limit_is_accepted() -> None:
+    assert UrllibHttpTransport(max_response_bytes=1).max_response_bytes == 1
 
 
 def test_default_transport_enforces_response_byte_limit() -> None:
@@ -421,8 +549,18 @@ def test_deadline_requests_load_trust_through_the_standard_hook(
         ("http://127.0.0.1:9/v1\x7f", {}),
         ("http://127.0.0.1:9/système", {}),
         ("http://127.0.0.1:9/v1", {"X-Note": "quote ’"}),
+        (
+            "http://127.0.0.1:9/v1",
+            {"Authorization": "Bearer canary-secret\nX-Injected: 1"},
+        ),
     ],
-    ids=["space", "control", "non-ascii-path", "non-latin-1-header"],
+    ids=[
+        "space",
+        "control",
+        "non-ascii-path",
+        "non-latin-1-header",
+        "line-break-in-credential-header",
+    ],
 )
 @pytest.mark.parametrize("deadline", [None, 5.0])
 def test_requests_http_cannot_carry_are_configuration_failures(
@@ -443,6 +581,10 @@ def test_requests_http_cannot_carry_are_configuration_failures(
 
     assert raised.value.failure is InferenceFailure.CONFIGURATION
     assert not raised.value.retryable
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__
+    assert "canary-secret" not in str(raised.value)
+    assert "canary-secret" not in repr(raised.value)
 
 
 @pytest.mark.parametrize(

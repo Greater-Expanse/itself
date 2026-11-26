@@ -10,8 +10,12 @@ import errno
 import os
 import stat
 import sys
+import tempfile
+from collections.abc import Iterable
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
@@ -20,6 +24,113 @@ _RENAME_EXCL = 0x00000004
 
 class AtomicPublishUnavailableError(OSError):
     """Raised when a platform cannot atomically publish without replacement."""
+
+
+@dataclass(frozen=True, slots=True)
+class FileIdentity:
+    """The device, inode, size, and modification time of one observed file."""
+
+    device: int
+    inode: int
+    size: int
+    modified_ns: int
+
+    @classmethod
+    def of(cls, metadata: os.stat_result) -> FileIdentity:
+        """Return the identity recorded in ``stat`` or ``fstat`` metadata."""
+
+        return cls(
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+            size=metadata.st_size,
+            modified_ns=metadata.st_mtime_ns,
+        )
+
+
+def _require_regular_file(metadata: os.stat_result, path: Path, label: str) -> None:
+    if stat.S_ISLNK(metadata.st_mode):
+        raise OSError(f"{label} path must not be a symbolic link: {path}")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise OSError(f"{label} path must be a regular file: {path}")
+
+
+def _metadata_if_present(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def regular_file_identity(path: Path, *, label: str) -> FileIdentity | None:
+    """Return the identity of the regular file at ``path``, or None if absent."""
+
+    metadata = _metadata_if_present(path)
+    if metadata is None:
+        return None
+    _require_regular_file(metadata, path, label)
+    return FileIdentity.of(metadata)
+
+
+def replace_file_atomically(
+    path: Path,
+    chunks: Iterable[bytes],
+    *,
+    expected: FileIdentity | None,
+    label: str,
+) -> None:
+    """Replace ``path`` with ``chunks`` while it keeps the identity last observed.
+
+    ``expected`` is the identity the caller read, or None when the path was
+    absent.  The content is written and synchronized in a sibling temporary
+    file, and the path is replaced only if it is still that regular file, or
+    still absent; otherwise this raises OSError and leaves the path alone.  The
+    replacement keeps the replaced file's permission bits, and the directory
+    entry is synchronized after the rename where the filesystem supports it.
+    An OSError from that sync, such as EIO, propagates with the path already
+    replaced.  Without a lock, a writer that replaces the path between the
+    final check and the rename still goes undetected, so callers remain
+    single-writer.
+    """
+
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            for chunk in chunks:
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        current = _metadata_if_present(path)
+        if expected is None:
+            if current is not None:
+                raise OSError(
+                    f"{label} path was created concurrently and was not replaced: "
+                    f"{path}"
+                )
+        else:
+            if current is None:
+                raise OSError(
+                    f"{label} path was removed concurrently and was not replaced: "
+                    f"{path}"
+                )
+            _require_regular_file(current, path, label)
+            if FileIdentity.of(current) != expected:
+                raise OSError(
+                    f"{label} path was changed concurrently and was not replaced: "
+                    f"{path}"
+                )
+            temporary_path.chmod(stat.S_IMODE(current.st_mode))
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    sync_directory_after_rename(parent)
 
 
 def _require_private_directory(path: Path) -> None:
@@ -66,6 +177,30 @@ def fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+# Some filesystems reject fsync on a directory, and a caller may be able to
+# write a directory that it cannot open for reading.
+_UNAVAILABLE_DIRECTORY_SYNC: Final = frozenset(
+    {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EACCES, errno.EPERM}
+)
+
+
+def sync_directory_after_rename(path: Path) -> None:
+    """Synchronize a directory whose entries a completed rename has changed.
+
+    The rename has already taken effect, so a sync the filesystem does not
+    support or permit (EINVAL, ENOTSUP, EOPNOTSUPP, EACCES, or EPERM, from
+    opening or syncing the directory) is skipped instead of turning a completed
+    write into an error.  Any other OSError, such as EIO, propagates with the
+    renamed path already in place.
+    """
+
+    try:
+        fsync_directory(path)
+    except OSError as error:
+        if error.errno not in _UNAVAILABLE_DIRECTORY_SYNC:
+            raise
 
 
 def write_file_exclusive(

@@ -7,6 +7,8 @@ import json
 import mimetypes
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +23,7 @@ from itself import (
     JsonObject,
     JsonReceiptStore,
     JsonValue,
+    __version__,
 )
 from itself.cli import main
 
@@ -653,3 +656,191 @@ def test_receipt_validate_refuses_a_trust_list_without_the_ledger(
 
     assert result == 1
     assert "--trusted-authorizer requires --ledger" in capsys.readouterr().err
+
+
+# Control characters and line separators a record id or file name may carry,
+# including a forged result line and a GitHub Actions annotation.
+FORGED_TEXT = "x\nPASS forged\x1b[2K\r::error::forged\x7f\x85\u2028\u2029\tend"
+ESCAPED_FORGED_TEXT = (
+    "x\\x0aPASS forged\\x1b[2K\\x0d::error::forged\\x7f\\x85\\u2028\\u2029\\x09end"
+)
+UNSAFE_OUTPUT_CHARACTERS = (
+    *(chr(code) for code in range(0x20) if chr(code) != "\n"),
+    *(chr(code) for code in range(0x7F, 0xA0)),
+    "\u2028",
+    "\u2029",
+)
+
+
+def _claim_with_id(record_id: str) -> JsonObject:
+    claim = _history()[0]
+    claim["id"] = record_id
+    return claim
+
+
+def _write_jsonl(path: Path, records: list[JsonObject]) -> None:
+    path.write_text(
+        "".join(f"{json.dumps(record)}\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def _assert_no_unsafe_characters(text: str) -> None:
+    assert not [
+        character for character in UNSAFE_OUTPUT_CHARACTERS if character in text
+    ]
+
+
+def test_replay_text_escapes_control_characters_in_record_ids(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "ledger.jsonl"
+    JsonlLedgerStore(ledger_path).append(_claim_with_id(FORGED_TEXT))
+
+    result = main(["ledger", "replay", str(ledger_path)])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == (
+        f"{ESCAPED_FORGED_TEXT}\tclaim\tproposed -> proposed\t0 transitions\n"
+    )
+    assert not captured.err
+
+
+def test_replay_json_keeps_record_ids_exact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "ledger.jsonl"
+    JsonlLedgerStore(ledger_path).append(_claim_with_id(FORGED_TEXT))
+
+    result = main(["ledger", "replay", str(ledger_path), "--format", "json"])
+
+    replayed = cast(list[JsonObject], json.loads(capsys.readouterr().out))
+    assert result == 0
+    assert replayed[0]["subject_id"] == FORGED_TEXT
+
+
+def test_failures_escape_record_ids_and_keep_one_line_per_issue(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "ledger.jsonl"
+    claim = _claim_with_id(FORGED_TEXT)
+    _write_jsonl(ledger_path, [claim, claim, claim])
+
+    result = main(["ledger", "validate", str(ledger_path)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert not captured.out
+    assert captured.err.split("\n") == [
+        f"FAIL duplicate_id: {ESCAPED_FORGED_TEXT}: duplicates the record at "
+        "position 0; encountered again at position 1",
+        f"duplicate_id: {ESCAPED_FORGED_TEXT}: duplicates the record at "
+        "position 0; encountered again at position 2",
+        "",
+    ]
+    _assert_no_unsafe_characters(captured.err)
+
+
+def test_record_validate_escapes_file_names(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    try:
+        valid = tmp_path / "valid\n::error::forged.json"
+        invalid = tmp_path / "invalid\x1b[2K.json"
+        valid.write_bytes(VALID_CLAIM.read_bytes())
+        invalid.write_bytes(INVALID_CLAIM.read_bytes())
+    except OSError:
+        pytest.skip("file names with control characters are unavailable")
+
+    result = main(["validate", str(valid), str(invalid)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == f"PASS {tmp_path}/valid\\x0a::error::forged.json\n"
+    assert captured.err.startswith(f"FAIL {tmp_path}/invalid\\x1b[2K.json\n  ")
+    _assert_no_unsafe_characters(captured.out + captured.err)
+
+
+def test_bundle_manifest_schema_failures_keep_one_line_per_issue(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, bundle)
+    manifest = cast(
+        JsonObject,
+        json.loads((bundle / "bundle.json").read_text(encoding="utf-8")),
+    )
+    del manifest["title"]
+    manifest["closed_artifacts"] = FORGED_TEXT
+    (bundle / "bundle.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = main(["bundle", "validate", str(bundle)])
+
+    lines = capsys.readouterr().err.split("\n")
+    assert result == 1
+    assert len(lines) == 3
+    assert lines[0].startswith("FAIL $")
+    assert lines[2] == ""
+    assert "'title' is a required property" in "\n".join(lines)
+    _assert_no_unsafe_characters("".join(lines))
+
+
+def test_receipt_schema_failures_keep_one_line_per_issue(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    receipt = cast(
+        JsonObject,
+        json.loads(
+            (REFERENCE_BUNDLE / "reasoning-receipt.json").read_text(encoding="utf-8")
+        ),
+    )
+    del receipt["limitations"]
+    receipt["receipt_version"] = FORGED_TEXT
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    result = main(["receipt", "validate", str(receipt_path)])
+
+    lines = capsys.readouterr().err.split("\n")
+    assert result == 1
+    assert len(lines) == 3
+    assert lines[0].startswith("FAIL $")
+    assert lines[2] == ""
+    _assert_no_unsafe_characters("".join(lines))
+
+
+def test_blank_trusted_authorizer_is_a_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(
+            [
+                "ledger",
+                "validate",
+                str(REFERENCE_BUNDLE / "ledger.jsonl"),
+                "--trusted-authorizer",
+                " ",
+            ]
+        )
+
+    assert raised.value.code == 2
+    assert "actor id must not be blank" in capsys.readouterr().err
+
+
+def test_module_entry_point_reports_the_itself_program_name() -> None:
+    completed = subprocess.run(
+        (sys.executable, "-m", "itself.cli", "--version"),
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == f"itself {__version__}\n"

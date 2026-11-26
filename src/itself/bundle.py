@@ -156,7 +156,13 @@ _REFERENCE_FIELDS: Final[dict[str, tuple[_ReferenceField, ...]]] = {
 
 
 def _record_id(record: JsonObject, position: int) -> str:
-    value = record.get("id")
+    # Records reach the schema check unchecked, so one may not be an object.
+    runtime_record = cast(object, record)
+    value = (
+        cast(JsonObject, runtime_record).get("id")
+        if isinstance(runtime_record, dict)
+        else None
+    )
     return value if isinstance(value, str) else f"@record[{position}]"
 
 

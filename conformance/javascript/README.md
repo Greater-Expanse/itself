@@ -23,6 +23,8 @@ The runner:
 - independently resolves typed cross-record references;
 - enforces verdict scope, evidence-relation, and transition-authorization
   policy;
+- checks its own transition graph against every ordered pair of statuses in
+  the shared edge list `conformance/transitions.json`;
 - replays ordered epistemic state deterministically;
 - reproduces the RFC 8785 JSON Lines digest used by the reference receipt;
 - accepts every valid bundle fixture; and

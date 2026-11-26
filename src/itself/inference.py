@@ -71,8 +71,14 @@ from ._endpoints import (
     validate_deadline,
     validate_timeout,
 )
-from ._filesystem import publish_path_no_replace
+from ._filesystem import publish_path_no_replace, sync_directory_after_rename
 from ._json import strict_json_loads
+from ._schema_references import (
+    SchemaReferenceError,
+    offline_validator,
+    require_local_references,
+    unresolved_reference_errors,
+)
 from .types import JsonObject, JsonValue
 
 ADAPTER_ID: Final = "openai-compatible-chat-completions"
@@ -356,7 +362,11 @@ class OpenAICompatibleEndpoint:
 
 @dataclass(frozen=True, slots=True, init=False)
 class StructuredOutputProfile:
-    """Provider-neutral instructions and schema for one JSON output."""
+    """Provider-neutral instructions and schema for one JSON output.
+
+    The schema must resolve every reference within itself: referenced schemas
+    are never retrieved, and a schema that needs one raises ``ValueError``.
+    """
 
     profile_id: str
     schema_name: str
@@ -396,6 +406,13 @@ class StructuredOutputProfile:
         except (TypeError, ValueError, SchemaError) as error:
             raise ValueError(
                 "profile schema must be valid finite JSON Schema"
+            ) from error
+        # Output validation never retrieves a referenced schema.
+        try:
+            require_local_references(schema_value)
+        except SchemaReferenceError as error:
+            raise ValueError(
+                "profile schema must resolve every reference within itself"
             ) from error
         object.__setattr__(self, "profile_id", profile_id)
         object.__setattr__(self, "schema_name", schema_name)
@@ -713,7 +730,8 @@ class UrllibHttpTransport:
     max_response_bytes: int = 2_000_000
 
     def __post_init__(self) -> None:
-        if isinstance(self.max_response_bytes, bool) or self.max_response_bytes <= 0:
+        limit = cast(object, self.max_response_bytes)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("max_response_bytes must be a positive integer")
 
     def _read_body(self, response: object) -> bytes:
@@ -851,6 +869,14 @@ class UrllibHttpTransport:
                 InferenceFailure.CONFIGURATION,
                 "inference request URL or headers cannot be encoded for HTTP",
             ) from None
+        except ValueError:
+            # http.client and urllib raise ValueError for a request they cannot
+            # form, such as a header value with a line break, and may quote the
+            # value, which may be a credential, in the message.
+            raise InferenceError(
+                InferenceFailure.CONFIGURATION,
+                "inference request could not be formed as valid HTTP",
+            ) from None
         except (TimeoutError, URLError, OSError, HTTPException) as error:
             raise InferenceError(
                 InferenceFailure.TRANSPORT,
@@ -952,7 +978,12 @@ class DirectoryArtifactSink:
         media_type: str,
         captured_at: datetime,
     ) -> ArtifactReference:
-        """Atomically capture exact response bytes under their SHA-256 digest."""
+        """Atomically capture exact response bytes under their SHA-256 digest.
+
+        A new artifact's directory is synchronized after it is published where
+        the filesystem supports it; an OSError from that sync, such as EIO,
+        propagates with the artifact already published.
+        """
 
         if captured_at.tzinfo is None or captured_at.utcoffset() is None:
             raise ValueError("captured_at must be timezone-aware")
@@ -991,6 +1022,8 @@ class DirectoryArtifactSink:
                     publish_path_no_replace(temporary_path, path)
                 except FileExistsError:
                     _validate_existing_artifact(path, content)
+                else:
+                    sync_directory_after_rename(self.root)
             finally:
                 temporary_path.unlink(missing_ok=True)
 
@@ -1499,12 +1532,20 @@ class StructuredInferenceClient:
     ) -> None:
         validator = cast(
             _SchemaValidator,
-            Draft202012Validator(
+            offline_validator(
                 profile.schema_json(),
                 format_checker=FormatChecker(),
             ),
         )
-        if next(validator.iter_errors(value), None) is not None:
+        try:
+            first_error = next(validator.iter_errors(value), None)
+        except unresolved_reference_errors():
+            raise InferenceError(
+                InferenceFailure.CONFIGURATION,
+                "profile schema reference cannot be resolved without retrieval",
+                artifact=artifact,
+            ) from None
+        if first_error is not None:
             raise InferenceError(
                 InferenceFailure.RESPONSE_SCHEMA,
                 "model output did not satisfy the declared JSON Schema",

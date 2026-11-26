@@ -39,13 +39,13 @@ jobs:
           "$ITSELF_INSTALL_SPEC"
           "pytest>=8,<9"
 
+      # The step exits with the gate status, so no later step reads a status
+      # that the checked code could have written.
       - name: Check the model assertion
-        id: assurance
         env:
           SOURCE_REVISION: ${{ github.sha }}
         shell: bash
         run: |
-          set +e
           python cookbook/agent-change-gate/run.py \
             --assertion cookbook/fixtures/model-assertion.json \
             --output .itself/agent-change \
@@ -54,9 +54,6 @@ jobs:
             --model-actor-id coding-agent \
             --model-implementation coding-agent@1 \
             -- python -m pytest
-          gate_status=$?
-          set -e
-          echo "gate_status=$gate_status" >> "$GITHUB_OUTPUT"
 
       - name: Add the decision to the job summary
         if: always()
@@ -73,14 +70,3 @@ jobs:
           path: .itself/agent-change/
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Enforce the assurance decision
-        if: always()
-        env:
-          GATE_STATUS: ${{ steps.assurance.outputs.gate_status }}
-        run: |
-          if [[ -z "$GATE_STATUS" ]]; then
-            echo "The assurance runner did not report a gate status." >&2
-            exit 2
-          fi
-          exit "$GATE_STATUS"

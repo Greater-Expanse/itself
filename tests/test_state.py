@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from itertools import product
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -16,6 +19,11 @@ from itself import (
     TransitionError,
     TransitionRequest,
     validate_transition,
+)
+from itself.state import EVIDENCE_BACKED_STATUSES
+
+TRANSITION_TABLE = (
+    Path(__file__).resolve().parents[1] / "conformance" / "transitions.json"
 )
 
 
@@ -52,58 +60,112 @@ def test_proposer_can_mark_an_assertion_testable() -> None:
     )
 
 
-def test_evaluator_can_support_an_under_test_claim_with_evidence() -> None:
+# One allowed way into each evidence-backed status.
+EVIDENCE_BACKED_TRANSITIONS = [
+    (ClaimStatus.UNDER_TEST, ClaimStatus.SUPPORTED),
+    (ClaimStatus.UNDER_TEST, ClaimStatus.REFUTED),
+    (ClaimStatus.UNDER_TEST, ClaimStatus.INCONCLUSIVE),
+    (ClaimStatus.UNDER_TEST, ClaimStatus.MIXED_EVIDENCE),
+    (ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED_WITHIN_SCOPE),
+]
+evidence_backed = pytest.mark.parametrize(
+    ("from_status", "to_status"),
+    EVIDENCE_BACKED_TRANSITIONS,
+    ids=[to_status.value for _, to_status in EVIDENCE_BACKED_TRANSITIONS],
+)
+
+
+def test_every_evidence_backed_status_is_exercised() -> None:
+    assert {to_status for _, to_status in EVIDENCE_BACKED_TRANSITIONS} == (
+        EVIDENCE_BACKED_STATUSES
+    )
+
+
+@evidence_backed
+def test_evaluator_can_make_an_evidence_backed_transition_with_evidence(
+    from_status: ClaimStatus,
+    to_status: ClaimStatus,
+) -> None:
     validate_transition(
         request(
-            ClaimStatus.UNDER_TEST,
-            ClaimStatus.SUPPORTED,
+            from_status,
+            to_status,
             evidence_refs=("evidence-1",),
             verdict_ref="verdict-1",
+            policy_ref="policy-1",
         )
     )
 
 
-def test_evidence_backed_transition_requires_evidence() -> None:
+@evidence_backed
+def test_evidence_backed_transition_requires_evidence(
+    from_status: ClaimStatus,
+    to_status: ClaimStatus,
+) -> None:
     with pytest.raises(
         TransitionError, match="requires at least one evidence reference"
     ):
-        validate_transition(request(ClaimStatus.UNDER_TEST, ClaimStatus.SUPPORTED))
+        validate_transition(
+            request(
+                from_status,
+                to_status,
+                verdict_ref="verdict-1",
+                policy_ref="policy-1",
+            )
+        )
 
 
-def test_evidence_backed_transition_requires_verdict() -> None:
+@evidence_backed
+def test_evidence_backed_transition_requires_verdict(
+    from_status: ClaimStatus,
+    to_status: ClaimStatus,
+) -> None:
     with pytest.raises(TransitionError, match="requires a verdict_ref"):
         validate_transition(
             request(
-                ClaimStatus.UNDER_TEST,
-                ClaimStatus.SUPPORTED,
+                from_status,
+                to_status,
                 evidence_refs=("evidence-1",),
+                policy_ref="policy-1",
             )
         )
 
 
-def test_proposer_cannot_authorize_evidence_backed_transition() -> None:
+@evidence_backed
+@pytest.mark.parametrize("actor_role", [ActorRole.PROPOSER, ActorRole.OPERATOR])
+def test_proposer_cannot_authorize_evidence_backed_transition(
+    from_status: ClaimStatus,
+    to_status: ClaimStatus,
+    actor_role: ActorRole,
+) -> None:
     with pytest.raises(TransitionError, match="cannot authorize"):
         validate_transition(
             request(
-                ClaimStatus.UNDER_TEST,
-                ClaimStatus.SUPPORTED,
-                actor_role=ActorRole.PROPOSER,
+                from_status,
+                to_status,
+                actor_role=actor_role,
                 evidence_refs=("evidence-1",),
                 verdict_ref="verdict-1",
+                policy_ref="policy-1",
             )
         )
 
 
-def test_model_evaluator_cannot_authorize_evidence_backed_transition() -> None:
+@evidence_backed
+def test_model_evaluator_cannot_authorize_evidence_backed_transition(
+    from_status: ClaimStatus,
+    to_status: ClaimStatus,
+) -> None:
     with pytest.raises(TransitionError, match="model actor cannot authorize"):
         validate_transition(
             request(
-                ClaimStatus.UNDER_TEST,
-                ClaimStatus.SUPPORTED,
+                from_status,
+                to_status,
                 actor_type=ActorType.MODEL,
                 actor_role=ActorRole.EVALUATOR,
                 evidence_refs=("evidence-model-opinion",),
                 verdict_ref="verdict-model-opinion",
+                policy_ref="policy-1",
             )
         )
 
@@ -135,6 +197,65 @@ def test_corroboration_with_policy_is_allowed() -> None:
 def test_invalid_transition_is_rejected() -> None:
     with pytest.raises(TransitionError, match="is not allowed"):
         validate_transition(request(ClaimStatus.PROPOSED, ClaimStatus.SUPPORTED))
+
+
+def _shared_transition_table() -> tuple[tuple[str, ...], frozenset[tuple[str, str]]]:
+    document = cast(
+        dict[str, list[Any]],
+        json.loads(TRANSITION_TABLE.read_text(encoding="utf-8")),
+    )
+    statuses = tuple(cast(list[str], document["statuses"]))
+    edges = [
+        (edge["from"], edge["to"])
+        for edge in cast(list[dict[str, str]], document["transitions"])
+    ]
+    assert len(edges) == len(set(edges)), "the shared table repeats an edge"
+    return statuses, frozenset(edges)
+
+
+SHARED_STATUSES, SHARED_EDGES = _shared_transition_table()
+
+
+def test_shared_transition_table_covers_every_status() -> None:
+    assert tuple(status.value for status in ClaimStatus) == SHARED_STATUSES
+    assert len(SHARED_EDGES) == 37
+
+
+@pytest.mark.parametrize(
+    ("from_status", "to_status"),
+    list(product(ClaimStatus, ClaimStatus)),
+    ids=lambda status: status.value,
+)
+def test_transition_graph_matches_the_shared_table(
+    from_status: ClaimStatus,
+    to_status: ClaimStatus,
+) -> None:
+    # Evidence, a verdict, a policy, and an evaluator satisfy every other rule,
+    # so only the graph decides whether the transition is allowed.
+    candidate = request(
+        from_status,
+        to_status,
+        evidence_refs=("evidence-1",),
+        verdict_ref="verdict-1",
+        policy_ref="policy-1",
+    )
+
+    if (from_status.value, to_status.value) in SHARED_EDGES:
+        validate_transition(candidate)
+    else:
+        with pytest.raises(TransitionError, match="is not allowed"):
+            validate_transition(candidate)
+
+
+@pytest.mark.parametrize("authorized_by", ["", " ", "\t\n", "　"])
+def test_blank_authorizer_is_rejected(authorized_by: str) -> None:
+    candidate = replace(
+        request(ClaimStatus.PROPOSED, ClaimStatus.TESTABLE),
+        authorized_by=authorized_by,
+    )
+
+    with pytest.raises(TransitionError, match="authorized_by is required"):
+        validate_transition(candidate)
 
 
 def test_stale_claim_can_be_reopened() -> None:

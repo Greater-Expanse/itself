@@ -4,6 +4,74 @@ User-visible SDK and format changes are recorded here. Protocol, receipt,
 evidence-bundle, and experiment-contract versions remain independent of the
 Python distribution version.
 
+## Unreleased
+
+### Added
+
+- `--passing-exit-code` for the agent-change gate recipe, which defaults to
+  `0`. A model that correctly predicts any other exit code still has its
+  assertion supported, but the action is rejected.
+- `conformance/transitions.json`, the 37 allowed status transitions. The Python
+  tests and the JavaScript validator check every ordered pair of the twelve
+  statuses against it, and the specification now publishes the whole table.
+- Invalid bundle fixtures for a blank transition authorizer, a transition
+  before its subject, a verdict before its evidence, `mixed_evidence` and
+  `refuted` verdicts without contradicting evidence, a transition that does
+  not match its verdict's outcome, and evidence scoped differently from its
+  verdict.
+
+### Changed
+
+- `JsonlLedgerStore.extend` and `append` raise `OSError` instead of replacing a
+  ledger that another writer created, removed, or changed after the append
+  read it, judged by device, inode, size, and modification time. Before, the
+  append silently discarded the other writer's records. The store is still
+  single-writer, and the ledger and receipt stores now share one atomic
+  replacement routine.
+- Ledger and receipt replacement, inference-artifact capture, evidence-bundle
+  publication, and schema export synchronize the parent directory after the
+  rename where the filesystem supports it. A directory sync that the
+  filesystem does not support or permit (`EINVAL`, `ENOTSUP`, `EOPNOTSUPP`,
+  `EACCES`, or `EPERM`) is skipped, and any other failure, such as `EIO`, is
+  raised with the new file or directory already in place.
+- Schema validation never retrieves a referenced schema. `StructuredOutputProfile`
+  and `ProtocolValidator(schema_path)` raise `ValueError` for a schema whose
+  `$ref` or `$dynamicRef` names a resource outside the schema, including a
+  JSON Schema meta-schema. A reference that still cannot be resolved while a
+  response is validated is a configuration failure, not a fetch.
+- The packaged receipt and evidence-bundle schemas are compiled once per
+  process. The bundle schema was previously recompiled for every manifest.
+- CLI text output and error messages escape C0 and C1 control characters,
+  DEL, and the Unicode line and paragraph separators found in records and file
+  names, as `\xNN` or `\uNNNN`, so a record cannot forge an output line, a CI
+  annotation, or a terminal sequence. Each integrity or schema issue still
+  prints on its own line, and `--format json` output is unchanged.
+- The CLI names itself `itself` in usage and `--version` output however it is
+  started, and a blank `--trusted-authorizer` is a usage error with exit
+  status 2 instead of an uncaught `ValueError`.
+- The agent-change gate recipe treats a check ended by a signal as having no
+  exit code, so the claim is inconclusive and the action deferred. It refuses
+  a `--timeout-seconds` that is not a finite positive number, quotes the model
+  assertion in `summary.md` as one inline code span, and runs the check without
+  the GitHub Actions workflow-command files in its environment. Its GitHub
+  Actions wrapper fails in the step that runs the gate, and its README says how
+  to run the gate from code the change cannot edit.
+- The evidence-bundle verification recipes set `pipefail` and capture standard
+  error, so a failed validation fails the job instead of being hidden by `tee`.
+
+### Fixed
+
+- `BundleValidator` reports a record that is not a JSON object, such as `1` or
+  `null`, as `schema_invalid` instead of raising `AttributeError`. The
+  JavaScript validator no longer raises `TypeError` for a `null` record.
+- A request header value that `http.client` refuses, such as a credential with
+  a line break supplied by a custom caller, is a configuration failure whose
+  message and traceback omit the value. Before, it escaped as a `ValueError`
+  that quoted the header.
+- An endpoint `base_url` must name a host, so `https://:443/v1` is refused.
+- `UrllibHttpTransport` refuses a `max_response_bytes` that is not an integer,
+  such as `2.0` or `"3"`, with `ValueError`.
+
 ## 0.2.0
 
 The first public release of `itself`. It implements these format

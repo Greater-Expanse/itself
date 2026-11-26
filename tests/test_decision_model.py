@@ -276,6 +276,7 @@ def test_endpoint_renders_the_systemone_url_and_hides_extensions() -> None:
         ({"base_url": "https://decisions.example.test:0/v1"}, "valid port"),
         ({"base_url": "https://decisions.example.test:99999/v1"}, "valid port"),
         ({"base_url": "https://decisions.example.test:api/v1"}, "valid port"),
+        ({"base_url": "https://:443/v1"}, "name a host"),
         ({"base_url": "https://decisions.exa\tmple.test/v1"}, "printable ASCII"),
         ({"base_url": "https://decisions.example.test/v1\n"}, "printable ASCII"),
         ({"base_url": "https://decisions.example.test/my v1"}, "printable ASCII"),

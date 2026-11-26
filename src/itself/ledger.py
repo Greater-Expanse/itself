@@ -9,7 +9,6 @@ import io
 import json
 import os
 import stat
-import tempfile
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from copy import deepcopy
 from pathlib import Path
@@ -17,6 +16,7 @@ from typing import BinaryIO
 
 import rfc8785
 
+from ._filesystem import FileIdentity, replace_file_atomically
 from ._json import strict_json_loads
 from .bundle import BundleSnapshot, BundleValidator
 from .types import JsonObject, StrPath
@@ -234,7 +234,7 @@ class JsonlLedgerStore:
             raise ValueError("max_records must not be negative")
         if max_bytes is not None and max_bytes < 0:
             raise ValueError("max_bytes must not be negative")
-        records = self._read_records(
+        records, _ = self._read_records(
             max_records=max_records,
             max_bytes=max_bytes,
         )
@@ -250,7 +250,7 @@ class JsonlLedgerStore:
         *,
         external_refs: Collection[str] = (),
     ) -> BundleSnapshot:
-        """Validate and atomically persist one logical append."""
+        """Validate and atomically persist one logical append, as ``extend`` does."""
 
         return self.extend((record,), external_refs=external_refs)
 
@@ -263,16 +263,26 @@ class JsonlLedgerStore:
         """Validate and atomically persist a batch of logical appends.
 
         As with ``Ledger.extend``, records that reference each other must
-        arrive in the same batch.
+        arrive in the same batch.  The store is single-writer: if the file is
+        created, replaced, or modified after this call reads it, the append
+        raises OSError and leaves the other writer's file in place.  The
+        directory is synchronized after the replacement where the filesystem
+        supports it; an OSError from that sync, such as EIO, propagates with
+        the batch already stored.
         """
 
         additions = tuple(records)
-        ledger = self.load(external_refs=external_refs)
+        loaded, identity = self._read_records()
+        ledger = Ledger(
+            loaded,
+            external_refs=external_refs,
+            validator=self._validator,
+        )
         if not additions:
             return ledger.snapshot
 
         snapshot = ledger.extend(additions)
-        self._atomic_replace(ledger.records)
+        self._atomic_replace(ledger.records, expected=identity)
         return snapshot
 
     def _read_records(
@@ -280,11 +290,13 @@ class JsonlLedgerStore:
         *,
         max_records: int | None = None,
         max_bytes: int | None = None,
-    ) -> list[JsonObject]:
+    ) -> tuple[list[JsonObject], FileIdentity | None]:
+        """Return the stored records and the identity of the file they came from."""
+
         try:
             metadata = self.path.lstat()
         except FileNotFoundError:
-            return []
+            return [], None
         if stat.S_ISLNK(metadata.st_mode):
             raise OSError(f"ledger path must not be a symbolic link: {self.path}")
         if not stat.S_ISREG(metadata.st_mode):
@@ -322,52 +334,17 @@ class JsonlLedgerStore:
                 or os.fstat(handle.fileno()).st_size != opened_metadata.st_size
             ):
                 raise OSError(f"ledger path changed while reading: {self.path}")
-        return records
+        return records, FileIdentity.of(opened_metadata)
 
-    def _atomic_replace(self, records: Sequence[JsonObject]) -> None:
-        parent = self.path.parent
-        parent.mkdir(parents=True, exist_ok=True)
-        try:
-            original_metadata = self.path.lstat()
-        except FileNotFoundError:
-            original_metadata = None
-        if original_metadata is not None:
-            if stat.S_ISLNK(original_metadata.st_mode):
-                raise OSError(f"ledger path must not be a symbolic link: {self.path}")
-            if not stat.S_ISREG(original_metadata.st_mode):
-                raise OSError(f"ledger path must be a regular file: {self.path}")
-
-        descriptor, temporary_name = tempfile.mkstemp(
-            dir=parent,
-            prefix=f".{self.path.name}.",
-            suffix=".tmp",
+    def _atomic_replace(
+        self,
+        records: Sequence[JsonObject],
+        *,
+        expected: FileIdentity | None,
+    ) -> None:
+        replace_file_atomically(
+            self.path,
+            (rfc8785.dumps(record) + b"\n" for record in records),
+            expected=expected,
+            label="ledger",
         )
-        temporary_path = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                for record in records:
-                    handle.write(rfc8785.dumps(record))
-                    handle.write(b"\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-
-            try:
-                current_metadata = self.path.lstat()
-            except FileNotFoundError:
-                current_metadata = None
-            if original_metadata is None:
-                if current_metadata is not None:
-                    raise OSError(f"ledger path appeared while writing: {self.path}")
-            elif current_metadata is None or (
-                current_metadata.st_dev,
-                current_metadata.st_ino,
-            ) != (
-                original_metadata.st_dev,
-                original_metadata.st_ino,
-            ):
-                raise OSError(f"ledger path changed while writing: {self.path}")
-            else:
-                temporary_path.chmod(stat.S_IMODE(original_metadata.st_mode))
-            os.replace(temporary_path, self.path)
-        finally:
-            temporary_path.unlink(missing_ok=True)

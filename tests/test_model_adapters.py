@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -425,13 +426,46 @@ def test_endpoint_rejects_ambiguous_or_unsafe_configuration(
         factory()
 
 
+def _frame_locals_holding(error: BaseException, secret: str) -> list[str]:
+    """Name each frame local outside this file, across the chain, holding a secret."""
+
+    found: list[str] = []
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        entry = current.__traceback__
+        while entry is not None:
+            frame = entry.tb_frame
+            if Path(frame.f_code.co_filename).resolve() != Path(__file__).resolve():
+                for name, value in frame.f_locals.items():
+                    texts: list[object] = (
+                        list(cast(Mapping[object, object], value).values())
+                        if isinstance(value, Mapping)
+                        else [value]
+                    )
+                    if any(isinstance(text, str) and secret in text for text in texts):
+                        found.append(f"{frame.f_code.co_name}:{name}")
+            entry = entry.tb_next
+        pending.extend(
+            linked
+            for linked in (current.__cause__, current.__context__)
+            if linked is not None
+        )
+    return found
+
+
 def test_missing_credential_fails_before_transport(tmp_path: Path) -> None:
     adapter, transport = _adapter(tmp_path)
+    # The secret sits under another name, so a leak of the environment shows.
     adapter = OpenAIChatDiagnostician(
         endpoint=adapter.endpoint,
         artifact_sink=adapter.artifact_sink,
         transport=transport,
-        environment={},
+        environment={"UNRELATED_KEY": SECRET},
     )
 
     with pytest.raises(ModelAdapterError) as captured:
@@ -440,7 +474,8 @@ def test_missing_credential_fails_before_transport(tmp_path: Path) -> None:
     assert captured.value.failure is ModelAdapterFailure.CONFIGURATION
     assert captured.value.artifact is None
     assert not transport.requests
-    assert SECRET not in str(captured.value)
+    assert SECRET not in "".join(traceback.format_exception(captured.value))
+    assert _frame_locals_holding(captured.value, SECRET) == []
 
 
 @pytest.mark.parametrize(

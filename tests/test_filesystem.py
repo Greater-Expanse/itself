@@ -3,17 +3,91 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
 from itself._filesystem import (
     ensure_private_directory,
+    fsync_directory,
     publish_path_no_replace,
+    sync_directory_after_rename,
     write_file_exclusive,
 )
+
+UNAVAILABLE_SYNC_ERRORS = ["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EACCES", "EPERM"]
+posix_only = pytest.mark.skipif(
+    os.name != "posix", reason="directories are synchronized only on POSIX"
+)
+
+
+def _fail_with(code: int, calls: list[str], stage: str) -> Callable[..., NoReturn]:
+    """Return a stand-in for ``os.open`` or ``os.fsync`` that fails with ``code``."""
+
+    def fail(*args: object) -> NoReturn:
+        del args
+        calls.append(stage)
+        raise OSError(code, os.strerror(code))
+
+    return fail
+
+
+@posix_only
+@pytest.mark.parametrize("stage", ["open", "fsync"])
+@pytest.mark.parametrize("name", UNAVAILABLE_SYNC_ERRORS)
+def test_directory_sync_after_rename_skips_an_unavailable_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    name: str,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(os, stage, _fail_with(getattr(errno, name), calls, stage))
+
+    sync_directory_after_rename(tmp_path)
+
+    assert calls == [stage]
+
+
+@posix_only
+@pytest.mark.parametrize("stage", ["open", "fsync"])
+def test_directory_sync_after_rename_reports_other_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(os, stage, _fail_with(errno.EIO, calls, stage))
+
+    with pytest.raises(OSError) as raised:
+        sync_directory_after_rename(tmp_path)
+
+    assert raised.value.errno == errno.EIO
+    assert calls == [stage]
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="needs POSIX permissions that bind the current user",
+)
+def test_directory_sync_after_rename_skips_a_directory_it_cannot_read(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "write-only"
+    directory.mkdir()
+    directory.chmod(0o300)
+    try:
+        # The strict primitive still reports what the tolerant sync skips.
+        with pytest.raises(PermissionError):
+            fsync_directory(directory)
+        sync_directory_after_rename(directory)
+    finally:
+        directory.chmod(0o700)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode semantics")

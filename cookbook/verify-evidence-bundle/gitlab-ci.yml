@@ -14,14 +14,17 @@ verify-evidence-bundle:
   before_script:
     - python -m pip install "$ITSELF_INSTALL_SPEC"
   script:
+    # Without pipefail a failed validation piped into tee would pass the job.
+    # FAIL lines are written to stderr.
+    - set -o pipefail
     - mkdir -p .itself/bundle-verification
     - >-
-      itself bundle validate "$ASSURANCE_BUNDLE"
+      itself bundle validate "$ASSURANCE_BUNDLE" 2>&1
       | tee .itself/bundle-verification/verification.txt
     - >-
       itself receipt validate
       "$ASSURANCE_BUNDLE/reasoning-receipt.json"
-      --ledger "$ASSURANCE_BUNDLE/ledger.jsonl"
+      --ledger "$ASSURANCE_BUNDLE/ledger.jsonl" 2>&1
       | tee -a .itself/bundle-verification/verification.txt
     - >-
       itself ledger summary "$ASSURANCE_BUNDLE/ledger.jsonl"

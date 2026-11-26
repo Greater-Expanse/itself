@@ -33,20 +33,24 @@ jobs:
       - name: Install Itself
         run: python -m pip install "$ITSELF_INSTALL_SPEC"
 
+      # An explicit bash shell runs with pipefail, so a failed validation fails
+      # the step even though tee succeeds. FAIL lines are written to stderr.
       - name: Verify the closed bundle
+        shell: bash
         run: |
           mkdir -p .itself/bundle-verification
-          itself bundle validate "$ASSURANCE_BUNDLE" \
+          itself bundle validate "$ASSURANCE_BUNDLE" 2>&1 \
             | tee .itself/bundle-verification/verification.txt
           itself receipt validate \
             "$ASSURANCE_BUNDLE/reasoning-receipt.json" \
-            --ledger "$ASSURANCE_BUNDLE/ledger.jsonl" \
+            --ledger "$ASSURANCE_BUNDLE/ledger.jsonl" 2>&1 \
             | tee -a .itself/bundle-verification/verification.txt
           itself ledger summary "$ASSURANCE_BUNDLE/ledger.jsonl" \
             --format json \
             > .itself/bundle-verification/ledger-summary.json
 
       - name: Retain the verification result
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: itself-bundle-verification-${{ github.sha }}

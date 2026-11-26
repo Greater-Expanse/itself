@@ -107,34 +107,27 @@ Authority describes the issuer and basis of a record. It is not a universal rank
 
 ## 6. Epistemic states
 
-```text
-proposed
-    ├──→ testable
-    ├──→ blocked
-    └──→ withdrawn
+A status transition MUST follow one of these 37 edges. Any other pair of
+statuses, including a status to itself, is not allowed.
 
-testable
-    ├──→ under_test
-    ├──→ blocked
-    └──→ withdrawn
+| From | Allowed next statuses |
+| --- | --- |
+| `proposed` | `testable`, `blocked`, `withdrawn` |
+| `testable` | `under_test`, `blocked`, `withdrawn` |
+| `blocked` | `testable`, `withdrawn` |
+| `under_test` | `supported`, `refuted`, `inconclusive`, `mixed_evidence`, `blocked` |
+| `supported` | `corroborated_within_scope`, `under_test`, `mixed_evidence`, `stale`, `invalidated` |
+| `refuted` | `under_test`, `stale`, `invalidated` |
+| `inconclusive` | `under_test`, `stale`, `invalidated` |
+| `mixed_evidence` | `under_test`, `supported`, `refuted`, `inconclusive`, `stale`, `invalidated` |
+| `corroborated_within_scope` | `under_test`, `mixed_evidence`, `stale`, `invalidated` |
+| `stale` | `under_test`, `invalidated` |
+| `invalidated` | `under_test` |
+| `withdrawn` | none; withdrawal is final |
 
-under_test
-    ├──→ supported
-    ├──→ refuted
-    ├──→ inconclusive
-    └──→ mixed_evidence
-
-supported
-    ├──→ corroborated_within_scope
-    ├──→ under_test
-    ├──→ mixed_evidence
-    ├──→ stale
-    └──→ invalidated
-
-refuted, inconclusive, mixed_evidence,
-corroborated_within_scope, blocked, or stale
-    └──→ may be reopened only through an allowed transition
-```
+`conformance/transitions.json` lists the same edges for conformance runners,
+and both reference runners check every ordered pair of the twelve statuses
+against it.
 
 `corroborated_within_scope` is intentionally scoped. The protocol contains no universal `true` status.
 
@@ -295,11 +288,18 @@ ledger never exposes, so the reference ledger re-checks cross-record integrity
 across the whole history and applies the schema only to new records; the reference store re-validates the
 stored history each time it loads the file. The store writes a replacement
 file in the destination directory and atomically replaces the previous file only
-after validation and file synchronization succeed.
+after validation and file synchronization succeed, then synchronizes the
+directory where the filesystem supports it. Before it replaces the file, the reference store confirms that the
+path is still the regular file it read, with the same device, inode, size, and
+modification time, or is still absent; otherwise the append fails and leaves
+the other writer's file in place rather than discarding its records.
 
 This profile provides deterministic local persistence and failure atomicity for
-a single writer. It does not define concurrent-write coordination,
-cryptographic tamper evidence, remote durability, or database transactions.
+a single writer. The identity check turns most interleaved appends into errors
+instead of lost updates, but it is not a lock: a replacement made between the
+final check and the rename still goes undetected. The profile does not define
+concurrent-write coordination, cryptographic tamper evidence, remote
+durability, or database transactions.
 
 ## 12. Non-goals for `v0alpha2`
 

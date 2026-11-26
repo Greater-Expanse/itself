@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
+import re
 import shutil
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -13,6 +16,7 @@ from typing import cast
 
 import pytest
 
+import itself._filesystem as filesystem_module
 import itself.evidence_bundle as evidence_bundle_module
 from itself import (
     BundleIntegrityError,
@@ -209,6 +213,56 @@ def test_builder_refuses_to_overwrite_existing_destination(tmp_path: Path) -> No
     assert marker.read_text(encoding="utf-8") == "preserve"
 
 
+def test_builder_synchronizes_the_parent_after_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "bundle"
+    ledger = JsonlLedgerStore(REFERENCE_BUNDLE / "ledger.jsonl").load()
+    synchronized: list[tuple[Path, bool]] = []
+
+    def recording_fsync_directory(directory: Path) -> None:
+        synchronized.append((directory, (destination / "bundle.json").is_file()))
+
+    monkeypatch.setattr(filesystem_module, "fsync_directory", recording_fsync_directory)
+
+    EvidenceBundleBuilder().build(
+        destination,
+        ledger=ledger,
+        title="Synchronized publication",
+        files=_reference_bundle_files(),
+    )
+
+    assert synchronized == [(tmp_path, True)]
+
+
+def test_builder_completes_when_the_parent_cannot_be_synchronized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "bundle"
+    ledger = JsonlLedgerStore(REFERENCE_BUNDLE / "ledger.jsonl").load()
+
+    def unsupported_fsync_directory(directory: Path) -> None:
+        raise OSError(errno.EINVAL, os.strerror(errno.EINVAL), str(directory))
+
+    monkeypatch.setattr(
+        filesystem_module, "fsync_directory", unsupported_fsync_directory
+    )
+
+    verified = EvidenceBundleBuilder().build(
+        destination,
+        ledger=ledger,
+        title="Unsynchronized publication",
+        files=_reference_bundle_files(),
+    )
+
+    assert verified.path == destination
+    assert EvidenceBundleValidator().validate(destination).manifest == (
+        verified.manifest
+    )
+
+
 def test_builder_preserves_destination_created_during_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -344,6 +398,234 @@ def test_tampered_inventory_file_is_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(EvidenceBundleValidationError, match="size mismatch"):
+        EvidenceBundleValidator().validate(destination)
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "inputs/diagnosis-request.json",
+        "artifacts/model-assertion.json",
+        "ledger.jsonl",
+        "reasoning-receipt.json",
+    ],
+    ids=["input", "artifact", "ledger", "reasoning_receipt"],
+)
+def test_same_size_byte_change_in_any_role_is_rejected(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    path = destination / relative_path
+    content = bytearray(path.read_bytes())
+    position = len(content) // 2
+    content[position] ^= 0x01
+    path.write_bytes(bytes(content))
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match=f"^bundle inventory digest mismatch for '{re.escape(relative_path)}'$",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_manifest_edit_without_a_new_bundle_id_is_rejected(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    manifest = _load_object(destination / "bundle.json")
+    manifest["title"] = "A title the bundle_id does not bind"
+    _pretty_write(destination / "bundle.json", manifest)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="bundle_id does not bind the bundle metadata and file inventory",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError:
+        pytest.skip("symbolic links are unavailable")
+
+
+def test_symbolically_linked_artifact_is_rejected(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    artifact = destination / "artifacts" / "model-assertion.json"
+    external = tmp_path / "external-artifact.json"
+    external.write_bytes(artifact.read_bytes())
+    artifact.unlink()
+    _symlink_or_skip(artifact, external)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="'artifacts/model-assertion.json' is missing or not regular",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_symbolically_linked_artifact_directory_is_rejected(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    external = tmp_path / "external-artifacts"
+    shutil.move(destination / "artifacts", external)
+    _symlink_or_skip(destination / "artifacts", external)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="'artifacts/model-assertion.json' escapes the bundle root",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_symbolically_linked_bundle_root_is_rejected(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    link = tmp_path / "linked-bundle"
+    _symlink_or_skip(link, destination)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="bundle root is not a directory",
+    ):
+        EvidenceBundleValidator().validate(link)
+
+
+def test_duplicate_inventory_paths_are_rejected(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    manifest = _load_object(destination / "bundle.json")
+    entries = cast(list[JsonObject], manifest["files"])
+    entries.append(deepcopy(entries[0]))
+    _rebind_manifest(destination, manifest)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="bundle file inventory contains duplicate paths",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def _artifact_entry(manifest: JsonObject) -> JsonObject:
+    entries = cast(list[JsonObject], manifest["files"])
+    return next(entry for entry in entries if entry["role"] == "artifact")
+
+
+def test_closed_bundle_must_materialize_every_ledger_artifact(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    manifest = _load_object(destination / "bundle.json")
+    cast(list[JsonObject], manifest["files"]).remove(_artifact_entry(manifest))
+    shutil.rmtree(destination / "artifacts")
+    _rebind_manifest(destination, manifest)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="closed bundle must materialize every ledger artifact exactly once",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_inventoried_artifact_must_name_a_ledger_artifact(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    manifest = _load_object(destination / "bundle.json")
+    _artifact_entry(manifest)["record_ref"] = "artifact-not-in-the-ledger"
+    _rebind_manifest(destination, manifest)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="closed bundle must materialize every ledger artifact exactly once",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_artifact_uri_must_match_its_inventory_path(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    (destination / "artifacts" / "model-assertion.json").rename(
+        destination / "artifacts" / "renamed.json"
+    )
+    manifest = _load_object(destination / "bundle.json")
+    _artifact_entry(manifest)["path"] = "artifacts/renamed.json"
+    _rebind_manifest(destination, manifest)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="'artifact-diagnostician-output' URI does not match its inventory path",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_artifact_media_type_must_match_its_inventory(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    manifest = _load_object(destination / "bundle.json")
+    _artifact_entry(manifest)["media_type"] = "application/octet-stream"
+    _rebind_manifest(destination, manifest)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="'artifact-diagnostician-output' media type does not match",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+def test_artifact_record_ref_must_be_inventoried_once(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    shutil.copyfile(
+        destination / "artifacts" / "model-assertion.json",
+        destination / "artifacts" / "copy.json",
+    )
+    manifest = _load_object(destination / "bundle.json")
+    duplicate = deepcopy(_artifact_entry(manifest))
+    duplicate["path"] = "artifacts/copy.json"
+    cast(list[JsonObject], manifest["files"]).append(duplicate)
+    _rebind_manifest(destination, manifest)
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match="bundle artifact inventory contains duplicate record_ref values",
+    ):
+        EvidenceBundleValidator().validate(destination)
+
+
+@pytest.mark.parametrize("relative_path", ["ledger.jsonl", "reasoning-receipt.json"])
+def test_same_size_change_after_the_inventory_pass_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_path: str,
+) -> None:
+    destination = tmp_path / "bundle"
+    shutil.copytree(REFERENCE_BUNDLE, destination)
+    validate_inventory = evidence_bundle_module._validate_inventory  # pyright: ignore[reportPrivateUsage]
+
+    def flip_after_inventory(
+        root: Path,
+        entries: tuple[JsonObject, ...],
+        limits: EvidenceBundleLimits,
+    ) -> None:
+        validate_inventory(root, entries, limits)
+        # The size stays the same, so only the digest of the bytes read can tell.
+        path = root / relative_path
+        content = bytearray(path.read_bytes())
+        content[len(content) // 2] ^= 0x01
+        path.write_bytes(bytes(content))
+
+    monkeypatch.setattr(
+        evidence_bundle_module, "_validate_inventory", flip_after_inventory
+    )
+
+    with pytest.raises(
+        EvidenceBundleValidationError,
+        match=f"^bundle inventory digest mismatch for '{re.escape(relative_path)}'$",
+    ):
         EvidenceBundleValidator().validate(destination)
 
 

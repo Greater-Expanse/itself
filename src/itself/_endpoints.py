@@ -83,6 +83,9 @@ def normalized_base_url(
         raise ValueError("base_url must be an absolute HTTP or HTTPS URL")
     if parsed_url.username is not None or parsed_url.password is not None:
         raise ValueError("base_url must not contain credentials")
+    # A netloc such as ":443" names a port but no host.
+    if not parsed_url.hostname:
+        raise ValueError("base_url must name a host")
     if parsed_url.query or parsed_url.fragment:
         raise ValueError("base_url must not contain a query or fragment")
     try:

@@ -202,7 +202,7 @@ catalog, and checksum inventory. Validation loads the packaged copies and never
 requires network access. The conformance fixtures are language-neutral. Python
 is the reference implementation, not a requirement for other implementations.
 An [independent JavaScript conformance check](conformance/javascript/README.md)
-compiles the same schema, exercises all 27 record and bundle fixtures, and
+compiles the same schema, exercises all 43 record and bundle fixtures, and
 reimplements reference resolution, authorization, and deterministic replay
 without importing or executing the Python package.
 The [reference bundle](examples/cache-key-diagnosis/README.md) is a closed,

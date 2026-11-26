@@ -17,6 +17,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import cache
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Final, Protocol, cast
@@ -24,10 +25,15 @@ from typing import Final, Protocol, cast
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from ._filesystem import publish_path_no_replace, write_file_exclusive
+from ._filesystem import (
+    publish_path_no_replace,
+    sync_directory_after_rename,
+    write_file_exclusive,
+)
 from ._formats import schema_format_checker
 from ._json import format_json_path as _format_path
 from ._json import strict_json_loads
+from ._schema_references import offline_validator, require_local_references
 from .bundle import BundleValidator
 from .ledger import Ledger, decode_jsonl_records
 from .receipts import (
@@ -63,7 +69,15 @@ class _SchemaValidator(Protocol):
 
 
 class EvidenceBundleValidationError(ValueError):
-    """Raised when an evidence bundle is structurally or cryptographically invalid."""
+    """Raised when an evidence bundle is structurally or cryptographically invalid.
+
+    ``issues`` holds the individual manifest schema errors that a schema
+    failure's message joins one per line, and is empty for any other failure.
+    """
+
+    def __init__(self, *args: object, issues: Sequence[str] = ()) -> None:
+        super().__init__(*args)
+        self.issues: tuple[str, ...] = tuple(issues)
 
 
 class EvidenceBundleBuildError(ValueError):
@@ -577,6 +591,27 @@ def _read_inventoried_file(
     return path, content
 
 
+@cache
+def _manifest_schema_validator() -> _SchemaValidator:
+    """Compile the packaged evidence-bundle schema once per process."""
+
+    schema_resource = files("itself").joinpath(
+        "schemas",
+        "v0alpha2",
+        "evidence-bundle.schema.json",
+    )
+    schema = cast(
+        JsonObject,
+        strict_json_loads(schema_resource.read_text(encoding="utf-8")),
+    )
+    Draft202012Validator.check_schema(schema)
+    require_local_references(schema)
+    return cast(
+        _SchemaValidator,
+        offline_validator(schema, format_checker=schema_format_checker()),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceBundleValidator:
     """Verify inventory, bytes, protocol history, receipt, and artifacts.
@@ -598,27 +633,11 @@ class EvidenceBundleValidator:
             ).trusted_authorizers,
         )
 
-    def _schema_validator(self) -> _SchemaValidator:
-        schema_resource = files("itself").joinpath(
-            "schemas",
-            "v0alpha2",
-            "evidence-bundle.schema.json",
-        )
-        schema = cast(
-            JsonObject,
-            strict_json_loads(schema_resource.read_text(encoding="utf-8")),
-        )
-        Draft202012Validator.check_schema(schema)
-        return cast(
-            _SchemaValidator,
-            Draft202012Validator(schema, format_checker=schema_format_checker()),
-        )
-
     def errors(self, manifest: JsonValue) -> list[str]:
         """Return stable, human-readable manifest schema errors."""
 
         issues = sorted(
-            self._schema_validator().iter_errors(manifest),
+            _manifest_schema_validator().iter_errors(manifest),
             key=lambda error: tuple(str(item) for item in error.absolute_path),
         )
         return [
@@ -631,7 +650,7 @@ class EvidenceBundleValidator:
 
         issues = self.errors(manifest)
         if issues:
-            raise EvidenceBundleValidationError("\n".join(issues))
+            raise EvidenceBundleValidationError("\n".join(issues), issues=issues)
 
     @staticmethod
     def _single_role(
@@ -859,7 +878,12 @@ class EvidenceBundleBuilder:
         created_at: datetime | None = None,
         limitations: Sequence[str] = DEFAULT_EVIDENCE_BUNDLE_LIMITATIONS,
     ) -> VerifiedEvidenceBundle:
-        """Build into a private sibling directory and publish without overwriting."""
+        """Build into a private sibling directory and publish without overwriting.
+
+        The parent directory is synchronized after publication where the
+        filesystem supports it; an OSError from that sync, such as EIO,
+        propagates with the bundle already published at ``destination``.
+        """
 
         target = Path(destination)
         if target.exists() or target.is_symlink():
@@ -954,6 +978,7 @@ class EvidenceBundleBuilder:
 
             publish_path_no_replace(staging, target)
             published = True
+            sync_directory_after_rename(parent)
             # Full validation ran once, on staging, and saw the manifest written
             # above. Its result depends only on the file set and the file bytes,
             # so re-checking the published inventory digests and manifest bytes
