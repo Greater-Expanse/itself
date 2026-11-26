@@ -35,6 +35,7 @@ jobs:
 
       - name: Verify the closed bundle
         run: |
+          set -o pipefail
           mkdir -p .itself/bundle-verification
           itself bundle validate "$ASSURANCE_BUNDLE" \
             | tee .itself/bundle-verification/verification.txt

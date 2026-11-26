@@ -15,6 +15,7 @@ verify-evidence-bundle:
     - python -m pip install "$ITSELF_INSTALL_SPEC"
   script:
     - mkdir -p .itself/bundle-verification
+    - set -o pipefail
     - >-
       itself bundle validate "$ASSURANCE_BUNDLE"
       | tee .itself/bundle-verification/verification.txt
