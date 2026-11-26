@@ -14,7 +14,13 @@ from types import MappingProxyType
 from ._json import validated_string as _string
 from .ledger import Ledger
 from .state import ClaimStatus
-from .types import JsonObject
+
+# JsonValue is unused here, but typing.get_type_hints needs it to resolve the
+# recursive JsonObject alias in this module's annotations.
+from .types import (
+    JsonObject,
+    JsonValue,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
 
 
 class SubjectKind(StrEnum):

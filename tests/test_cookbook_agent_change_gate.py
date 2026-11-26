@@ -18,11 +18,16 @@ from itself import (
     EvidenceBundleValidator,
     JsonObject,
     ReasoningReceiptValidator,
+    ValidationPolicy,
 )
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 RUNNER: Final = ROOT / "cookbook/agent-change-gate/run.py"
 ASSERTION: Final = ROOT / "cookbook/fixtures/model-assertion.json"
+RUNNER_POLICY: Final = ValidationPolicy(
+    trusted_authorizers=("ci-assurance-policy",),
+    require_supported_reliance=True,
+)
 
 
 def _run_gate_command(
@@ -102,7 +107,9 @@ def _object(path: Path) -> JsonObject:
 
 
 def _decision(bundle_path: Path) -> JsonObject:
-    verified = EvidenceBundleValidator().validate(bundle_path)
+    # The runner trusts only its policy actor and approves only on a claim
+    # that is supported when it decides, so every bundle it writes must pass.
+    verified = EvidenceBundleValidator(policy=RUNNER_POLICY).validate(bundle_path)
     decisions = [
         record for record in verified.ledger.records if record["kind"] == "decision"
     ]
@@ -367,6 +374,30 @@ def test_agent_change_gate_records_unavailable_command_as_deferred(
     assert outcome["gate_exit_code"] == 2
     check_result = _object(output / "bundle/artifacts/check-result.json")
     assert check_result["execution_failure"] == "command_not_found"
+
+
+@pytest.mark.parametrize(
+    ("actor_id", "first_runner_record"),
+    (
+        ("ci-check-runner", "transition-agent-change-testable"),
+        ("ci-assurance-policy", "artifact-ci-check-result"),
+    ),
+)
+def test_agent_change_gate_refuses_a_model_that_claims_a_runner_actor_id(
+    tmp_path: Path,
+    actor_id: str,
+    first_runner_record: str,
+) -> None:
+    output = tmp_path / "output"
+
+    completed = _run_gate(output, 0, options=("--model-actor-id", actor_id))
+
+    assert completed.returncode == 2
+    assert (
+        f"actor_type_conflict: {first_runner_record} [{actor_id}]: actor is "
+        "declared as software here but as model earlier in the bundle"
+    ) in completed.stderr
+    assert not output.exists()
 
 
 def test_agent_change_gate_rejects_unknown_assertion_fields_before_running(

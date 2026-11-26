@@ -70,8 +70,9 @@ headers and request fields cannot override adapter-owned values: the `model`,
 `state`, and `questions` fields, the content type, the `Host`,
 `Content-Length`, and `Transfer-Encoding` headers, and authentication. The
 default resource path is `systemone`, so a base URL ending in `/v1` reaches
-`/v1/systemone`. `timeout_seconds` bounds each read, and the optional
-`deadline_seconds` bounds each request as a whole.
+`/v1/systemone`. `timeout_seconds` bounds each read, and `deadline_seconds`
+bounds each request as a whole: 600 seconds unless set, and no bound with
+`deadline_seconds=None`.
 
 ## Use Jev
 

@@ -10,6 +10,7 @@ from .bundle import (
     BundleValidator,
     IntegrityCode,
     IntegrityIssue,
+    ValidationPolicy,
 )
 from .decision_model import (
     COUNTERBALANCED_ORDERS,
@@ -256,6 +257,7 @@ __all__ = [
     "TransitionError",
     "TransitionRequest",
     "UrllibHttpTransport",
+    "ValidationPolicy",
     "VerifiedEvidenceBundle",
     "VerdictOutcome",
     "artifact_reference_record",

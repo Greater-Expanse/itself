@@ -6,13 +6,16 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import stat
 from collections.abc import Callable, Collection, Iterable
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from typing import cast
 
 import pytest
+import rfc8785
 
 import itself._filesystem as filesystem_module
 from itself import (
@@ -198,10 +201,30 @@ def test_jsonl_store_append_runs_one_full_validation(tmp_path: Path) -> None:
     store.extend(records[:-1])
     schema.checked = 0
 
+    # A store that did not write the history loads and checks it once; the
+    # append checks only itself.
+    fresh = JsonlLedgerStore(store.path, validator=BundleValidator(schema))
+    fresh.append(records[-1])
+
+    assert schema.checked == len(records)
+
+
+def test_warm_jsonl_store_append_schema_checks_only_the_addition(
+    tmp_path: Path,
+) -> None:
+    records = _records()
+    schema = _CountingProtocolValidator()
+    store = JsonlLedgerStore(
+        tmp_path / "assurance.jsonl",
+        validator=BundleValidator(schema),
+    )
+    store.extend(records[:-1])
+    schema.checked = 0
+
     store.append(records[-1])
 
-    # Loading checks the persisted history once; the append checks only itself.
-    assert schema.checked == len(records)
+    # The instance wrote the stored bytes, so it holds their validated records.
+    assert schema.checked == 1
 
 
 def test_jsonl_store_stops_at_configured_record_limit(tmp_path: Path) -> None:
@@ -623,3 +646,359 @@ def test_ledger_gives_a_validator_that_overrides_validate_every_record() -> None
 
     assert seen == [1, 3]
     assert len(ledger) == 3
+
+
+def _claim(index: int) -> JsonObject:
+    claim = deepcopy(_records()[0])
+    claim["id"] = f"claim-{index}"
+    claim["proposition"] = f"Proposition number {index}."
+    return claim
+
+
+def _without_paths(message: str) -> str:
+    return re.sub(r"/[^\s:]*\.jsonl", "<ledger>", message)
+
+
+def _outcome(
+    action: Callable[[], BundleSnapshot | Ledger],
+) -> tuple[str, object, object]:
+    """Return what an operation produced or raised, in a comparable form."""
+
+    try:
+        result = action()
+    except BundleIntegrityError as error:
+        return ("integrity", str(error), error.issues)
+    except (OSError, ValueError) as error:
+        return (type(error).__name__, _without_paths(str(error)), None)
+    if isinstance(result, Ledger):
+        return ("ok", result.snapshot, result.records)
+    return ("ok", result, None)
+
+
+def _cold_copy(path: Path, directory: Path) -> JsonlLedgerStore:
+    """Return a store that has read nothing, over a byte copy of the ledger."""
+
+    copy = directory / "cold.jsonl"
+    copy.write_bytes(path.read_bytes())
+    return JsonlLedgerStore(copy)
+
+
+def test_warm_store_matches_a_fresh_store_for_every_append(tmp_path: Path) -> None:
+    warm = JsonlLedgerStore(tmp_path / "warm" / "ledger.jsonl")
+    cold_path = tmp_path / "cold" / "ledger.jsonl"
+    invalid = _claim(99)
+    del invalid["proposition"]
+    duplicate = _claim(2)
+    duplicate["proposition"] = "A reused identifier."
+    attempts = [_claim(0), _claim(1), _claim(2), invalid, duplicate, _claim(3)]
+
+    kinds: list[str] = []
+    for record in attempts:
+        warm_result = _outcome(partial(warm.append, record))
+        cold_result = _outcome(partial(JsonlLedgerStore(cold_path).append, record))
+
+        assert warm_result == cold_result
+        assert warm.path.read_bytes() == cold_path.read_bytes()
+        kinds.append(warm_result[0])
+
+    assert kinds == ["ok", "ok", "ok", "integrity", "integrity", "ok"]
+
+
+def _warm_store(tmp_path: Path, count: int = 3) -> JsonlLedgerStore:
+    store = JsonlLedgerStore(tmp_path / "warm" / "ledger.jsonl")
+    for index in range(count):
+        store.append(_claim(index))
+    return store
+
+
+def _edit_in_place(path: Path, old: bytes, new: bytes) -> None:
+    """Replace same-size bytes in place and restore the modification time.
+
+    The file keeps its device, inode, size and modification time, so only the
+    digest of the bytes can tell the store that they changed.
+    """
+
+    assert len(old) == len(new)
+    before = path.stat()
+    identity = filesystem_module.FileIdentity.of(before)
+    content = path.read_bytes()
+    assert old in content
+    with path.open("r+b") as handle:
+        handle.write(content.replace(old, new, 1))
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert filesystem_module.FileIdentity.of(path.stat()) == identity
+
+
+def _assert_same_as_a_fresh_store(
+    warm: JsonlLedgerStore,
+    record: JsonObject,
+    directory: Path,
+) -> tuple[str, object, object]:
+    cold = _cold_copy(warm.path, directory)
+    cold_result = _outcome(lambda: cold.append(record))
+    warm_result = _outcome(lambda: warm.append(record))
+
+    assert warm_result == cold_result
+    assert warm.path.read_bytes() == cold.path.read_bytes()
+    return warm_result
+
+
+def test_warm_store_sees_a_record_appended_by_another_store(tmp_path: Path) -> None:
+    warm = _warm_store(tmp_path)
+    JsonlLedgerStore(warm.path).append(_claim(10))
+
+    result = _assert_same_as_a_fresh_store(warm, _claim(11), tmp_path)
+
+    assert result[0] == "ok"
+    assert warm.load().snapshot.record_ids == (
+        "claim-0",
+        "claim-1",
+        "claim-2",
+        "claim-10",
+        "claim-11",
+    )
+
+
+def test_warm_store_rereads_a_same_size_edit_that_keeps_the_identity(
+    tmp_path: Path,
+) -> None:
+    warm = _warm_store(tmp_path)
+    _edit_in_place(warm.path, b'"id":"claim-0"', b'"id":"claim-9"')
+
+    result = _assert_same_as_a_fresh_store(warm, _claim(11), tmp_path)
+
+    assert result[0] == "ok"
+    assert warm.load().snapshot.record_ids == (
+        "claim-9",
+        "claim-1",
+        "claim-2",
+        "claim-11",
+    )
+
+
+def test_warm_store_rechecks_a_stored_record_edited_to_be_schema_invalid(
+    tmp_path: Path,
+) -> None:
+    warm = _warm_store(tmp_path)
+    _edit_in_place(warm.path, b'"status":"proposed"', b'"status":"proposeX"')
+    before = warm.path.read_bytes()
+
+    result = _assert_same_as_a_fresh_store(warm, _claim(11), tmp_path)
+
+    assert result[0] == "integrity"
+    assert warm.path.read_bytes() == before
+    assert _outcome(warm.load)[0] == "integrity"
+
+
+def test_append_rewrites_a_valid_but_non_canonical_ledger_canonically(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ledger.jsonl"
+    lines = [
+        json.dumps(_claim(index), indent=None, sort_keys=False) for index in range(3)
+    ]
+    spaced = [line.replace('": ', '" : ') for line in lines]
+    path.write_bytes(("\n".join(spaced) + "\n").encode())
+    warm = JsonlLedgerStore(path)
+    warm.load()
+
+    _assert_same_as_a_fresh_store(warm, _claim(3), tmp_path)
+
+    canonical = JsonlLedgerStore(tmp_path / "expected.jsonl")
+    for index in range(4):
+        canonical.append(_claim(index))
+    assert path.read_bytes() == canonical.path.read_bytes()
+    # The rewrite is now bytes the instance wrote, and the next append reuses them.
+    _assert_same_as_a_fresh_store(warm, _claim(4), tmp_path)
+
+
+def test_callers_cannot_change_what_a_store_holds(tmp_path: Path) -> None:
+    warm = JsonlLedgerStore(tmp_path / "warm" / "ledger.jsonl")
+    appended = _claim(0)
+    warm.append(appended)
+    appended["id"] = "claim-mutated"
+    loaded = warm.load()
+    for record in loaded.records:
+        record["id"] = "claim-mutated"
+    for record in warm.load().records:
+        record["proposition"] = "mutated"
+    for record in loaded:
+        record["proposition"] = "mutated"
+
+    result = _assert_same_as_a_fresh_store(warm, _claim(1), tmp_path)
+
+    assert result[0] == "ok"
+    assert warm.load().records == (_claim(0), _claim(1))
+
+
+def test_a_record_added_after_a_failed_append_is_not_held(tmp_path: Path) -> None:
+    warm = _warm_store(tmp_path, 1)
+    invalid = _claim(1)
+    del invalid["proposition"]
+    with pytest.raises(BundleIntegrityError):
+        warm.append(invalid)
+
+    _assert_same_as_a_fresh_store(warm, _claim(1), tmp_path)
+
+    assert warm.load().records == (_claim(0), _claim(1))
+
+
+@pytest.mark.parametrize(
+    ("max_records", "max_bytes"),
+    [(2, None), (3, None), (None, 10)],
+    ids=["records-over", "records-at-limit", "bytes-over"],
+)
+def test_load_limits_are_the_same_for_a_warm_and_a_fresh_store(
+    tmp_path: Path,
+    max_records: int | None,
+    max_bytes: int | None,
+) -> None:
+    warm = _warm_store(tmp_path)
+    cold = _cold_copy(warm.path, tmp_path)
+
+    assert _outcome(
+        lambda: warm.load(max_records=max_records, max_bytes=max_bytes)
+    ) == _outcome(lambda: cold.load(max_records=max_records, max_bytes=max_bytes))
+    # The failed read did not poison the held records.
+    assert _outcome(warm.load) == _outcome(cold.load)
+
+
+def _what_load_raises_for_the_result(
+    store: JsonlLedgerStore,
+    batch: list[JsonObject],
+    directory: Path,
+    *,
+    max_records: int | None = None,
+    max_bytes: int | None = None,
+) -> tuple[str, object, object]:
+    """Return what ``load`` raises reading the ledger the batch would produce."""
+
+    expected = _cold_copy(store.path, directory)
+    expected.extend(batch)
+    return _outcome(lambda: expected.load(max_records=max_records, max_bytes=max_bytes))
+
+
+@pytest.mark.parametrize("max_records", [3, 0], ids=["over-by-one", "over-by-all"])
+def test_extend_refuses_a_result_over_the_record_limit(
+    tmp_path: Path,
+    max_records: int,
+) -> None:
+    store = _warm_store(tmp_path)
+    before = store.path.read_bytes()
+    batch = [_claim(3)]
+    expected = _what_load_raises_for_the_result(
+        store, batch, tmp_path, max_records=max_records
+    )
+
+    assert expected == (
+        "LedgerFormatError",
+        f"<ledger>:{max_records + 1}: ledger record count exceeds limit {max_records}",
+        None,
+    )
+    assert _outcome(lambda: store.append(batch[0], max_records=max_records)) == expected
+    assert _outcome(lambda: store.extend(batch, max_records=max_records)) == expected
+    assert store.path.read_bytes() == before
+    assert [path.name for path in store.path.parent.iterdir()] == ["ledger.jsonl"]
+
+
+def test_extend_allows_a_result_exactly_at_the_record_limit(tmp_path: Path) -> None:
+    store = _warm_store(tmp_path)
+
+    store.append(_claim(3), max_records=4)
+    store.extend([_claim(4)], max_records=5)
+
+    assert store.load(max_records=5).snapshot.record_count == 5
+
+
+def test_extend_applies_the_byte_limit_to_the_result_at_its_boundary(
+    tmp_path: Path,
+) -> None:
+    store = _warm_store(tmp_path)
+    before = store.path.read_bytes()
+    resulting_size = len(before) + len(rfc8785.dumps(_claim(3))) + 1
+    expected = _what_load_raises_for_the_result(
+        store, [_claim(3)], tmp_path, max_bytes=resulting_size - 1
+    )
+
+    assert expected[0] == "LedgerFormatError"
+    assert (
+        _outcome(lambda: store.append(_claim(3), max_bytes=resulting_size - 1))
+        == expected
+    )
+    assert store.path.read_bytes() == before
+
+    store.append(_claim(3), max_bytes=resulting_size)
+
+    assert len(store.path.read_bytes()) == resulting_size
+    assert store.load(max_bytes=resulting_size).snapshot.record_count == 4
+
+
+def test_extend_reports_the_byte_limit_before_the_record_limit(tmp_path: Path) -> None:
+    store = _warm_store(tmp_path)
+    expected = _what_load_raises_for_the_result(
+        store, [_claim(3)], tmp_path, max_bytes=100, max_records=1
+    )
+
+    assert expected == (
+        "LedgerFormatError",
+        "<ledger>:1: ledger size exceeds limit 100 bytes",
+        None,
+    )
+    assert expected == _outcome(
+        lambda: store.append(_claim(3), max_bytes=100, max_records=1)
+    )
+
+
+@pytest.mark.parametrize(
+    ("max_records", "max_bytes"),
+    [(2, None), (None, 10)],
+    ids=["records", "bytes"],
+)
+def test_extend_applies_limits_to_the_stored_ledger_as_load_does(
+    tmp_path: Path,
+    max_records: int | None,
+    max_bytes: int | None,
+) -> None:
+    store = _warm_store(tmp_path)
+    cold = _cold_copy(store.path, tmp_path)
+    before = store.path.read_bytes()
+    expected = _outcome(lambda: cold.load(max_records=max_records, max_bytes=max_bytes))
+
+    assert expected[0] == "LedgerFormatError"
+    assert (
+        _outcome(
+            lambda: store.append(
+                _claim(3), max_records=max_records, max_bytes=max_bytes
+            )
+        )
+        == expected
+    )
+    assert (
+        _outcome(
+            lambda: store.extend(
+                [_claim(3)], max_records=max_records, max_bytes=max_bytes
+            )
+        )
+        == expected
+    )
+    assert store.path.read_bytes() == before
+
+
+def test_extend_with_limits_at_the_stored_boundary_succeeds(tmp_path: Path) -> None:
+    store = _warm_store(tmp_path, 2)
+    stored_size = len(store.path.read_bytes())
+
+    assert store.extend([], max_records=2, max_bytes=stored_size).record_count == 2
+    store.extend([_claim(2)], max_records=3)
+
+    assert store.load().snapshot.record_count == 3
+
+
+def test_extend_rejects_negative_limits(tmp_path: Path) -> None:
+    store = JsonlLedgerStore(tmp_path / "ledger.jsonl")
+
+    with pytest.raises(ValueError, match="max_records must not be negative"):
+        store.append(_claim(0), max_records=-1)
+    with pytest.raises(ValueError, match="max_bytes must not be negative"):
+        store.extend([_claim(0)], max_bytes=-1)
+    assert not store.path.exists()

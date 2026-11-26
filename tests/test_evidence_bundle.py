@@ -33,6 +33,7 @@ from itself import (
     Ledger,
     LedgerFormatError,
     StrPath,
+    ValidationPolicy,
     VerifiedEvidenceBundle,
     build_reasoning_receipt,
     canonical_ledger_bytes,
@@ -916,3 +917,47 @@ def test_bundle_validation_can_require_trusted_authorizers() -> None:
     assert EvidenceBundleValidator(
         trusted_authorizers=["a", "a"]
     ).trusted_authorizers == frozenset({"a"})
+
+
+def test_bundle_validation_applies_a_validation_policy() -> None:
+    accepted = EvidenceBundleValidator(
+        policy=ValidationPolicy(
+            trusted_authorizers=["case-001-promotion-policy"],
+            require_supported_reliance=True,
+            as_of=datetime(2026, 11, 26, tzinfo=UTC),
+        )
+    ).validate(REFERENCE_BUNDLE)
+
+    assert accepted.manifest["bundle_id"] == EXPECTED_BUNDLE_ID
+    with pytest.raises(BundleIntegrityError) as raised:
+        EvidenceBundleValidator(
+            policy=ValidationPolicy(trusted_authorizers=())
+        ).validate(REFERENCE_BUNDLE)
+    assert {issue.code.value for issue in raised.value.issues} == {
+        "untrusted_authorizer"
+    }
+
+
+def test_builder_applies_its_validators_policy(tmp_path: Path) -> None:
+    destination = tmp_path / "bundle"
+    ledger = JsonlLedgerStore(REFERENCE_BUNDLE / "ledger.jsonl").load()
+    builder = EvidenceBundleBuilder(
+        validator=EvidenceBundleValidator(
+            policy=ValidationPolicy(trusted_authorizers=["case-001-runner"])
+        )
+    )
+
+    with pytest.raises(BundleIntegrityError) as raised:
+        builder.build(
+            destination,
+            ledger=ledger,
+            title="Deterministic cache-key causal diagnosis",
+            created_at=datetime(2026, 7, 23, 12, tzinfo=UTC),
+            files=_reference_bundle_files(),
+        )
+
+    assert {issue.reference for issue in raised.value.issues} == {
+        "case-001-promotion-policy"
+    }
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []

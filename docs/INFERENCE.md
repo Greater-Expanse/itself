@@ -130,8 +130,8 @@ loopback host.
 - accepted finish-state declarations for compatible local servers;
 - bounded Server-Sent Event streaming for endpoints that require it;
 - non-secret extra headers and JSON request fields;
-- an optional `deadline_seconds` for the whole request, beside the per-read
-  `timeout_seconds`;
+- a `deadline_seconds` for the whole request, ten minutes unless set, beside
+  the per-read `timeout_seconds`;
 - a replaceable synchronous HTTP transport with no implicit retry.
 
 `base_url` and `resource_path` must be printable ASCII without spaces or
@@ -157,15 +157,17 @@ body. The built-in transport sends only `http` and `https` URLs.
 `timeout_seconds` bounds each connection attempt and each read, not the whole
 request. A server that keeps sending, for example keep-alive comments on a
 stalled event stream or an endless run of chunked trailer lines, never trips
-it. Set `deadline_seconds` to bound the request as a whole: once that much
-time has passed, the built-in transport shuts the connection down and reports
-a retryable transport failure. The deadline runs from the moment the socket
+it. `deadline_seconds` bounds the request as a whole: once that much time has
+passed, the built-in transport shuts the connection down and reports a
+retryable transport failure. The deadline runs from the moment the socket
 connects, so a proxy's `CONNECT` exchange and the TLS handshake count against
 it. Each connection attempt is bounded by `timeout_seconds`, and host name
 resolution by neither setting. Both durations must be positive and at most
-`threading.TIMEOUT_MAX`. The deadline is off by default, and a request with a
-deadline trusts exactly the certificates a request without one does. A custom
-transport receives it as `HttpRequest.deadline_seconds`.
+`threading.TIMEOUT_MAX`. The deadline is 600 seconds unless the endpoint sets
+another; `deadline_seconds=None` turns it off for an endpoint whose requests
+may legitimately run longer. A request with a deadline trusts exactly the
+certificates a request without one does. A custom transport receives the
+deadline as `HttpRequest.deadline_seconds`.
 
 For example, an endpoint whose supplied URL is already complete can use:
 
@@ -205,8 +207,8 @@ Streaming does not weaken the evidence boundary. The transport keeps at most
 its configured response-byte limit of body bytes, the artifact sink captures
 the exact event stream before interpretation, and the client then assembles its
 text locally. Chunked trailer lines, which `http.client` discards, do not count
-toward that limit, so a deployment that talks to untrusted servers should also
-set `deadline_seconds`.
+toward that limit, so a deployment that talks to untrusted servers should keep
+a `deadline_seconds` rather than turning it off.
 It requires one terminal `[DONE]` marker, one completion choice, a stable model
 identity and finish reason, and internally consistent token usage when usage is
 reported. It does not expose partial output as a successful result.

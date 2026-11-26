@@ -325,6 +325,28 @@ def test_default_transport_never_sends_loopback_requests_through_a_proxy(
     assert proxy_headers == []
 
 
+@pytest.mark.parametrize("host", ["localhost.", "LOCALHOST.", "Api.LocalHost"])
+@pytest.mark.parametrize("deadline_seconds", [None, 5.0], ids=["timeout", "deadline"])
+def test_loopback_names_bypass_the_proxy_in_any_case_or_with_a_trailing_dot(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    deadline_seconds: float | None,
+) -> None:
+    proxy_headers: list[str | None] = []
+    with _serve(_capture_handler(proxy_headers)) as proxy:
+        _set_proxy_environment(monkeypatch, proxy)
+        # Whether the name resolves here is up to the host's resolver; a request
+        # that went through the proxy would reach it and succeed.
+        request = replace(
+            _request(f"http://{host}:9/v1"), deadline_seconds=deadline_seconds
+        )
+        with pytest.raises(InferenceError) as raised:
+            UrllibHttpTransport().send(request)
+
+    assert raised.value.failure is InferenceFailure.TRANSPORT
+    assert proxy_headers == []
+
+
 def test_default_transport_keeps_the_proxy_environment_for_other_hosts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

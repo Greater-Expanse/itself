@@ -197,7 +197,10 @@ The `itself` commands that read a ledger apply the default ledger ceilings:
 larger than 128 MiB, and `receipt generate --output` refuses to write one, so
 every receipt it writes can be validated and bundled. A receipt can be nearly
 as large as its ledger, which is why the two ceilings match. `ledger append`
-rewrites a local ledger and applies no read limit.
+applies the same ceilings to the ledger it reads and to the ledger it would
+write, and refuses an append that would exceed either before writing anything.
+`JsonlLedgerStore.append` and `extend` accept the same `max_records` and
+`max_bytes` arguments as `load`.
 
 The independent verification command uses the same public format but does not
 trust builder state:
@@ -208,11 +211,16 @@ uv run --frozen itself bundle validate run/evidence-bundle
 
 A verifier that knows which actor ids may authorize evidence-backed
 transitions can pass each one with `--trusted-authorizer ID`, to `bundle
-validate` and to `bundle create`, and the command then fails with
-`untrusted_authorizer` when any other declared id authorizes one. The list
-compares declared ids; the
+validate` and to `bundle create`. The command then fails with
+`untrusted_authorizer` when any other declared id moves a subject into or out
+of an evidence-backed status, and with `actor_type_conflict` when one id is
+declared with two actor types. The list compares declared ids; the
 [protocol-record guide](PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions)
-describes what it can and cannot establish.
+describes what it can and cannot establish. The same commands accept
+`--require-supported-reliance` and `--as-of TIMESTAMP`, the other checks of the
+reference SDK's
+[validation policy](PROTOCOL_RECORDS.md#require-supported-reliance-and-unexpired-support).
+None of these options is part of `v0alpha2` conformance.
 
 ## Assurance and privacy boundary
 

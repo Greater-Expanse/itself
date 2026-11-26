@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from itertools import combinations
 from typing import Final, Protocol, TypeVar, cast
@@ -38,6 +38,9 @@ from ._endpoints import (
     token_counts,
     validate_deadline,
     validate_timeout,
+)
+from ._endpoints import (
+    utc_now as _utc_now,
 )
 from ._inference_errors import http_failure as _http_failure
 from ._json import ensure_i_json, strict_json_loads
@@ -307,7 +310,7 @@ class DecisionModelEndpoint:
         default_factory=_empty_body,
         repr=False,
     )
-    deadline_seconds: float | None = None
+    deadline_seconds: float | None = 600.0
 
     def __post_init__(self) -> None:
         if IDENTIFIER_PATTERN.fullmatch(self.actor_id) is None:
@@ -1010,10 +1013,6 @@ def _estimate(
         order_gap=gap,
         order_flip=len({answer.most_likely for answer in answers}) > 1,
     )
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass(frozen=True, slots=True)

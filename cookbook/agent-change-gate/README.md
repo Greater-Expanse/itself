@@ -70,6 +70,22 @@ An approved Itself decision does not merge a change. It supplies a validated
 decision record and successful job status that the code host's branch or merge
 policy may use as one required condition.
 
+The runner validates what it writes with the reference SDK's opt-in
+[validation policy](../../docs/PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions).
+It trusts only its own policy actor, `ci-assurance-policy`, to authorize the
+claim's final transition, and it requires an approved decision to rely only
+on a claim that is supported when the decision is recorded. A verifier can
+apply the same checks:
+
+```bash
+uv run --frozen itself bundle validate OUTPUT/bundle \
+  --trusted-authorizer ci-assurance-policy --require-supported-reliance
+```
+
+Because a trust list also refuses one actor id declared with two actor types,
+the runner exits with status `2`, writing nothing, when `--model-actor-id`
+names one of its own actors, `ci-check-runner` or `ci-assurance-policy`.
+
 ## Run the gate from code the change cannot edit
 
 The checked-in wrappers demonstrate the recipe; they do not protect it. Under

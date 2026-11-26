@@ -10,7 +10,7 @@ import pickle
 import threading
 import traceback
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn, cast
@@ -988,7 +988,31 @@ def test_endpoint_deadline_reaches_every_request(tmp_path: Path) -> None:
     _client(tmp_path, server, endpoint=endpoint).decide(STATE, _questions())
 
     assert [request.deadline_seconds for request in server.requests] == [3.0, 3.0]
-    assert _endpoint().deadline_seconds is None
+
+
+@pytest.mark.parametrize(
+    ("disable", "expected"), [(False, 600.0), (True, None)], ids=["default", "none"]
+)
+def test_endpoint_deadline_defaults_to_ten_minutes_and_none_disables_it(
+    tmp_path: Path, disable: bool, expected: float | None
+) -> None:
+    server = BiasedServer()
+    endpoint = DecisionModelEndpoint(
+        actor_id="decision-model-under-test",
+        base_url="https://decisions.example.test/v1",
+        model="decider-latest",
+        credential=CREDENTIAL,
+    )
+    if disable:
+        endpoint = replace(endpoint, deadline_seconds=None)
+
+    _client(tmp_path, server, endpoint=endpoint).decide(STATE, _questions())
+
+    assert endpoint.deadline_seconds == expected
+    assert [request.deadline_seconds for request in server.requests] == [
+        expected,
+        expected,
+    ]
 
 
 def test_choice_questions_compare_and_hash_by_declared_order() -> None:

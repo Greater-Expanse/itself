@@ -204,12 +204,23 @@ Each record declares its actors' types rather than binding them to an
 identity, so `v0alpha2` validation does not detect one identifier declared as
 a model in one record and as software in another. Deployments that rely on the
 model-authorization rule in section 6 need identity controls outside the
-protocol. The reference SDK's bundle and ledger validators accept a list of the
-actor identifiers a deployment trusts to authorize evidence-backed transitions,
-and they refuse such a transition when its `authorized_by` declares any other
-identifier. The list compares declared identifiers, so it constrains a history
-only when the path that writes records controls which writers emit records
-under the listed identifiers.
+protocol.
+
+The reference SDK's bundle and ledger validators accept an optional validation
+policy for such deployments. The policy is reference-SDK behaviour outside
+`v0alpha2` conformance: it adds no requirement of this specification, a
+conforming validator need not implement it, and without one the reference
+validators accept exactly the histories section 11 accepts. A policy may name
+the actor identifiers a deployment trusts to authorize transitions. The
+validators then refuse a transition into or out of an evidence-backed status
+when its `authorized_by` declares any other identifier, and refuse an
+identifier declared with more than one `actor_type` anywhere in the history.
+The list compares declared identifiers, so it constrains a history only when
+the path that writes records controls which writers emit records under the
+listed identifiers. A policy may also refuse an approved or executed decision
+that relies on a claim not supported or corroborated within scope when the
+decision is recorded, and may refuse, at a stated time, support whose scope or
+current evidence has expired by then.
 
 ## 11. Conformance
 

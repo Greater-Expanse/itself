@@ -12,7 +12,7 @@ import pickle
 import stat
 import traceback
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, NoReturn, cast
@@ -1327,7 +1327,28 @@ def test_endpoint_deadline_reaches_the_request(tmp_path: Path) -> None:
     client.invoke({"question": "What is two plus two?"}, _profile())
 
     assert transport.requests[0].deadline_seconds == 12.5
-    assert _endpoint().deadline_seconds is None
+
+
+@pytest.mark.parametrize(
+    ("disable", "expected"), [(False, 600.0), (True, None)], ids=["default", "none"]
+)
+def test_endpoint_deadline_defaults_to_ten_minutes_and_none_disables_it(
+    tmp_path: Path, disable: bool, expected: float | None
+) -> None:
+    endpoint = OpenAICompatibleEndpoint(
+        actor_id="model-under-test",
+        base_url="https://models.example.test/v1",
+        model="org/model-1",
+        credential=DEFAULT_CREDENTIAL,
+    )
+    if disable:
+        endpoint = replace(endpoint, deadline_seconds=None)
+    client, transport = _client(tmp_path, endpoint=endpoint)
+
+    client.invoke({"question": "What is two plus two?"}, _profile())
+
+    assert endpoint.deadline_seconds == expected
+    assert transport.requests[0].deadline_seconds == expected
 
 
 INFERENCE_PUBLIC_NAMES: Final = frozenset(

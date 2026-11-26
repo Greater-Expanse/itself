@@ -12,6 +12,7 @@ import re
 import threading
 from collections.abc import Iterator, Mapping, Set
 from copy import deepcopy
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Final
 from urllib.parse import urlencode, urlsplit
@@ -52,10 +53,21 @@ class DefensiveJsonObject(Mapping[str, JsonValue]):
         return len(self._value)
 
 
+def utc_now() -> datetime:
+    """Return the current time in UTC, the adapters' default clock."""
+
+    return datetime.now(UTC)
+
+
 def is_loopback_hostname(hostname: str | None) -> bool:
     if hostname is None:
         return False
-    if hostname == "localhost" or hostname.endswith(".localhost"):
+    # Host names compare without case, and one trailing dot names the same
+    # host fully qualified.  Address literals take neither form.
+    name = hostname.lower()
+    if name.endswith("."):
+        name = name[:-1]
+    if name == "localhost" or name.endswith(".localhost"):
         return True
     try:
         return ipaddress.ip_address(hostname).is_loopback
@@ -86,7 +98,9 @@ def normalized_base_url(
     # A netloc such as ":443" names a port but no host.
     if not parsed_url.hostname:
         raise ValueError("base_url must name a host")
-    if parsed_url.query or parsed_url.fragment:
+    # urlsplit reports an empty query or fragment as absent, so the markers are
+    # checked in the text; a request path appended after them would be lost.
+    if "?" in normalized_url or "#" in normalized_url:
         raise ValueError("base_url must not contain a query or fragment")
     try:
         port = parsed_url.port

@@ -29,6 +29,7 @@ from itself import (
     ActorType,
     Authority,
     AuthorityType,
+    BundleValidator,
     ClaimStatus,
     ClaimType,
     DecisionDisposition,
@@ -37,6 +38,7 @@ from itself import (
     EvidenceBundleBuilder,
     EvidenceBundleFile,
     EvidenceBundleFileRole,
+    EvidenceBundleValidator,
     EvidenceRelation,
     EvidenceRelationType,
     EvidenceType,
@@ -49,6 +51,7 @@ from itself import (
     TestCost,
     TestDesign,
     TestStatus,
+    ValidationPolicy,
     VerdictOutcome,
     artifact_reference_record,
     canonical_bundle_json,
@@ -67,6 +70,14 @@ CHECK_ARTIFACT_PATH: Final = "artifacts/check-result.json"
 CLAIM_ID: Final = "claim-agent-change-check"
 EVIDENCE_ID: Final = "evidence-ci-check"
 VERDICT_ID: Final = "verdict-agent-change-check"
+OPERATOR_ACTOR_ID: Final = "ci-check-runner"
+EVALUATOR_ACTOR_ID: Final = "ci-assurance-policy"
+# The runner's policy actor is the only one it trusts to settle the claim, and
+# it approves an action only on a claim that is supported when it decides.
+VALIDATION_POLICY: Final = ValidationPolicy(
+    trusted_authorizers=(EVALUATOR_ACTOR_ID,),
+    require_supported_reliance=True,
+)
 MAX_ASSERTION_BYTES: Final = 64 * 1024
 MAX_COMMAND_ARGUMENTS: Final = 128
 MAX_COMMAND_BYTES: Final = 32 * 1024
@@ -405,13 +416,13 @@ def _build_ledger(
         implementation_ref=model_implementation,
     )
     operator = Actor(
-        actor_id="ci-check-runner",
+        actor_id=OPERATOR_ACTOR_ID,
         actor_type=ActorType.SOFTWARE,
         role=ActorRole.OPERATOR,
         implementation_ref="itself-cookbook-agent-change-gate@1",
     )
     evaluator = Actor(
-        actor_id="ci-assurance-policy",
+        actor_id=EVALUATOR_ACTOR_ID,
         actor_type=ActorType.SOFTWARE,
         role=ActorRole.EVALUATOR,
         implementation_ref="itself-cookbook-exit-code-policy@1",
@@ -578,7 +589,7 @@ def _build_ledger(
             public_rationale=outcome.rationale,
         ),
     )
-    return Ledger(records)
+    return Ledger(records, validator=BundleValidator(policy=VALIDATION_POLICY))
 
 
 def _escaped_line(text: str) -> str:
@@ -672,7 +683,9 @@ def _write_outputs(
         outcome=outcome,
         result_content=result_content,
     )
-    verified = EvidenceBundleBuilder().build(
+    verified = EvidenceBundleBuilder(
+        validator=EvidenceBundleValidator(policy=VALIDATION_POLICY)
+    ).build(
         output / "bundle",
         ledger=ledger,
         title=f"Agent-change assurance: {check_name}",

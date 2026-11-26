@@ -36,7 +36,7 @@ from ._formats import schema_format_checker
 from ._json import format_json_path as _format_path
 from ._json import strict_json_loads
 from ._schema_references import offline_validator, require_local_references
-from .bundle import BundleValidator
+from .bundle import BundleValidator, ValidationPolicy
 from .ledger import Ledger, decode_jsonl_records
 from .receipts import (
     ReasoningReceiptValidator,
@@ -606,21 +606,29 @@ def _manifest_schema_validator() -> _SchemaValidator:
 class EvidenceBundleValidator:
     """Verify inventory, bytes, protocol history, receipt, and artifacts.
 
-    ``trusted_authorizers`` has the meaning it has for ``BundleValidator``: when
-    set, only those actor ids may authorize the ledger's evidence-backed
-    transitions.
+    ``policy`` and ``trusted_authorizers`` have the meaning they have for
+    ``BundleValidator`` and apply to the ledger's history: ``policy`` adds the
+    opt-in checks of ``ValidationPolicy``, and ``trusted_authorizers`` is
+    shorthand for a policy with only that list.  Each field keeps the value it
+    was given, and the two cannot be combined.
     """
 
     limits: EvidenceBundleLimits = field(default_factory=EvidenceBundleLimits)
     trusted_authorizers: Collection[str] | None = None
+    policy: ValidationPolicy | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "trusted_authorizers",
-            BundleValidator(
-                trusted_authorizers=self.trusted_authorizers
-            ).trusted_authorizers,
+        validator = BundleValidator(
+            trusted_authorizers=self.trusted_authorizers, policy=self.policy
+        )
+        if self.policy is None:
+            object.__setattr__(
+                self, "trusted_authorizers", validator.trusted_authorizers
+            )
+
+    def _bundle_validator(self) -> BundleValidator:
+        return BundleValidator(
+            trusted_authorizers=self.trusted_authorizers, policy=self.policy
         )
 
     def errors(self, manifest: JsonValue) -> list[str]:
@@ -754,7 +762,7 @@ class EvidenceBundleValidator:
                 max_records=self.limits.max_ledger_records,
                 max_bytes=_file_byte_limit(self.limits, "ledger"),
             ),
-            validator=BundleValidator(trusted_authorizers=self.trusted_authorizers),
+            validator=self._bundle_validator(),
         )
         receipt_path, receipt_content = _read_inventoried_file(
             root,

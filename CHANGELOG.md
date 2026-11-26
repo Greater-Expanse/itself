@@ -19,8 +19,70 @@ Python distribution version.
   `refuted` verdicts without contradicting evidence, a transition that does
   not match its verdict's outcome, and evidence scoped differently from its
   verdict.
+- `ValidationPolicy`, one frozen object for the opt-in checks of the reference
+  validators. These checks are outside `v0alpha2` conformance, and without a
+  policy every history validates exactly as before. `BundleValidator` and
+  `EvidenceBundleValidator` accept `policy=`, so `Ledger`, `JsonlLedgerStore`,
+  and `EvidenceBundleBuilder` apply it through their validators.
+  `trusted_authorizers=` still works as shorthand for a policy with only that
+  list, and passing both raises `ValueError`. Besides `trusted_authorizers`, a
+  policy can set:
+  - `require_supported_reliance`, which refuses with `unsupported_reliance` an
+    `approved` or `executed` decision that relies on a claim not `supported` or
+    `corroborated_within_scope` at the decision's position. References declared
+    external are skipped.
+  - `as_of`, a timezone-aware datetime. It refuses with `expired_support` a
+    subject that ends `supported` or `corroborated_within_scope` when its scope
+    `valid_until`, or the `expires_at` or scope `valid_until` of evidence cited
+    by the transition behind its current status, is at or before that time.
+- `--require-supported-reliance` and `--as-of TIMESTAMP`, an RFC 3339
+  date-time with an offset, on every `itself` command that accepts
+  `--trusted-authorizer`. As with the trust list, `receipt validate` accepts
+  them only with `--ledger`.
+- `max_records` and `max_bytes` on `JsonlLedgerStore.append` and `extend`. They
+  mean what they mean on `load`, and apply to both the stored ledger and the
+  result.
+- The agent-change gate recipe validates what it writes with a trust list
+  naming its policy actor and with supported reliance required.
 
 ### Changed
+
+- With `trusted_authorizers`, a transition out of an evidence-backed status,
+  such as `supported` to `stale` or `corroborated_within_scope` to
+  `invalidated`, must also be authorized by a listed actor id, or it is
+  refused with `untrusted_authorizer` and does not apply. Before, only
+  transitions into those statuses were restricted.
+- With `trusted_authorizers`, an actor id declared with more than one
+  `actor_type`, in any record's `created_by` or any decision's or transition's
+  `authorized_by`, is refused with the new code `actor_type_conflict`. The code
+  is reported once per id, on the record where the second type appears.
+  To migrate a trust list, add the ids that demote or invalidate supported
+  claims, and declare each actor id with one actor type throughout a history.
+  Validation without a trust list is unaffected. In the agent-change gate, a
+  `--model-actor-id` naming one of the runner's own actors now fails with exit
+  status 2 and writes nothing.
+- `OpenAICompatibleEndpoint.deadline_seconds` and
+  `DecisionModelEndpoint.deadline_seconds` default to 600 seconds instead of
+  no deadline, so a server that keeps a response trickling can no longer hold a
+  request open indefinitely. To keep requests that legitimately run longer,
+  set a larger value; `deadline_seconds=None` still removes the deadline. The
+  deadline is not recorded in requests, artifacts, or results.
+- `itself ledger append` applies the CLI's ledger ceilings, 128 MiB and
+  100,000 records, to the ledger it reads and to the ledger it would write,
+  and refuses an append that would exceed either before writing anything.
+  Before, it applied no limit.
+- A `JsonlLedgerStore` instance now holds the records it last validated or
+  wrote, with the SHA-256 of the file bytes they match. When a later read
+  returns exactly those bytes, it skips decoding and schema validation of the
+  stored history. The cross-record checks still cover the whole history on
+  every append, and any byte difference takes the full path, so results,
+  errors, and written bytes are unchanged. 800 single appends through one
+  instance take about a seventh of the time they did.
+- Loopback detection compares host names without case and ignores one
+  trailing dot, so `localhost.`, `LOCALHOST`, and `api.localhost.` are loopback
+  hosts. Opted-in insecure HTTP now accepts them, and the built-in transport
+  connects to them directly instead of through a configured proxy. Address
+  literals are unchanged, so `127.0.0.1.` is still not a loopback host.
 
 - `JsonlLedgerStore.extend` and `append` raise `OSError` instead of replacing a
   ledger that another writer created, removed, or changed after the append
@@ -45,7 +107,11 @@ Python distribution version.
   DEL, and the Unicode line and paragraph separators found in records and file
   names, as `\xNN` or `\uNNNN`, so a record cannot forge an output line, a CI
   annotation, or a terminal sequence. Each integrity or schema issue still
-  prints on its own line, and `--format json` output is unchanged.
+  prints on its own line. JSON written to standard output, by `--format json`
+  and by `receipt generate` without `--output`, escapes DEL, the C1 controls,
+  U+2028, and U+2029 as `\uXXXX`. Its parsed value is unchanged, other
+  non-ASCII text is still printed as it is, and files the stores write keep
+  their bytes.
 - The CLI names itself `itself` in usage and `--version` output however it is
   started, and a blank `--trusted-authorizer` is a usage error with exit
   status 2 instead of an uncaught `ValueError`.
@@ -69,6 +135,16 @@ Python distribution version.
   message and traceback omit the value. Before, it escaped as a `ValueError`
   that quoted the header.
 - An endpoint `base_url` must name a host, so `https://:443/v1` is refused.
+- An endpoint `base_url` with an empty query or fragment marker, such as
+  `https://h.example/v1/?` or `https://h.example/v1#`, is refused. Before, it
+  was accepted and the resource path was appended after the marker.
+- `typing.get_type_hints` resolves every class, method, property, and function
+  that `itself` exports. Members of `BundleValidator`, `Ledger`,
+  `JsonlLedgerStore`, `LedgerSummary`, and `SubjectReplay` raised `NameError`
+  for `JsonValue`.
+- A `--created-at` or `--as-of` value whose offset moves it outside the
+  representable date range is a usage error instead of an uncaught
+  `OverflowError`.
 - `UrllibHttpTransport` refuses a `max_response_bytes` that is not an integer,
   such as `2.0` or `"3"`, with `ValueError`.
 

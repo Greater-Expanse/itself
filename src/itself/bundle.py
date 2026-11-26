@@ -7,12 +7,14 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, cast
 
 import rfc8785
 
+from ._formats import RFC3339_DATE_TIME
 from .state import (
     EVIDENCE_BACKED_STATUSES,
     ActorRole,
@@ -22,7 +24,13 @@ from .state import (
     TransitionRequest,
     validate_transition,
 )
-from .types import JsonObject
+
+# JsonValue is unused here, but typing.get_type_hints needs it to resolve the
+# recursive JsonObject alias in this module's annotations.
+from .types import (
+    JsonObject,
+    JsonValue,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
 from .validation import ProtocolValidator
 
 
@@ -42,6 +50,9 @@ class IntegrityCode(StrEnum):
     VERDICT_MISMATCH = "verdict_mismatch"
     SCOPE_MISMATCH = "scope_mismatch"
     UNTRUSTED_AUTHORIZER = "untrusted_authorizer"
+    ACTOR_TYPE_CONFLICT = "actor_type_conflict"
+    UNSUPPORTED_RELIANCE = "unsupported_reliance"
+    EXPIRED_SUPPORT = "expired_support"
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,14 +244,126 @@ def _trusted_authorizers(value: object) -> frozenset[str]:
     return cast(frozenset[str], authorizers)
 
 
+_SUPPORTED_STATUSES: Final = frozenset(
+    {ClaimStatus.SUPPORTED, ClaimStatus.CORROBORATED_WITHIN_SCOPE}
+)
+_RELYING_DISPOSITIONS: Final = frozenset({"approved", "executed"})
+_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECOND: Final = datetime.resolution
+
+
+def _days_from_civil(year: int, month: int, day: int) -> int:
+    # Days since 1970-01-01 in the proleptic Gregorian calendar, for any year
+    # RFC 3339 allows, including those datetime cannot represent.
+    if month <= 2:
+        year -= 1
+    era = year // 400
+    year_of_era = year - era * 400
+    day_of_year = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + day - 1
+    day_of_era = year_of_era * 365 + year_of_era // 4 - year_of_era // 100
+    return era * 146_097 + day_of_era + day_of_year - 719_468
+
+
+def _at_or_before(value: str, field: str, instant: datetime) -> bool:
+    """Return whether an RFC 3339 date-time is at or before ``instant``."""
+
+    match = RFC3339_DATE_TIME.fullmatch(value)
+    if match is None:
+        raise TypeError(f"schema-valid field {field!r} was not an RFC 3339 date-time")
+    year, month, day, hour, minute, second = (
+        int(match[group]) for group in range(1, 7)
+    )
+    fraction = match[7] or ""
+    microsecond = int(fraction[:6].ljust(6, "0"))
+    # A fraction beyond microseconds, or a leap second, puts the value after
+    # the microsecond it is truncated to.
+    later = fraction[6:].strip("0") != ""
+    if second == 60:
+        second, microsecond, later = 59, 999_999, True
+    offset_minutes = 0
+    if match[8] is not None:
+        sign = 1 if match[8] == "+" else -1
+        offset_minutes = sign * (int(match[9]) * 60 + int(match[10]))
+    seconds = (
+        (_days_from_civil(year, month, day) * 24 + hour) * 60 + minute - offset_minutes
+    ) * 60 + second
+    value_microseconds = seconds * 1_000_000 + microsecond
+    instant_microseconds = (instant - _EPOCH) // _MICROSECOND
+    if later:
+        return value_microseconds < instant_microseconds
+    return value_microseconds <= instant_microseconds
+
+
+def _actors(record: JsonObject) -> tuple[JsonObject, ...]:
+    """Return every actor object a schema-valid record declares, in field order."""
+
+    actors = [_object(record, "created_by")]
+    if _required_string(record, "kind") in {"decision", "status_transition"}:
+        actors.append(_object(record, "authorized_by"))
+    return tuple(actors)
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationPolicy:
+    """Opt-in checks of the reference validators beyond ``v0alpha2`` conformance.
+
+    The protocol leaves these questions to the deployment, so an empty policy,
+    the default, applies none of them, and a policy never changes what a
+    conforming validator must accept.
+
+    ``trusted_authorizers`` lists the only actor ids that may authorize a
+    transition into or out of an evidence-backed status; identity is
+    established outside the protocol.  With a list, an actor id declared with
+    more than one ``actor_type`` is also refused.  ``require_supported_reliance``
+    refuses an approved or executed decision that relies on a subject whose
+    replayed status at the decision is not supported or corroborated within
+    scope.  ``as_of``, a timezone-aware datetime, refuses a supported subject
+    whose scope, or the evidence behind its current status, has expired by then.
+    """
+
+    trusted_authorizers: Collection[str] | None = None
+    require_supported_reliance: bool = False
+    as_of: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.trusted_authorizers is not None:
+            object.__setattr__(
+                self,
+                "trusted_authorizers",
+                _trusted_authorizers(self.trusted_authorizers),
+            )
+        if not isinstance(cast(object, self.require_supported_reliance), bool):
+            raise ValueError("require_supported_reliance must be a boolean")
+        as_of = cast(object, self.as_of)
+        if as_of is not None and (
+            not isinstance(as_of, datetime)
+            or as_of.tzinfo is None
+            or as_of.utcoffset() is None
+        ):
+            raise ValueError("as_of must be a timezone-aware datetime")
+
+
+def _policy(
+    trusted_authorizers: Collection[str] | None,
+    policy: ValidationPolicy | None,
+) -> ValidationPolicy:
+    if policy is not None:
+        if trusted_authorizers is not None:
+            raise ValueError("pass trusted_authorizers or policy, not both")
+        if not isinstance(cast(object, policy), ValidationPolicy):
+            raise ValueError("policy must be a ValidationPolicy")
+        return policy
+    return ValidationPolicy(trusted_authorizers=trusted_authorizers)
+
+
 class BundleValidator:
     """Validate references and replay state across ordered protocol records.
 
     Records declare their own actors, so by default any identifier may
     authorize an evidence-backed transition if its declared type and role
-    allow it.  ``trusted_authorizers`` lists the only actor ids that may:
-    identity is established outside the protocol, and the validator then
-    rejects every other authorizer with ``untrusted_authorizer``.
+    allow it.  ``policy`` adds the opt-in checks of ``ValidationPolicy``, such
+    as a list of trusted authorizers; ``trusted_authorizers`` is shorthand for
+    a policy with only that list, and the two cannot be combined.
     """
 
     def __init__(
@@ -248,12 +371,12 @@ class BundleValidator:
         protocol_validator: ProtocolValidator | None = None,
         *,
         trusted_authorizers: Collection[str] | None = None,
+        policy: ValidationPolicy | None = None,
     ) -> None:
         self._protocol_validator = protocol_validator or ProtocolValidator()
-        self._trusted_authorizers = (
-            None
-            if trusted_authorizers is None
-            else _trusted_authorizers(trusted_authorizers)
+        self._policy = _policy(trusted_authorizers, policy)
+        self._trusted_authorizers = cast(
+            frozenset[str] | None, self._policy.trusted_authorizers
         )
 
     @property
@@ -261,6 +384,12 @@ class BundleValidator:
         """The only actor ids allowed to authorize evidence-backed transitions."""
 
         return self._trusted_authorizers
+
+    @property
+    def policy(self) -> ValidationPolicy:
+        """The opt-in checks this validator applies; empty unless one was given."""
+
+        return self._policy
 
     def errors(
         self,
@@ -325,8 +454,18 @@ class BundleValidator:
         }
         issues.extend(self._reference_issues(records, index, external_refs))
         issues.extend(self._verdict_issues(records, index, positions))
-        states, replay_issues = self._replay(records, index, positions)
+        states, producers, replay_issues = self._replay(
+            records, index, positions, external_refs
+        )
         issues.extend(replay_issues)
+        if self._trusted_authorizers is not None:
+            issues.extend(self._actor_type_issues(records))
+        if self._policy.as_of is not None:
+            issues.extend(
+                self._expired_support_issues(
+                    states, producers, index, self._policy.as_of
+                )
+            )
 
         snapshot = BundleSnapshot(
             record_ids=tuple(_required_string(record, "id") for record in records),
@@ -590,8 +729,12 @@ class BundleValidator:
         records: tuple[JsonObject, ...],
         index: Mapping[str, JsonObject],
         positions: Mapping[str, int],
-    ) -> tuple[dict[str, ClaimStatus], list[IntegrityIssue]]:
+        external_refs: frozenset[str],
+    ) -> tuple[dict[str, ClaimStatus], dict[str, JsonObject], list[IntegrityIssue]]:
+        """Replay states, and name the transition behind each subject's state."""
+
         states: dict[str, ClaimStatus] = {}
+        producers: dict[str, JsonObject] = {}
         issues: list[IntegrityIssue] = []
 
         for position, record in enumerate(records):
@@ -600,6 +743,10 @@ class BundleValidator:
             if kind in {"claim", "hypothesis"}:
                 states[record_id] = ClaimStatus(_required_string(record, "status"))
                 continue
+            if kind == "decision" and self._policy.require_supported_reliance:
+                issues.extend(
+                    self._reliance_issues(record, states, index, external_refs)
+                )
             if kind != "status_transition":
                 continue
 
@@ -680,19 +827,30 @@ class BundleValidator:
                 can_apply = False
             if (
                 self._trusted_authorizers is not None
-                and to_status in EVIDENCE_BACKED_STATUSES
                 and request.authorized_by not in self._trusted_authorizers
             ):
-                issues.append(
-                    IntegrityIssue(
-                        code=IntegrityCode.UNTRUSTED_AUTHORIZER,
-                        record_id=record_id,
-                        reference=request.authorized_by,
-                        message="evidence-backed transition is authorized by an actor "
-                        "that is not trusted to authorize it",
+                if to_status in EVIDENCE_BACKED_STATUSES:
+                    message = (
+                        "evidence-backed transition is authorized by an actor "
+                        "that is not trusted to authorize it"
                     )
-                )
-                can_apply = False
+                elif from_status in EVIDENCE_BACKED_STATUSES:
+                    message = (
+                        "transition out of an evidence-backed status is authorized "
+                        "by an actor that is not trusted to authorize it"
+                    )
+                else:
+                    message = None
+                if message is not None:
+                    issues.append(
+                        IntegrityIssue(
+                            code=IntegrityCode.UNTRUSTED_AUTHORIZER,
+                            record_id=record_id,
+                            reference=request.authorized_by,
+                            message=message,
+                        )
+                    )
+                    can_apply = False
 
             if verdict_ref is not None:
                 verdict = index.get(verdict_ref)
@@ -725,5 +883,121 @@ class BundleValidator:
 
             if can_apply:
                 states[subject_ref] = to_status
+                producers[subject_ref] = record
 
-        return states, issues
+        return states, producers, issues
+
+    @staticmethod
+    def _reliance_issues(
+        decision: JsonObject,
+        states: Mapping[str, ClaimStatus],
+        index: Mapping[str, JsonObject],
+        external_refs: frozenset[str],
+    ) -> list[IntegrityIssue]:
+        disposition = _required_string(decision, "disposition")
+        if disposition not in _RELYING_DISPOSITIONS:
+            return []
+        issues: list[IntegrityIssue] = []
+        for reference in _references(decision, "relied_on_claim_refs"):
+            if reference not in index and reference in external_refs:
+                continue
+            status = states.get(reference)
+            if status in _SUPPORTED_STATUSES:
+                continue
+            replayed = (
+                "has no replayed status before the decision"
+                if status is None
+                else f"has replayed status {status.value} at the decision"
+            )
+            issues.append(
+                IntegrityIssue(
+                    code=IntegrityCode.UNSUPPORTED_RELIANCE,
+                    record_id=_required_string(decision, "id"),
+                    reference=reference,
+                    message=f"{disposition} decision relies on a subject that {replayed}",
+                )
+            )
+        return issues
+
+    @staticmethod
+    def _actor_type_issues(records: tuple[JsonObject, ...]) -> list[IntegrityIssue]:
+        first_types: dict[str, str] = {}
+        conflicting: set[str] = set()
+        issues: list[IntegrityIssue] = []
+        for record in records:
+            for actor in _actors(record):
+                actor_id = _required_string(actor, "id")
+                actor_type = _required_string(actor, "actor_type")
+                first_type = first_types.setdefault(actor_id, actor_type)
+                if first_type == actor_type or actor_id in conflicting:
+                    continue
+                conflicting.add(actor_id)
+                issues.append(
+                    IntegrityIssue(
+                        code=IntegrityCode.ACTOR_TYPE_CONFLICT,
+                        record_id=_required_string(record, "id"),
+                        reference=actor_id,
+                        message=(
+                            f"actor is declared as {actor_type} here but as "
+                            f"{first_type} earlier in the bundle"
+                        ),
+                    )
+                )
+        return issues
+
+    @staticmethod
+    def _expired_support_issues(
+        states: Mapping[str, ClaimStatus],
+        producers: Mapping[str, JsonObject],
+        index: Mapping[str, JsonObject],
+        as_of: datetime,
+    ) -> list[IntegrityIssue]:
+        issues: list[IntegrityIssue] = []
+        for subject_id, status in states.items():
+            if status not in _SUPPORTED_STATUSES:
+                continue
+            valid_until = _optional_string(
+                _object(index[subject_id], "scope"), "valid_until"
+            )
+            if valid_until is not None and _at_or_before(
+                valid_until, "scope.valid_until", as_of
+            ):
+                issues.append(
+                    IntegrityIssue(
+                        code=IntegrityCode.EXPIRED_SUPPORT,
+                        record_id=subject_id,
+                        message=(
+                            f"{status.value} status has expired: scope valid_until "
+                            f"{valid_until} is at or before {as_of.isoformat()}"
+                        ),
+                    )
+                )
+            producer = producers.get(subject_id)
+            if producer is None:
+                continue
+            for evidence_ref in _references(producer, "evidence_refs"):
+                evidence = index.get(evidence_ref)
+                if evidence is None or _required_string(evidence, "kind") != "evidence":
+                    continue
+                expiries = (
+                    ("expires_at", _optional_string(evidence, "expires_at")),
+                    (
+                        "scope valid_until",
+                        _optional_string(_object(evidence, "scope"), "valid_until"),
+                    ),
+                )
+                for label, expiry in expiries:
+                    if expiry is not None and _at_or_before(expiry, label, as_of):
+                        issues.append(
+                            IntegrityIssue(
+                                code=IntegrityCode.EXPIRED_SUPPORT,
+                                record_id=subject_id,
+                                reference=evidence_ref,
+                                message=(
+                                    f"{status.value} status rests on evidence whose "
+                                    f"{label} {expiry} is at or before "
+                                    f"{as_of.isoformat()}"
+                                ),
+                            )
+                        )
+        return issues
