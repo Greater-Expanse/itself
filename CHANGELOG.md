@@ -45,10 +45,10 @@ their requests run differently. This release implements:
 - **`base_url`.** An endpoint `base_url` must name a host, and one with an
   empty query or fragment marker, such as `https://h.example/v1/?` or
   `https://h.example/v1#`, is refused with `ValueError`. Remove the marker.
-- **Loopback names.** Host names compare without case and ignore one trailing
-  dot, so `localhost.`, `LOCALHOST`, and `api.localhost.` are loopback hosts:
-  opted-in insecure HTTP accepts them, and the built-in transport no longer
-  sends them through a configured proxy.
+- **Loopback names.** A host name with one trailing dot, such as `localhost.`
+  or `api.localhost.`, is now a loopback host: opted-in insecure HTTP accepts
+  it, and the built-in transport no longer sends it through a configured
+  proxy.
 - **Referenced schemas.** `StructuredOutputProfile` and
   `ProtocolValidator(schema_path)` raise `ValueError` for a schema whose `$ref`
   or `$dynamicRef` names a resource outside the schema, including a JSON Schema
@@ -93,8 +93,10 @@ their requests run differently. This release implements:
   now fails.
 - **`itself.inference` source.** `inspect.getsource` no longer finds the
   source of the nine classes `itself.inference` re-exports from private
-  modules. They are the same objects with the same `__module__`, so imports,
-  pickles, and reprs are unchanged.
+  modules: it raises `OSError` for six of them and returns unrelated lines for
+  `ArtifactSink`, `HttpTransport`, and `InferenceFailure`. They are the same
+  objects with the same `__module__`, so imports, pickles, and reprs are
+  unchanged.
 - **Research harness and evaluations.** Both runner CLIs exit with status 2
   for every error. An attempt quarantined at `<destination>.quarantined` keeps
   its slot, so a second attempt at that destination is refused before any
@@ -134,9 +136,10 @@ their requests run differently. This release implements:
 - `issues` on `ReasoningReceiptValidationError` and
   `EvidenceBundleValidationError`: the individual schema errors that a schema
   failure's message joins one per line, empty for any other failure.
-- `--passing-exit-code` for the agent-change gate recipe, `0` by default. A
-  model that correctly predicts any other exit code still has its assertion
-  supported, but the action is rejected.
+- `--passing-exit-code` for the agent-change gate recipe, an integer from 0
+  through 255, `0` by default. A model that correctly predicts any other exit
+  code still has its assertion supported, but the action is rejected. The
+  gate's `summary.md` states the passing exit code.
 - `conformance/transitions.json`, the 37 allowed status transitions. The Python
   tests and the JavaScript validator check every ordered pair of the twelve
   statuses against it, and the specification now publishes the whole table.
@@ -158,10 +161,10 @@ their requests run differently. This release implements:
   `runner_failed` bundle, with the captured response and a sanitized one-line
   error, instead of a quarantine. An interrupt is published as `interrupted`
   and still propagates. The comparison report counts runner failures apart
-  from adapter failures. `build_trial_manifest` and
-  `build_comparison_manifest` build v2 manifests. Case 001 comparison study v6
-  is the first study registered under v2, and v1 documents and runs are
-  unchanged.
+  from adapter failures. The new `build_trial_manifest` builds v2 manifests,
+  and `build_comparison_manifest` does when given the v2 contract; it still
+  builds v1 by default. Case 001 comparison study v6 is the first study
+  registered under v2, and v1 documents and runs are unchanged.
 - Case 001 comparison study v6, registered and run under study contract v2:
   GLM 5.2, MiniMax M3.1 Flash, and Qwen 3.7 Plus, five replicates each, run
   round-robin by replicate index through one Together AI endpoint. They are
@@ -246,11 +249,11 @@ their requests run differently. This release implements:
   append, and any byte difference takes the full path, so results, errors, and
   written bytes are unchanged. In one measurement, 800 single appends through
   one instance took about 9 seconds, against about 62 seconds with 0.2.0.
-- Loopback detection compares host names without case and ignores one
-  trailing dot, so `localhost.`, `LOCALHOST`, and `api.localhost.` are loopback
-  hosts. Opted-in insecure HTTP now accepts them, and the built-in transport
-  connects to them directly instead of through a configured proxy. Address
-  literals are unchanged, so `127.0.0.1.` is still not a loopback host.
+- Loopback detection ignores one trailing dot on a host name, so `localhost.`
+  and `api.localhost.` are loopback hosts. Opted-in insecure HTTP now accepts
+  them, and the built-in transport connects to them directly instead of
+  through a configured proxy. Address literals are unchanged, so `127.0.0.1.`
+  is still not a loopback host.
 - Ledger and receipt replacement, inference-artifact capture, evidence-bundle
   publication, and schema export synchronize the parent directory after the
   rename where the filesystem supports it. A directory sync that the
@@ -340,7 +343,9 @@ their requests run differently. This release implements:
 - `JsonlLedgerStore.extend` and `append` raise `OSError` instead of replacing a
   ledger that another writer created, removed, or changed after the append
   read it, judged by device, inode, size, and modification time. Before, the
-  append silently discarded the other writer's records. The store is still
+  store compared only device and inode, and only from the moment it began
+  writing, so it silently discarded records that another writer added in
+  place, or added between the append's read and its write. The store is still
   single-writer, and the ledger and receipt stores now share one atomic
   replacement routine.
 - `BundleValidator` reports a record that is not a JSON object, such as `1` or
@@ -377,6 +382,8 @@ their requests run differently. This release implements:
   for `JsonValue`.
 - The evidence-bundle verification recipes set `pipefail` and capture standard
   error, so a failed validation fails the job instead of being hidden by `tee`.
+  The GitHub Actions recipe retains its verification report when validation
+  fails.
 
 ## 0.2.0
 

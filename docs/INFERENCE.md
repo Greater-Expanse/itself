@@ -139,23 +139,25 @@ control characters: encode an international host name with IDNA and other
 characters with percent-encoding first. `base_url` must name a host and must
 not contain credentials, a query, or a fragment, even an empty `?` or `#`
 marker, because the resource path is appended to it. Extra headers cannot set
-`Host`, `Content-Length`, or `Transfer-Encoding`, which the transport owns, or
-`Accept`, `Content-Type`, and `User-Agent`, which the adapter owns. A URL or
-header value that HTTP cannot carry is a configuration failure, never a
-retryable transport failure.
+`Host`, `Content-Length`, or `Transfer-Encoding`, which the transport owns;
+`Accept`, `Content-Type`, and `User-Agent`, which the adapter owns; or the
+header that carries the credential. A URL or header value that HTTP cannot
+carry is a configuration failure, never a retryable transport failure.
 
 The built-in transport does not follow redirects. It returns a 3xx response to
 the client as an HTTP-status failure, so authentication headers are never
 forwarded to a redirect target. A custom transport owns the same obligation.
 
-Requests to loopback hosts always connect directly, even when `HTTP_PROXY` or
-`HTTPS_PROXY` is set, so traffic for a local server never passes through a
-proxy. Requests to other hosts use the proxy that Python's `urllib` selects
-from `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY`, or from the operating
-system's settings when those variables are unset; many networks reach hosted
-endpoints only through such a proxy. An HTTPS request crosses a proxy as a
-`CONNECT` tunnel, so the proxy sees the host and port but not the headers or
-body. The built-in transport sends only `http` and `https` URLs.
+A loopback host is `localhost`, a name ending in `.localhost`, either of them
+with one trailing dot, or a loopback address literal such as `127.0.0.1` or
+`[::1]`. Requests to loopback hosts always connect directly, even when
+`HTTP_PROXY` or `HTTPS_PROXY` is set, so traffic for a local server never
+passes through a proxy. Requests to other hosts use the proxy that Python's
+`urllib` selects from `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY`, or from the
+operating system's settings when those variables are unset; many networks
+reach hosted endpoints only through such a proxy. An HTTPS request crosses a
+proxy as a `CONNECT` tunnel, so the proxy sees the host and port but not the
+headers or body. The built-in transport sends only `http` and `https` URLs.
 
 `timeout_seconds` bounds each connection attempt and each read, not the whole
 request. A server that keeps sending, for example keep-alive comments on a
@@ -207,7 +209,8 @@ endpoint = OpenAICompatibleEndpoint(
 ```
 
 Streaming does not weaken the evidence boundary. The transport keeps at most
-its configured response-byte limit of body bytes, the artifact sink captures
+its response-byte limit of body bytes (`max_response_bytes` on
+`UrllibHttpTransport`, 2,000,000 by default), the artifact sink captures
 the exact event stream before interpretation, and the client then assembles its
 text locally. Chunked trailer lines, which `http.client` discards, do not count
 toward that limit, so a deployment that talks to untrusted servers should keep

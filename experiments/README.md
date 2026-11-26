@@ -15,13 +15,14 @@ engineering incident.
 
 1. Read [Case 001](001-cache-key-omission/README.md) for the stale-report
    incident in real-world terms.
-2. Read the [current v5 result](results/current/2026-07-24-case-001-comparison-v5.md)
-   for what happened and what it does not establish.
+2. Read the [v5 result](results/current/2026-07-24-case-001-comparison-v5.md),
+   the first of three current results, for what happened and what it does not
+   establish.
 3. Run the credential-free reference workflow below to inspect the SDK's
    enforcement mechanics yourself.
 
-The [results index](results/README.md) separates the current result from earlier
-engineering pilots and superseded study versions.
+The [results index](results/README.md) separates the current results from
+earlier engineering pilots and superseded study versions.
 
 ## What the current experiment does
 
@@ -41,7 +42,9 @@ Each comparison run contains two model calls and three application paths:
 The untested and evidence-tested paths share one model response. This isolates
 the effect of external testing from the variability of asking the model again.
 
-## Current result: v5, July 2026
+## Current results
+
+### V5, July 2026
 
 V5 scheduled five runs for each of three models through one endpoint provider:
 GLM 5.2, MiniMax M3, and Qwen 3.7 Plus.
@@ -64,14 +67,16 @@ reasoning, cross-domain transfer, or model rankings.
 See the [human-readable report](results/current/2026-07-24-case-001-comparison-v5.md)
 and [machine-readable report](results/current/2026-07-24-case-001-comparison-v5.json).
 
-V6, in November 2026, ran the same procedure through a different provider under
-study contract v2. Its five GLM 5.2 runs completed; the provider refused the
+### V6 and v7, November 2026
+
+V6 ran the same procedure through a different provider under study contract
+v2. Its five GLM 5.2 runs completed; the provider refused the
 test-plan request for the other two models, and those ten runs are retained as
 failed runs. See the [v6 report](results/current/2026-11-26-case-001-comparison-v6.md).
 It is not pooled with or compared to v5.
 
-V7, also in November 2026, repeated v6 with a test-plan schema the provider
-accepts for all three models. Fourteen of 15 runs completed; one MiniMax M3.1
+V7 repeated v6 with a test-plan schema the provider accepts for all three
+models. Fourteen of 15 runs completed; one MiniMax M3.1
 Flash run stopped on a test plan that broke the diagnosis contract and is
 retained as a failed run. In every completed run the application kept the
 model answer provisional until the external check ran and accepted no

@@ -151,9 +151,10 @@ structurally valid but violates its declared evidence or authority policy.
    minimized reasoning receipt.
 
 The protocol is independent of any model provider or agent framework. The SDK
-includes one configurable OpenAI-compatible input adapter, but that wire format
-is not the architecture and a model does not become a verifier merely because
-it returns structured JSON.
+includes two input adapters, one for OpenAI-compatible Chat Completions
+endpoints and one for decision models, but neither wire format is the
+architecture, and a model does not become a verifier merely because it returns
+structured JSON or a probability.
 
 ## Install
 
@@ -208,9 +209,9 @@ catalog, and checksum inventory. Validation loads the packaged copies and never
 requires network access. The conformance fixtures are language-neutral. Python
 is the reference implementation, not a requirement for other implementations.
 An [independent JavaScript conformance check](conformance/javascript/README.md)
-compiles the same schema, exercises all 43 record and bundle fixtures, and
-reimplements reference resolution, authorization, and deterministic replay
-without importing or executing the Python package.
+compiles the same schema, exercises all 62 record, bundle, and JSON-reader
+fixtures, and reimplements reference resolution, authorization, and
+deterministic replay without importing or executing the Python package.
 The [reference bundle](examples/cache-key-diagnosis/README.md) is a closed,
 digest-inventoried example containing the original input, a model assertion
 artifact, the complete evidence ledger, and its deterministic reasoning
@@ -463,6 +464,8 @@ endpoint = DecisionModelEndpoint(
 )
 ```
 
+## Controlled study with live models
+
 The repository also contains a transparent controlled incident investigation.
 A report-generation system advances from source revision `A` to `B`, but keeps
 returning stale revision `A`. An AI assistant sees the repeated failures, three
@@ -476,13 +479,14 @@ answer provisional, records the resulting evidence, prevents unsupported
 answers from being treated as confirmed, and leaves enough history for another
 developer to reconstruct the decision.
 
-The current live-model report shows that completed workflows crossed that
-evidence boundary and that invalid model outputs stopped at an explicit
-contract boundary instead of being silently repaired. It does not show that
-Itself improved diagnosis accuracy: every completed attempt in this first
-transparent case already named the known cause. See the
-[current comparison report](experiments/results/current/2026-07-24-case-001-comparison-v5.md)
-for the observations and their limits.
+The current live-model reports show that completed runs crossed that evidence
+boundary, and that refused requests and invalid model outputs stopped at an
+explicit boundary instead of being silently repaired or retried. They do not
+show that Itself improved diagnosis accuracy: every completed run in this
+first transparent case already named the known cause. Three study versions are
+current: v5 from July 2026, and v6 and v7 from November 2026, which ran through
+a different provider. Their results are not pooled or compared. See the
+[results index](experiments/results/README.md) for each report and its limits.
 
 ## Documentation
 
@@ -529,7 +533,7 @@ affected.
 
 ## Development
 
-Run the complete local quality gates with:
+Run the local quality gates with:
 
 ```bash
 uv sync --locked --extra test --extra lint --extra typecheck --extra release
@@ -543,6 +547,12 @@ uv run --frozen --extra release check-manifest
 uv build
 uv run --frozen --extra release twine check --strict dist/*
 ```
+
+CI also runs the
+[JavaScript conformance check](conformance/javascript/README.md), both
+evaluation suites, dependency audits (`uv audit` and `npm audit`), a check
+that the GitHub Actions lockfile matches the workflows, and smoke tests of the
+built wheel. [CONTRIBUTING.md](CONTRIBUTING.md) lists the commands.
 
 The distribution includes a PEP 561 `py.typed` marker. Its public annotations
 are checked in strict mode by both Mypy and Pyright.

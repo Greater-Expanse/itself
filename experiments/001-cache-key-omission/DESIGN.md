@@ -8,7 +8,9 @@ manifest-bound comparison runner are implemented and tested. The first
 provider-controlled repeated study completed on 2026-07-24: 15 registered v5
 runs produced 12 complete comparisons and three preserved model-output
 failures. See the
-[current result](../results/current/2026-07-24-case-001-comparison-v5.md).
+[v5 report](../results/current/2026-07-24-case-001-comparison-v5.md). Two later
+studies, v6 and v7, ran in November 2026; the
+[results index](../results/README.md) lists all three current reports.
 
 This remains one transparent reference incident. Repeated execution validates
 the experiment and enforcement machinery; it does not establish cross-case
@@ -295,7 +297,8 @@ failed attempts.
 measurement defect, v3 stopped on an instrumentation-integrity defect, v4
 completed after that defect was corrected, and the provider-controlled v5
 study completed with 15 registered runs. Superseded results remain preserved
-under [`../results/archive/`](../results/archive/); v5 is the current result.
+under [`../results/archive/`](../results/archive/); v5, v6, and v7 are the
+current results.
 
 - preregister prompts, budgets, sampling settings, and primary metrics;
 - run repeated trials rather than one illustrative transcript;

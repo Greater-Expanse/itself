@@ -56,6 +56,7 @@ assertion about a change that still fails.
 | The check cannot produce an exit code | `inconclusive` | `deferred` | `2` |
 
 A check that times out, cannot start, or is ended by a signal has no exit code.
+The timeout is `--timeout-seconds`, 900 by default.
 Invalid input or an inability to record the result also returns `2`, but does
 not fabricate a deferred bundle. In every case, a nonzero status keeps the CI
 gate closed.

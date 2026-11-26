@@ -7,8 +7,9 @@ validates the returned model assertion. It never runs the diagnostic check or
 lets the model certify its own answer. Start with the
 [experiment overview](README.md) for the end-to-end workflow.
 
-Status as of July 2026: installable structured-inference adapter with a
-controlled causal-diagnosis binding for contract `0.2.0`.
+Status as of November 2026: installable structured-inference adapter with a
+controlled causal-diagnosis binding for diagnosis contract `0.2.0`, used by
+studies registered under study contracts v1 and v2.
 
 ## Purpose
 
@@ -110,8 +111,8 @@ classes. The public client accepts:
 
 The SDK must never read credentials from a committed file, serialize them into
 results, include authorization headers in artifacts, or expose them through
-configuration representations. Live tests accept credentials only through
-environment variables.
+configuration representations. The live runners accept credentials only
+through an environment variable the operator names.
 
 An arbitrary URL makes endpoint selection generic. It does not imply that every
 provider API is compatible. A native non-Chat-Completions protocol implements
@@ -192,6 +193,7 @@ taxonomy distinguishes:
 
 - configuration and credential resolution;
 - transport timeout or connection failure;
+- a response over the byte limit;
 - HTTP authentication, authorization, rate-limit, server, and other status
   failures;
 - provider refusal or content filtering;
@@ -200,6 +202,7 @@ taxonomy distinguishes:
 - missing or non-text model content;
 - invalid JSON;
 - assertion schema violations, reported separately as `response_schema`;
+- missing, malformed, or inconsistent token usage;
 - request-relative semantic violations;
 - artifact-capture failures.
 
@@ -226,12 +229,11 @@ cover request construction, credential non-disclosure, raw-byte hashing,
 provider-envelope decoding, every failure class, assertion schema validation,
 and cross-reference enforcement. Unit tests never require a hosted account.
 
-Opt-in live tests run the same frozen diagnosis request against Together AI and
-Fireworks AI. Where possible, they use the same model family and pin exact model
-identifiers. A conformance report records the endpoint label, base-URL origin,
-model identifier, adapter version, structured-output profile, finish state,
-latency, usage, raw-output digest, and validation outcome. It does not record the
-credential.
+No test calls a provider. Live calls are made only by the opt-in runners,
+`experiments.cases.cache_key_model_trial` for one conformance trial and
+`experiments.cases.cache_key_comparison_run` for a registered comparison
+replicate, and each sends the same frozen diagnosis request to an endpoint the
+operator names.
 
 The first research question is narrow: can independently hosted endpoint/model
 pairs return assertions that satisfy the same provider-neutral diagnosis
@@ -309,8 +311,10 @@ schemas and rendered payloads. Completed bundles prove that the untested and
 evidence-tested paths consume the identical plan and raw-response digest.
 Failure bundles preserve which request stopped execution. Comparison bundles
 follow the same quarantine, status-code, file-reading, and exit-code rules. Each
-branch's `receipt_recomputes` is measured, and a replicate with a branch whose
-receipt does not recompute from its ledger is quarantined, not published.
+branch's `receipt_recomputes` is measured. Under study contract v1, a replicate
+with a branch whose receipt does not recompute from its ledger is quarantined,
+not published; under [study contract v2](#study-contract-v2) it is published
+as a runner failure.
 
 The v5 matrix, registered in July 2026, uses GLM 5.2, MiniMax M3, and Qwen 3.7
 Plus through one Fireworks AI endpoint family. Provider is controlled
@@ -319,13 +323,14 @@ or grouping variable. GLM 5.2 and MiniMax M3 are public-weight targets with
 their different licenses recorded. Qwen 3.7 Plus is an explicitly hosted-only
 comparator and must not be counted as an open-weight result.
 
-Together AI remains useful for opt-in adapter conformance and portability
-checks. Those checks answer whether independently operated endpoints satisfy
-the same wire and schema contract. They are separate from the behavioral
-baseline and must not be pooled into its scorecards.
+The v6 and v7 matrices, registered in November 2026 under study contract v2,
+use GLM 5.2, MiniMax M3.1 Flash, and Qwen 3.7 Plus through one Together AI
+endpoint, again as controlled infrastructure. V5, v6, and v7 are not pooled or
+compared.
 
 The first complete provider-controlled matrix is retained in the
-[current v5 report](results/current/2026-07-24-case-001-comparison-v5.md).
+[v5 report](results/current/2026-07-24-case-001-comparison-v5.md). The
+[results index](results/README.md) lists all three current reports.
 
 ## Study contract v2
 

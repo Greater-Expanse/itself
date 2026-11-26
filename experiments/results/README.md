@@ -1,6 +1,6 @@
 # Experiment results
 
-This directory separates the current research result from earlier engineering
+This directory separates the current research results from earlier engineering
 observations and superseded study versions.
 
 ## Current results

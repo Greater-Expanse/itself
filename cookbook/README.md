@@ -105,9 +105,11 @@ test, evidence, verdict, decision, ledger, and receipt boundaries.
 
 ## CI security and privacy
 
-The GitHub examples use read-only token permissions, immutable action commit
-pins, and the `pull_request` event. They do not use `pull_request_target` or
-send secrets to code from an untrusted change. See GitHub's
+The GitHub examples use read-only token permissions and immutable action
+commit pins. The gate example runs on the `pull_request` event; the
+verification and publishing examples are started manually, with
+`workflow_dispatch`. None uses `pull_request_target` or sends secrets to code
+from an untrusted change. See GitHub's
 [secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 before adapting a workflow with elevated permissions or self-hosted runners.
 

@@ -29,6 +29,13 @@ npm test
 The test suite does not require a model provider, network service, or hosted
 account.
 
+CI runs these checks and four more. It audits the locked dependencies with
+`uv audit` and, in `conformance/javascript`, `npm audit --audit-level=high`;
+both need network access. It verifies that `.github/workflows/actions.lock`
+matches the workflows with `gh actions-lock --verify`, so a change to an
+action reference must update the lockfile. It runs both evaluation suites
+below, and it smoke-tests the built wheel.
+
 ## Evaluation runs
 
 Run the assembled SDK exercise and observational capacity curve with fresh
@@ -71,7 +78,7 @@ vulnerability; follow [SECURITY.md](SECURITY.md) instead.
 - Prefer a narrow executable result over an untested platform abstraction.
 - Do not add private chain-of-thought or secrets to fixtures, logs, or receipts.
 
-Before submitting a change, run the complete local checks above. Explain what
+Before submitting a change, run the local checks above. Explain what
 guarantee or capability the change addresses and what the tests establish.
 
 ## Licensing

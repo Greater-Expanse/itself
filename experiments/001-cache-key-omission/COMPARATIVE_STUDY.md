@@ -23,11 +23,12 @@ requests and all three application paths; three retained explicit model-output
 failures. Every registered slot produced an immutable bundle that passed
 Itself's validators.
 
-The [current v5 report](../results/current/2026-07-24-case-001-comparison-v5.md)
-is the public result. It demonstrates enforcement, failure preservation, and
-reconstructability for this incident. It is not evidence that the workflow
-improves model accuracy or transfers to other tasks. Earlier registrations and
-superseded results are explained under [Study history](#study-history).
+The [v5 report](../results/current/2026-07-24-case-001-comparison-v5.md)
+is the first of three current results. It demonstrates enforcement, failure
+preservation, and reconstructability for this incident. It is not evidence
+that the workflow improves model accuracy or transfers to other tasks. Earlier
+registrations and superseded results are explained under
+[Study history](#study-history).
 
 V6 completed on 2026-11-26. It registered five runs for each of three models
 through one Together AI endpoint, under study contract v2. Five runs completed
@@ -413,8 +414,9 @@ part of the research record:
 - V3 registered a categorical observation vocabulary to correct that mismatch,
   then stopped after ten of 20 runs when failed-attempt receipts were found not
   to bind the manifest's structured profile. Its bundles were not reused.
-- V4 corrected that validator defect and completed all 20 registered runs
-  across a mixed-provider matrix. Its
+- V4 corrected that validator defect and ran all 20 registered runs across a
+  mixed-provider matrix; 14 completed and six stopped on model-output
+  failures. Its
   [report](../results/archive/2026-07-24-case-001-comparison-v4.md) remains a
   historical observation set, not a provider comparison.
 - V5 used a fresh, provider-controlled three-model matrix. It did not filter or
