@@ -251,7 +251,10 @@ reasoning receipt that does not recompute, leaves no published bundle; the
 staging directory is renamed to `<destination>.quarantined` and the error names
 that path. An HTTP status outside 100–599, which v1 attempt reports cannot
 hold, is recorded as a null `status_code` under the `http_status` failure kind,
-and the raw response is kept. Study contract v2 publishes both instead; see
+and the raw response is kept. A v1 attempt report holds a status only for an
+HTTP-status failure, so any other failure, such as a response rejected for its
+size, is recorded with a null status. Study contract v2 instead publishes the
+runner failure and keeps each of these statuses; see
 [Study contract v2](#study-contract-v2).
 
 Bundle manifests inventory every retained file by path, media type, visibility,
@@ -330,9 +333,10 @@ with `contract=V2_CONTRACT` carries the v2 settings for a future study.
    only when no response arrived. The runner reads it from a wrapper around the
    transport, because the shipped client names a status only for a non-2xx
    response; a malformed 200 response is therefore recorded with status 200.
-   The shipped transport rejects a body over its byte limit, or one that ends
-   early, before returning it, so that status never reaches the harness and is
-   recorded as `null`. Recording it would need a change to `itself.inference`.
+   When the shipped transport rejects a response after its headers
+   arrived, such as a body over its byte limit or one that ends early, its
+   error names that status, and the wrapper keeps it the same way. The status
+   the adapter reports with a failure must equal the one the wrapper kept.
 2. **Request deadline.** `execution.deadline_seconds` is a positive number of
    seconds, or `null` for none, beside the per-read `timeout_seconds`. The
    binding passes it to the shipped endpoint, and binding a manifest to an

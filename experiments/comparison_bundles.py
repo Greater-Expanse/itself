@@ -1195,7 +1195,7 @@ class ComparisonBundleBuilder:
         attempt_id: str,
     ) -> int | None:
         if self._contract is V1_CONTRACT:
-            return recordable_status_code(error.status_code)
+            return recordable_status_code(error)
         observed = self._observed_status(attempt_id)
         if error.status_code is not None and error.status_code != observed:
             raise ComparisonBundleValidationError(
@@ -1337,9 +1337,9 @@ class ComparisonBundleBuilder:
     ) -> JsonObject:
         """Retain a sanitized attempt failure and stop the paired replicate.
 
-        A v1 report clamps the adapter's status to 100-599; a v2 report keeps
-        the status the attempt's transport observed, or null when no response
-        arrived.
+        A v1 report records the adapter's status only for an HTTP-status
+        failure, clamped to 100-599; a v2 report keeps the status the
+        attempt's transport observed, or null when it observed none.
         """
 
         _artifact_prefix(attempt_id)

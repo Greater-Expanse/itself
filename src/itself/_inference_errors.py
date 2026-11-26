@@ -41,7 +41,13 @@ _RETRYABLE_FAILURES: Final = frozenset(
 
 
 class InferenceError(RuntimeError):
-    """Sanitized failure from one explicit inference attempt."""
+    """Sanitized failure from one explicit inference attempt.
+
+    ``status_code`` is the HTTP status of the response when one is known: the
+    status of an HTTP-status failure, or that of a response the transport
+    rejected after its headers arrived, which may be 2xx.  It is ``None``
+    when no status is known.  ``failure`` alone classifies the failure.
+    """
 
     def __init__(
         self,

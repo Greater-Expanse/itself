@@ -57,6 +57,11 @@ their requests run differently. This release implements:
   raises `InferenceError` with `InferenceFailure.CONFIGURATION` instead of
   `ValueError`, and `UrllibHttpTransport` refuses a `max_response_bytes` that
   is not an integer.
+- **Inference error status.** A failure that `UrllibHttpTransport` raises
+  after a response's headers arrived carries the response's status in
+  `status_code`, so a `response_too_large` or `transport` failure can carry a
+  2xx status. Code that reads a non-`None` `status_code` as an HTTP-status
+  failure should check `failure` instead.
 - **Ledger store writes.** `JsonlLedgerStore.append` and `extend` raise
   `OSError` and write nothing when another writer created, removed, or changed
   the ledger after the append read it.
@@ -148,11 +153,12 @@ their requests run differently. This release implements:
   the runners refuse a different running client before any request. v2 bundle
   manifests and attempt reports record the shipped client actually used, an
   attempt report keeps the HTTP status the transport observed without clamping,
-  and a harness failure after a request publishes a valid `runner_failed`
-  bundle, with the captured response and a sanitized one-line error, instead of
-  a quarantine. An interrupt is published as `interrupted` and still
-  propagates. The comparison report counts runner failures apart from adapter
-  failures. `build_trial_manifest` and `build_comparison_manifest` build v2
+  including that of a response the transport rejected after its headers
+  arrived, and a harness failure after a request publishes a valid
+  `runner_failed` bundle, with the captured response and a sanitized one-line
+  error, instead of a quarantine. An interrupt is published as `interrupted`
+  and still propagates. The comparison report counts runner failures apart
+  from adapter failures. `build_trial_manifest` and `build_comparison_manifest` build v2
   manifests. No study is registered under v2, and v1 documents and runs are
   unchanged.
 - `docs/INFERENCE.md` says that a provider may report token usage on a stream
@@ -179,6 +185,14 @@ their requests run differently. This release implements:
   adapter version is `0.2.0`, because the default deadline and the endpoint and
   transport changes in this release change how their requests run. Results and
   `User-Agent` headers name the new versions.
+- `UrllibHttpTransport` gives the response's HTTP status as the `status_code`
+  of each `InferenceError` it raises after the response's headers arrived:
+  for a body over the byte limit or one that ends before its declared length,
+  a body read that fails or times out, and a deadline that passes while the
+  body is read. Before, these failures had no status. Their failure class,
+  message, and retryability are unchanged, and `DecisionModelError` keeps the
+  status the same way. A custom transport may also give the status of a
+  response it rejects, and need not.
 - `itself ledger append` applies the CLI's ledger ceilings, 128 MiB and
   100,000 records, to the ledger it reads and to the ledger it would write,
   and refuses an append that would exceed either before writing anything.
@@ -243,7 +257,10 @@ their requests run differently. This release implements:
   after capture moves staging to `<destination>.quarantined` and raises
   `AttemptQuarantinedError` naming it, or lets an interrupt such as
   `KeyboardInterrupt` propagate unchanged. A later attempt at a quarantined
-  destination is refused before any request.
+  destination is refused before any request. A v1 attempt report holds a
+  status only for an HTTP-status failure, so the status the transport now
+  gives a response it rejected, such as one over the byte limit, is recorded
+  there as null.
 - `TrialBundleValidator` replays the recorded diagnosis through the case,
   requires the stored ledger and scorecard to equal the replay, and binds the
   trial manifest to the recorded request and diagnostician. Both harness

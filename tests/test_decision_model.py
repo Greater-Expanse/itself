@@ -891,6 +891,31 @@ def test_transport_exceptions_are_sanitized_after_the_request_is_captured(
     assert _artifact_bytes(error.value.request) == transport.requests[0].body
 
 
+def test_a_transport_error_keeps_the_status_it_names(tmp_path: Path) -> None:
+    @dataclass(slots=True)
+    class RejectingTransport:
+        requests: list[HttpRequest] = field(default_factory=_request_list)
+
+        def send(self, request: HttpRequest, /) -> NoReturn:
+            self.requests.append(request)
+            raise InferenceError(
+                InferenceFailure.RESPONSE_TOO_LARGE,
+                "inference endpoint response exceeded the configured byte limit",
+                status_code=200,
+            )
+
+    transport = RejectingTransport()
+
+    with pytest.raises(DecisionModelError) as error:
+        _client(tmp_path, transport).ask(STATE, _questions())
+
+    assert error.value.failure is InferenceFailure.RESPONSE_TOO_LARGE
+    assert not error.value.retryable
+    assert error.value.status_code == 200
+    assert error.value.request is not None
+    assert _artifact_bytes(error.value.request) == transport.requests[0].body
+
+
 def test_request_capture_failure_prevents_sending(tmp_path: Path) -> None:
     @dataclass(slots=True)
     class RefusingSink:

@@ -958,7 +958,7 @@ class TrialBundleBuilder:
 
     def _failure_status(self, error: ModelAdapterError) -> int | None:
         if self._contract is V1_CONTRACT:
-            return recordable_status_code(error.status_code)
+            return recordable_status_code(error)
         observed = self._observed_status()
         if error.status_code is not None and error.status_code != observed:
             raise TrialBundleValidationError(
@@ -1034,8 +1034,9 @@ class TrialBundleBuilder:
     def fail(self, error: ModelAdapterError) -> JsonObject:
         """Sanitize, verify, and atomically publish one failed adapter attempt.
 
-        A v1 report clamps the adapter's status to 100-599; a v2 report keeps
-        the status the transport observed, or null when no response arrived.
+        A v1 report records the adapter's status only for an HTTP-status
+        failure, clamped to 100-599; a v2 report keeps the status the
+        transport observed, or null when it observed none.
         """
 
         self._active_root()

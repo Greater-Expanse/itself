@@ -20,6 +20,7 @@ from typing import Final, cast
 
 from experiments._contract_values import object_value as _object
 from experiments._contract_values import string_value as _string
+from experiments.model_adapters import ModelAdapterError, ModelAdapterFailure
 from experiments.trial_manifests import canonical_json_bytes
 from itself import EvidenceBundleLimits, JsonObject, JsonValue, Ledger
 from itself._filesystem import (
@@ -481,15 +482,33 @@ class RecordingArtifactSink:
         return reference
 
 
-def recordable_status_code(status_code: int | None) -> int | None:
-    """Return an observed HTTP status that a v1 attempt report can hold.
+_HTTP_STATUS_FAILURES: Final = frozenset(
+    {
+        ModelAdapterFailure.HTTP_AUTHENTICATION,
+        ModelAdapterFailure.HTTP_AUTHORIZATION,
+        ModelAdapterFailure.HTTP_RATE_LIMIT,
+        ModelAdapterFailure.HTTP_SERVER,
+        ModelAdapterFailure.HTTP_STATUS,
+    }
+)
 
-    v1 attempt reports bound ``status_code`` to 100-599, so a status outside
-    that range is recorded as null under its ``http_status`` failure kind, and
-    the private response artifact keeps the bytes that came with it.
+
+def recordable_status_code(error: ModelAdapterError) -> int | None:
+    """Return the HTTP status that a v1 attempt report records for a failure.
+
+    A v1 report holds a status only for the failure that status classifies,
+    an HTTP-status failure.  Any other failure is recorded with a null status,
+    even when the transport names the status of a response it rejected after
+    its headers arrived, such as one over the byte limit.  v1 attempt
+    reports also bound ``status_code`` to 100-599, so a status outside that
+    range is recorded as null under its ``http_status`` failure kind, and the
+    private response artifact keeps the bytes that came with it.
     """
 
-    if status_code is None or 100 <= status_code <= 599:
+    status_code = error.status_code
+    if error.failure not in _HTTP_STATUS_FAILURES or status_code is None:
+        return None
+    if 100 <= status_code <= 599:
         return status_code
     return None
 

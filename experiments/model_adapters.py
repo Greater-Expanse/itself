@@ -251,8 +251,9 @@ class StatusObservingTransport:
     The shipped client names a status only when it is not 2xx, so a v2 study
     record takes it from here, where every response the transport returns
     passes, including one whose status lies outside 100-599.  A response the
-    transport itself rejects, such as one over the byte limit, never reaches
-    this boundary, so its status stays unknown.
+    transport rejects after its headers arrived, such as one over the byte
+    limit, passes as an ``InferenceError`` naming that status, which is kept
+    the same way.
     """
 
     __slots__ = ("_request_sent", "_status_code", "_transport")
@@ -270,7 +271,7 @@ class StatusObservingTransport:
 
     @property
     def status_code(self) -> int | None:
-        """Return the last observed status, or ``None`` if no response arrived."""
+        """Return the last observed status, or ``None`` if none was observed."""
 
         return self._status_code
 
@@ -278,7 +279,12 @@ class StatusObservingTransport:
         """Send one request and remember the status of its response."""
 
         self._request_sent = True
-        response = self._transport.send(request)
+        try:
+            response = self._transport.send(request)
+        except InferenceError as error:
+            if error.status_code is not None:
+                self._status_code = error.status_code
+            raise
         self._status_code = response.status_code
         return response
 

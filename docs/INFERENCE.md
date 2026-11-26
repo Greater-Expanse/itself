@@ -261,6 +261,19 @@ refusal, incomplete-generation, envelope, JSON, schema, usage, and artifact
 failures. Only transport, rate-limit, and server failures are marked retryable;
 the client itself never retries.
 
+`InferenceError.status_code` holds the response's HTTP status when one is
+known. Every HTTP-status failure has one. So does a failure after the built-in
+transport received a response's headers: a body over the byte limit or one
+that ends before its declared length, a body read that fails or times out, and
+a deadline that passes while the body is read. A failure before the status
+line arrived, such as a refused connection or a deadline that passes first,
+has `None`, and one while the headers were still arriving may have either.
+The status never sets the failure class or whether it is retryable, so
+a `response_too_large` failure can carry `200`; classify a failure by
+`failure`, not by whether it has a status. A custom transport may give the
+status of a response it rejects as the `status_code` of the `InferenceError` it
+raises, which the client passes on unchanged; nothing requires it to.
+
 Response bodies and low-level transport details are kept out of exception text.
 If a response exists, its artifact reference remains attached to the error for
 authorized inspection.

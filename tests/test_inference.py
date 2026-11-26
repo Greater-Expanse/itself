@@ -1280,6 +1280,37 @@ def test_custom_transport_failures_are_sanitized(tmp_path: Path) -> None:
     assert "private transport failure" not in str(captured.value)
 
 
+@dataclass(frozen=True, slots=True)
+class RejectingTransport:
+    error: InferenceError
+
+    def send(self, request: HttpRequest, /) -> NoReturn:
+        del request
+        raise self.error
+
+
+def test_a_transport_error_reaches_the_caller_with_its_status(tmp_path: Path) -> None:
+    error = InferenceError(
+        InferenceFailure.RESPONSE_TOO_LARGE,
+        "inference endpoint response exceeded the configured byte limit",
+        status_code=200,
+    )
+    client = StructuredInferenceClient(
+        endpoint=_endpoint(),
+        artifact_sink=DirectoryArtifactSink(tmp_path / "artifacts"),
+        transport=RejectingTransport(error),
+        environment={"TEST_INFERENCE_KEY": SECRET},
+    )
+
+    with pytest.raises(InferenceError) as captured:
+        client.invoke({"question": "test"}, _profile())
+
+    assert captured.value is error
+    assert captured.value.failure is InferenceFailure.RESPONSE_TOO_LARGE
+    assert captured.value.status_code == 200
+    assert not captured.value.retryable
+
+
 def test_inference_errors_survive_pickling() -> None:
     artifact = ArtifactReference(
         uri="artifacts/sha256-response.json",

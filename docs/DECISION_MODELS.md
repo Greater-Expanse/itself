@@ -213,6 +213,13 @@ Only transport, rate-limit, and server failures are marked retryable. A server
 that answers "busy" with a 5xx status is therefore retryable, and the client
 still leaves any retry to the caller.
 
+A failure's `status_code` holds the response's HTTP status when one is known,
+under the same rule as the Chat Completions client: every HTTP-status failure
+has one, and so does a response the transport rejected after its headers
+arrived, such as a body over the byte limit, even when that status is 2xx. A
+failure before any status arrived has `None`. Classify a failure by `failure`,
+not by whether it has a status.
+
 ## Recording a decision in a ledger
 
 Schema line `v0alpha2` has no probability field on predictions, so the

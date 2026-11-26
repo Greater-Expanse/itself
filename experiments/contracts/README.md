@@ -88,8 +88,9 @@ a harness failure instead of publishing it, and cannot ask a provider for token
 usage on a stream, which some providers report only when asked. v2
 records:
 
-- the HTTP status the transport observed, unclamped, or `null` when no
-  response arrived;
+- the HTTP status the transport observed, unclamped, including that of a
+  response the transport rejected after its headers arrived, or `null`
+  when no status is known, as when no response arrived;
 - a request deadline, `execution.deadline_seconds`, beside the per-read
   timeout;
 - the shipped `itself.inference` client that executes requests, pinned in the
@@ -119,8 +120,9 @@ v2 holds only the six study-record schemas that change:
 
 v1 remains valid and verifiable. All five registered study versions use it:
 their manifests still validate and bind, their reports re-render byte for
-byte, and a v1 manifest still runs with no deadline, a status clamped to
-100–599, quarantine for a runner failure, and no usage request.
+byte, and a v1 manifest still runs with no deadline, a status recorded only
+for an HTTP-status failure and clamped to 100–599, quarantine for a runner
+failure, and no usage request.
 
 The contract version is separate from the Claim and Evidence Protocol version.
 Changing the provider boundary does not necessarily change the ledger protocol,

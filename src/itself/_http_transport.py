@@ -71,7 +71,12 @@ class HttpResponse:
 
 
 class HttpTransport(Protocol):
-    """Minimal synchronous HTTP boundary used by the compatible client."""
+    """Minimal synchronous HTTP boundary used by the compatible client.
+
+    A transport may raise ``InferenceError``, which the client passes on
+    unchanged.  When it rejects a response whose status it knows, it may
+    give that status as the error's ``status_code``; it need not.
+    """
 
     def send(self, request: HttpRequest, /) -> HttpResponse:
         """Send one request without implicit retry."""
@@ -296,23 +301,26 @@ class UrllibHttpTransport:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("max_response_bytes must be a positive integer")
 
-    def _read_body(self, response: object) -> bytes:
+    def _read_body(self, response: object, status_code: int) -> bytes:
         read = getattr(response, "read", None)
         if not callable(read):
             raise InferenceError(
                 InferenceFailure.TRANSPORT,
                 "HTTP response does not expose a readable body",
+                status_code=status_code,
             )
         body: object = read(self.max_response_bytes + 1)
         if not isinstance(body, bytes):
             raise InferenceError(
                 InferenceFailure.TRANSPORT,
                 "HTTP response body was not bytes",
+                status_code=status_code,
             )
         if len(body) > self.max_response_bytes:
             raise InferenceError(
                 InferenceFailure.RESPONSE_TOO_LARGE,
                 "inference endpoint response exceeded the configured byte limit",
+                status_code=status_code,
             )
         # A bounded read does not raise when a declared Content-Length is cut
         # short, so the undelivered remainder is checked explicitly.
@@ -321,6 +329,7 @@ class UrllibHttpTransport:
             raise InferenceError(
                 InferenceFailure.TRANSPORT,
                 "inference endpoint response ended before its declared length",
+                status_code=status_code,
             )
         return body
 
@@ -344,6 +353,13 @@ class UrllibHttpTransport:
         however the peer keeps it busy, from the moment the socket connects:
         a proxy's CONNECT exchange and the TLS handshake count against it.
         Host name resolution is bounded by neither setting.
+
+        A failure raised once the response's headers have arrived, such as a
+        body over the byte limit or one cut short, a read that fails, or a
+        deadline that passes while the body is read, carries the response's
+        status in ``status_code``.  A failure before the status line arrives
+        carries ``None``, and one while the headers are still arriving may
+        carry either.
         """
 
         if urlsplit(request.url).scheme not in {"http", "https"}:
@@ -379,11 +395,12 @@ class UrllibHttpTransport:
                 wire_request,
                 request.timeout_seconds,
             )
-        except InferenceError:
+        except InferenceError as error:
             if tracker.expired.is_set():
                 raise InferenceError(
                     InferenceFailure.TRANSPORT,
                     "inference endpoint exceeded the request deadline",
+                    status_code=error.status_code,
                 ) from None
             raise
         finally:
@@ -394,6 +411,7 @@ class UrllibHttpTransport:
             raise InferenceError(
                 InferenceFailure.TRANSPORT,
                 "inference endpoint exceeded the request deadline",
+                status_code=response.status_code,
             )
         return response
 
@@ -403,33 +421,40 @@ class UrllibHttpTransport:
         wire_request: Request,
         timeout_seconds: float,
     ) -> HttpResponse:
+        # Set once the headers have arrived, so that every failure while the
+        # body is read names the status the server answered.
+        status_code: int | None = None
         try:
             try:
                 with opener.open(
                     wire_request,
                     timeout=timeout_seconds,
                 ) as response:
+                    status_code = cast(int, response.status)
                     return HttpResponse(
-                        status_code=response.status,
+                        status_code=status_code,
                         headers=self._headers(response),
-                        body=self._read_body(response),
+                        body=self._read_body(response, status_code),
                     )
             except HTTPError as error:
                 with error:
+                    status_code = error.code
                     return HttpResponse(
-                        status_code=error.code,
+                        status_code=status_code,
                         headers=self._headers(error),
-                        body=self._read_body(error),
+                        body=self._read_body(error, status_code),
                     )
         except InvalidURL:
             raise InferenceError(
                 InferenceFailure.CONFIGURATION,
                 "inference request URL is not a valid HTTP request target",
+                status_code=status_code,
             ) from None
         except UnicodeError:
             raise InferenceError(
                 InferenceFailure.CONFIGURATION,
                 "inference request URL or headers cannot be encoded for HTTP",
+                status_code=status_code,
             ) from None
         except ValueError:
             # http.client and urllib raise ValueError for a request they cannot
@@ -438,11 +463,13 @@ class UrllibHttpTransport:
             raise InferenceError(
                 InferenceFailure.CONFIGURATION,
                 "inference request could not be formed as valid HTTP",
+                status_code=status_code,
             ) from None
         except (TimeoutError, URLError, OSError, HTTPException) as error:
             raise InferenceError(
                 InferenceFailure.TRANSPORT,
                 "inference endpoint request failed",
+                status_code=status_code,
             ) from error
 
 
