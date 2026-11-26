@@ -73,6 +73,20 @@ SHIPPED_ADAPTER_VERSION: Final = "0.4.0"
 PROTOCOL_ID: Final = "openai-chat-completions"
 SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_2_0"
 CONSTRAINED_SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_3_0"
+PROMPTED_UNIQUENESS_SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_4_0"
+# The structured diagnosis profiles.  V0.3.0 constrains expected observations
+# to registered values; v0.4.0 does too, but sends its schema without the
+# ``uniqueItems`` keyword on ``retained_hypothesis_ids`` and states that
+# requirement in its system prompt instead.  The returned assertion is still
+# decoded against the unchanged contract, which refuses a repeated identifier.
+DIAGNOSIS_PROFILE_ID: Final = "diagnosis-assertion-v0.2.0"
+CONSTRAINED_PROFILE_ID: Final = "diagnosis-assertion-v0.3.0"
+PROMPTED_UNIQUENESS_PROFILE_ID: Final = "diagnosis-assertion-v0.4.0"
+DIAGNOSIS_PROFILE_IDS: Final = (
+    DIAGNOSIS_PROFILE_ID,
+    CONSTRAINED_PROFILE_ID,
+    PROMPTED_UNIQUENESS_PROFILE_ID,
+)
 
 _CONTRACT_ROOT: Final = Path(__file__).resolve().parent / "contracts" / "v1"
 _ASSERTION_SCHEMA_PATH: Final = _CONTRACT_ROOT / "diagnosis-assertion.schema.json"
@@ -89,6 +103,7 @@ _SYSTEM_PROMPT: Final = """You are a causal diagnostician operating under an evi
 Return only the requested non-authoritative JSON assertion. Use only hypothesis and test identifiers supplied in the request. Retain at least one hypothesis, select exactly one available test, and provide exactly one falsifiable prediction for that selected test for every retained hypothesis.
 
 Do not claim that a test ran. Do not emit evidence, a verdict, a state transition, execution metadata, or private chain-of-thought. The public explanation should state the concise basis for the assertion and why the selected test is useful."""
+_UNIQUENESS_INSTRUCTION: Final = "List each identifier in retained_hypothesis_ids once."
 
 
 class ModelAdapterFailure(StrEnum):
@@ -436,12 +451,48 @@ def model_assertion_schema(
     return schema
 
 
+def _without_unique_retained_ids(schema: JsonObject) -> JsonObject:
+    properties = cast(JsonObject, schema["properties"])
+    retained = cast(JsonObject, properties["retained_hypothesis_ids"])
+    del retained["uniqueItems"]
+    return schema
+
+
+def _selected_profile_id(profile_id: str | None, values: tuple[str, ...]) -> str:
+    if profile_id is None:
+        return CONSTRAINED_PROFILE_ID if values else DIAGNOSIS_PROFILE_ID
+    if profile_id not in DIAGNOSIS_PROFILE_IDS:
+        raise ValueError(
+            f"unknown diagnosis output profile {profile_id!r}; expected one of "
+            + ", ".join(DIAGNOSIS_PROFILE_IDS)
+        )
+    if profile_id == DIAGNOSIS_PROFILE_ID and values:
+        raise ValueError(f"{profile_id} does not register expected observation values")
+    if profile_id != DIAGNOSIS_PROFILE_ID and not values:
+        raise ValueError(
+            f"{profile_id} requires registered expected observation values"
+        )
+    return profile_id
+
+
 def diagnosis_output_profile(
     expected_observation_values: Sequence[str] = (),
+    *,
+    profile_id: str | None = None,
 ) -> StructuredOutputProfile:
-    """Return the strict structured-output profile for diagnosis assertions."""
+    """Return the strict structured-output profile for diagnosis assertions.
+
+    Without ``profile_id`` the profile is ``diagnosis-assertion-v0.2.0``, or
+    ``diagnosis-assertion-v0.3.0`` when expected observation values are
+    registered.  ``diagnosis-assertion-v0.4.0`` also requires them; it is
+    v0.3.0 with ``uniqueItems`` removed from the schema sent to the provider
+    and the requirement stated in the system prompt instead.  An unknown
+    identifier, or one inconsistent with the values, raises ``ValueError``.
+    """
 
     values = _expected_observation_values(expected_observation_values)
+    selected = _selected_profile_id(profile_id, values)
+    schema = model_assertion_schema(values)
     if values:
         rendered_values = json.dumps(
             values,
@@ -455,14 +506,16 @@ def diagnosis_output_profile(
             "additional words. Put explanatory prose in falsified_when or "
             "public_explanation."
         )
-        profile_id = "diagnosis-assertion-v0.3.0"
         schema_name = CONSTRAINED_SCHEMA_NAME
+        if selected == PROMPTED_UNIQUENESS_PROFILE_ID:
+            system_prompt += "\n\n" + _UNIQUENESS_INSTRUCTION
+            schema_name = PROMPTED_UNIQUENESS_SCHEMA_NAME
+            schema = _without_unique_retained_ids(schema)
     else:
         system_prompt = _SYSTEM_PROMPT
-        profile_id = "diagnosis-assertion-v0.2.0"
         schema_name = SCHEMA_NAME
     return StructuredOutputProfile(
-        profile_id=profile_id,
+        profile_id=selected,
         schema_name=schema_name,
         system_prompt=system_prompt,
         user_instruction=(
@@ -470,7 +523,7 @@ def diagnosis_output_profile(
             "Respond only with JSON matching the supplied schema."
         ),
         input_label="DIAGNOSIS REQUEST",
-        schema=model_assertion_schema(values),
+        schema=schema,
     )
 
 

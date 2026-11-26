@@ -405,7 +405,7 @@ def test_every_superseded_study_version_carries_the_historical_banner(
 
 
 def test_the_current_study_version_carries_no_historical_banner() -> None:
-    assert sorted(CURRENT_STUDY_VERSIONS) == ["5", "6"]
+    assert sorted(CURRENT_STUDY_VERSIONS) == ["5", "6", "7"]
     assert STUDY_VERSION in CURRENT_STUDY_VERSIONS
     assert "Status: historical study version" not in render_markdown(_v5_report())
 

@@ -114,7 +114,8 @@ v2 holds only the six study-record schemas that change:
   and
   [`v2/comparison-attempt-report.schema.json`](v2/comparison-attempt-report.schema.json)
   add the recorded shipped client, the unclamped status, and the runner-failure
-  record.
+  record. The v2 comparison attempt report also names the
+  `diagnosis-assertion-v0.4.0` test-plan profile.
 - [`v2/examples/`](v2/examples/) contains valid v2 manifests, made by the
   harness builders, and one attempt report of each kind.
 
@@ -122,8 +123,7 @@ v1 remains valid and verifiable. Case 001 comparison study versions 1 to 5
 use it: their manifests still validate and bind, their reports re-render byte
 for byte, and a v1 manifest still runs with no deadline, a status recorded only
 for an HTTP-status failure and clamped to 100–599, quarantine for a runner
-failure, and no usage request. Study version 6 is the first registered under
-v2.
+failure, and no usage request. Study versions 6 and 7 are registered under v2.
 
 The contract version is separate from the Claim and Evidence Protocol version.
 Changing the provider boundary does not necessarily change the ledger protocol,
@@ -152,6 +152,11 @@ The model-facing assertion schema makes every field required for compatibility
 with strict structured-output implementations. The otherwise optional
 `expressed_confidence` field is represented as a number or `null`. An adapter
 maps `null` to an absent confidence value when it constructs a result.
+
+The `diagnosis-assertion-v0.4.0` profile sends that schema without the
+`uniqueItems` keyword on `retained_hypothesis_ids` and states the requirement
+in its system prompt instead. The contract itself is unchanged: every returned
+assertion is still decoded against it, so a repeated identifier is refused.
 
 The narrative profile uses a JSON envelope only to make the selected closed-set
 hypothesis and declared confidence directly scoreable. It does not add

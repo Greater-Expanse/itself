@@ -311,6 +311,115 @@ def test_categorical_observation_profile_rejects_ambiguous_vocabularies(
         diagnosis_output_profile(values)
 
 
+def _retained_ids_schema(profile: StructuredOutputProfile) -> JsonObject:
+    properties = cast(JsonObject, profile.schema_json()["properties"])
+    return cast(JsonObject, properties["retained_hypothesis_ids"])
+
+
+def test_prompted_uniqueness_profile_moves_unique_items_into_the_prompt() -> None:
+    constrained = diagnosis_output_profile(("A", "B"))
+    profile = diagnosis_output_profile(
+        ("A", "B"),
+        profile_id="diagnosis-assertion-v0.4.0",
+    )
+    expected_schema = constrained.schema_json()
+    expected_properties = cast(JsonObject, expected_schema["properties"])
+    del cast(JsonObject, expected_properties["retained_hypothesis_ids"])["uniqueItems"]
+
+    assert profile.profile_id == "diagnosis-assertion-v0.4.0"
+    assert profile.schema_name == "itself_diagnosis_assertion_v0_4_0"
+    assert profile.system_prompt == (
+        constrained.system_prompt
+        + "\n\nList each identifier in retained_hypothesis_ids once."
+    )
+    assert profile.schema_json() == expected_schema
+    assert "uniqueItems" not in _retained_ids_schema(profile)
+    assert _retained_ids_schema(constrained)["uniqueItems"] is True
+    assert profile.user_instruction == constrained.user_instruction
+    assert profile.input_label == constrained.input_label
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "values"),
+    [
+        (None, ()),
+        ("diagnosis-assertion-v0.2.0", ()),
+        (None, ("A", "B")),
+        ("diagnosis-assertion-v0.3.0", ("A", "B")),
+    ],
+)
+def test_earlier_diagnosis_profiles_keep_their_schema_and_prompt(
+    profile_id: str | None,
+    values: tuple[str, ...],
+) -> None:
+    profile = diagnosis_output_profile(values, profile_id=profile_id)
+
+    assert profile.schema_json() == model_assertion_schema(values)
+    assert _retained_ids_schema(profile)["uniqueItems"] is True
+    assert "retained_hypothesis_ids once" not in profile.system_prompt
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "values", "message"),
+    [
+        ("diagnosis-assertion-v9.9.9", ("A", "B"), "unknown diagnosis output"),
+        ("diagnosis-assertion-v0.4.0", (), "requires registered expected"),
+        ("diagnosis-assertion-v0.3.0", (), "requires registered expected"),
+        ("diagnosis-assertion-v0.2.0", ("A", "B"), "does not register expected"),
+    ],
+)
+def test_diagnosis_profile_refuses_an_id_its_values_cannot_bind(
+    profile_id: str,
+    values: tuple[str, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        diagnosis_output_profile(values, profile_id=profile_id)
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "failure"),
+    [
+        ("diagnosis-assertion-v0.3.0", ModelAdapterFailure.RESPONSE_SCHEMA),
+        ("diagnosis-assertion-v0.4.0", ModelAdapterFailure.ASSERTION_CONTRACT),
+    ],
+)
+def test_a_repeated_retained_identifier_is_refused_under_each_constrained_profile(
+    tmp_path: Path,
+    profile_id: str,
+    failure: ModelAdapterFailure,
+) -> None:
+    assertion = _assertion_value()
+    retained = cast(list[JsonValue], assertion["retained_hypothesis_ids"])
+    retained.append(retained[0])
+    transport = RecordingTransport(
+        HttpResponse(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+            body=_completion_body(assertion),
+        )
+    )
+    profile = diagnosis_output_profile(("A", "B"), profile_id=profile_id)
+    adapter = OpenAIChatDiagnostician(
+        endpoint=_endpoint(),
+        artifact_sink=DirectoryArtifactSink(tmp_path / "artifacts"),
+        profile=profile,
+        transport=transport,
+        environment={"TEST_MODEL_API_KEY": SECRET},
+        now=lambda: CAPTURED_AT,
+        monotonic_ns=SequenceClock([1_000_000_000, 1_125_000_000]),
+    )
+
+    with pytest.raises(ModelAdapterError) as captured:
+        adapter.diagnose(_request())
+
+    payload = cast(JsonObject, json.loads(transport.requests[0].body))
+    response_format = cast(JsonObject, payload["response_format"])
+    sent_schema = cast(JsonObject, response_format["json_schema"])["schema"]
+    assert sent_schema == profile.schema_json()
+    assert captured.value.failure is failure
+
+
 def test_legacy_endpoint_preserves_generic_streaming_capability() -> None:
     endpoint = _endpoint(stream=True)
 

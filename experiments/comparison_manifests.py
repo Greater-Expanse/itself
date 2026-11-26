@@ -142,6 +142,21 @@ def _structured_expected_observation_values(
     return _strings(value, "profiles.structured.expected_observation_values")
 
 
+def _structured_output_profile(profile: JsonObject) -> StructuredOutputProfile:
+    """Rebuild the structured profile that a manifest's ``profile_id`` names."""
+
+    profile_id = _string(profile["profile_id"], "profiles.structured.profile_id")
+    try:
+        return diagnosis_output_profile(
+            _structured_expected_observation_values(profile),
+            profile_id=profile_id,
+        )
+    except ValueError as error:
+        raise ComparisonManifestValidationError(
+            f"profiles.structured.profile_id: {error}"
+        ) from None
+
+
 def comparison_manifest_contract(manifest: JsonValue) -> StudyContract:
     """Return the study contract a comparison manifest declares, refusing others."""
 
@@ -175,6 +190,7 @@ def build_comparison_manifest(
     expected_observation_values: Sequence[str] = (),
     contract: StudyContract = V1_CONTRACT,
     shipped_adapter: ShippedAdapterIdentity | None = None,
+    structured_profile_id: str | None = None,
 ) -> JsonObject:
     """Build and execution-bind one credential-free comparison manifest.
 
@@ -182,6 +198,11 @@ def build_comparison_manifest(
     ``shipped_adapter``, or the running shipped client when it is omitted,
     and records the stream, whether it asks for token usage, and the request
     deadline.  A v1 manifest records none of these.
+
+    ``structured_profile_id`` names the structured diagnosis profile.  When it
+    is omitted the profile follows ``expected_observation_values``:
+    ``diagnosis-assertion-v0.2.0`` without them, ``diagnosis-assertion-v0.3.0``
+    with them.
     """
 
     if contract not in (V1_CONTRACT, V2_CONTRACT):
@@ -190,7 +211,10 @@ def build_comparison_manifest(
         raise ValueError("a v0.2.0 comparison manifest pins no shipped client")
     narrative_output = narrative_output_profile()
     constrained_values = tuple(expected_observation_values)
-    structured_output = diagnosis_output_profile(constrained_values)
+    structured_output = diagnosis_output_profile(
+        constrained_values,
+        profile_id=structured_profile_id,
+    )
     generation: JsonObject = {
         "structured_output_mode": "json_schema_strict",
         "temperature": _optional_number(
@@ -401,9 +425,7 @@ class ComparisonManifestValidator:
             )
 
         narrative_output = narrative_output_profile()
-        structured_output = diagnosis_output_profile(
-            _structured_expected_observation_values(structured_profile)
-        )
+        structured_output = _structured_output_profile(structured_profile)
         expected_pairs: tuple[tuple[str, JsonValue, JsonValue], ...] = (
             ("case.case_id", case["case_id"], request.case_id),
             (
@@ -621,5 +643,6 @@ def diagnosis_profile_from_comparison_manifest(
 
     ComparisonManifestValidator().validate(manifest)
     profiles = _object(manifest["profiles"], "profiles")
-    structured = _object(profiles["structured"], "profiles.structured")
-    return diagnosis_output_profile(_structured_expected_observation_values(structured))
+    return _structured_output_profile(
+        _object(profiles["structured"], "profiles.structured")
+    )

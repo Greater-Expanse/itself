@@ -57,6 +57,9 @@ COMMITTED_MANIFESTS = ROOT / "experiments" / "001-cache-key-omission" / "manifes
 NOW = datetime(2026, 7, 24, 20, 0, tzinfo=UTC)
 V5_TARGETS = STUDY_TARGETS_BY_VERSION["5"]
 V6_TARGETS = STUDY_TARGETS_BY_VERSION["6"]
+V7_TARGETS = STUDY_TARGETS_BY_VERSION["7"]
+# V6 and v7 run the same targets through the same endpoint and settings.
+TOGETHER_VERSIONS = ("6", "7")
 
 
 def test_current_study_matrix_has_viable_current_model_targets() -> None:
@@ -378,15 +381,22 @@ def test_committed_manifests_pass_check(study_version: str) -> None:
     )
 
 
-def test_v6_is_the_version_to_register_and_runs_its_targets_in_order() -> None:
-    assert STUDY_VERSION == "6"
-    assert STUDY_TARGETS == V6_TARGETS
+def test_v7_is_the_version_to_register() -> None:
+    assert STUDY_VERSION == "7"
+    assert STUDY_TARGETS == V7_TARGETS
+
+
+@pytest.mark.parametrize("study_version", TOGETHER_VERSIONS)
+def test_v6_and_v7_run_the_same_targets_in_order(study_version: str) -> None:
+    targets = STUDY_TARGETS_BY_VERSION[study_version]
+
     assert V6_TARGET_ORDER == (
         "together-glm-5p2",
         "together-minimax-m3p1-flash",
         "together-qwen3p7-plus",
     )
-    assert tuple(target.target_id for target in V6_TARGETS) == V6_TARGET_ORDER
+    assert tuple(target.target_id for target in targets) == V6_TARGET_ORDER
+    assert {target.study_version for target in targets} == {study_version}
     assert [
         (
             target.model_family,
@@ -395,7 +405,7 @@ def test_v6_is_the_version_to_register_and_runs_its_targets_in_order() -> None:
             target.checkpoint_url,
             target.license_name,
         )
-        for target in V6_TARGETS
+        for target in targets
     ] == [
         (
             "GLM 5.2",
@@ -435,6 +445,7 @@ def test_each_primary_study_uses_its_one_provider_endpoint() -> None:
     assert dict(PRIMARY_ENDPOINT_BY_VERSION) == {
         "5": FIREWORKS_ENDPOINT,
         "6": TOGETHER_ENDPOINT,
+        "7": TOGETHER_ENDPOINT,
     }
     for study_version, endpoint in PRIMARY_ENDPOINT_BY_VERSION.items():
         assert {
@@ -470,7 +481,7 @@ def test_a_primary_study_out_of_its_registered_order_is_refused() -> None:
         )
 
 
-@pytest.mark.parametrize("study_version", ["5", "6"])
+@pytest.mark.parametrize("study_version", ["5", "6", "7"])
 def test_the_module_rule_checks_every_primary_study(
     study_version: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -488,14 +499,15 @@ def test_the_module_rule_checks_every_primary_study(
         study_module._check_primary_studies()
 
 
-def test_v6_executes_round_robin_by_replicate_index() -> None:
+@pytest.mark.parametrize("study_version", TOGETHER_VERSIONS)
+def test_v6_and_v7_execute_round_robin_by_replicate_index(study_version: str) -> None:
     expected = tuple(
         (target_id, replicate_index)
         for replicate_index in (1, 2, 3, 4, 5)
         for target_id in V6_TARGET_ORDER
     )
 
-    assert STUDY_EXECUTION_SLOTS_BY_VERSION["6"] == expected
+    assert STUDY_EXECUTION_SLOTS_BY_VERSION[study_version] == expected
     assert expected == STUDY_EXECUTION_SLOTS
     assert len(expected) == 15
     assert expected[:4] == (
@@ -506,8 +518,11 @@ def test_v6_executes_round_robin_by_replicate_index() -> None:
     )
 
 
-def test_v6_adds_stream_usage_and_a_deadline_to_the_v5_generation_profile() -> None:
-    for target in V6_TARGETS:
+@pytest.mark.parametrize("study_version", TOGETHER_VERSIONS)
+def test_v6_and_v7_add_stream_usage_and_a_deadline_to_v5_generation(
+    study_version: str,
+) -> None:
+    for target in STUDY_TARGETS_BY_VERSION[study_version]:
         endpoint = target.endpoint()
 
         assert endpoint.timeout_seconds == TIMEOUT_SECONDS == 300.0
@@ -522,12 +537,15 @@ def test_v6_adds_stream_usage_and_a_deadline_to_the_v5_generation_profile() -> N
         }
 
 
-def test_v6_manifests_are_built_under_study_contract_v2() -> None:
+@pytest.mark.parametrize("study_version", TOGETHER_VERSIONS)
+def test_v6_and_v7_manifests_are_built_under_study_contract_v2(
+    study_version: str,
+) -> None:
     pin = {
         "adapter_id": "openai-compatible-chat-completions",
         "adapter_version": "0.4.0",
     }
-    for target in V6_TARGETS:
+    for target in STUDY_TARGETS_BY_VERSION[study_version]:
         manifest = build_study_manifest(target, registered_at=NOW)
         diagnostician = cast(JsonObject, manifest["diagnostician"])
         generation = cast(JsonObject, manifest["generation"])
@@ -536,7 +554,7 @@ def test_v6_manifests_are_built_under_study_contract_v2() -> None:
 
         assert manifest["manifest_version"] == "0.3.0"
         assert manifest["comparison_series_id"] == (
-            f"case-001-{target.target_id}-comparison-v6"
+            f"case-001-{target.target_id}-comparison-v{study_version}"
         )
         assert diagnostician["shipped_adapter"] == pin
         assert diagnostician["model"] == target.model_id
@@ -624,6 +642,176 @@ def test_v6_limitations_record_what_differs_from_v5() -> None:
     ) in hosted
 
 
+def test_v7_limitations_record_what_differs_from_v6() -> None:
+    limitations = cast(
+        list[str],
+        build_study_manifest(V7_TARGETS[0], registered_at=NOW)["limitations"],
+    )
+
+    assert limitations[-11:] == [
+        (
+            "Expected observations are constrained to the preregistered revision "
+            "codes A and B; this is a harness treatment."
+        ),
+        (
+            "All primary behavioral targets use Together AI through one base "
+            "endpoint. Provider is controlled infrastructure retained only as "
+            "provenance, not a study factor or behavioral metric."
+        ),
+        (
+            "Cross-provider portability and conformance belong to a separate "
+            "engineering study and are not pooled into this behavioral baseline."
+        ),
+        (
+            "Execution is round-robin by replicate index in the registered target "
+            "order: together-glm-5p2, together-minimax-m3p1-flash, "
+            "together-qwen3p7-plus."
+        ),
+        (
+            "V7 repeats v6's design with a different test-plan output profile, so "
+            "v5, v6, and v7 results are not pooled or compared."
+        ),
+        (
+            "The test-plan schema sent to the provider omits the uniqueItems "
+            "keyword, which the provider's structured output refused for two of "
+            "v6's three models. The system prompt states the requirement instead, "
+            "and the harness still refuses a plan that repeats an identifier, as an "
+            "assertion_contract failure."
+        ),
+        (
+            "MiniMax M3.1 Flash takes the MiniMax cell because Together AI did not "
+            "serve MiniMax M3 at registration; it is a different model from the "
+            "one v5 measured."
+        ),
+        (
+            "Each stream asks the provider to report token usage; a response that "
+            "still reports none stops as a response_usage failure."
+        ),
+        (
+            "Each request has a 600-second deadline; a response still arriving "
+            "when it passes stops as a transport failure."
+        ),
+        (
+            "Before registration, endpoints were sent the output schemas with a "
+            "neutral prompt to confirm that each accepts them, and the Qwen 3.7 "
+            "Plus endpoint was earlier sent v6's test-plan request with the "
+            "uniqueItems keyword removed from its response format. None of those "
+            "responses was scored or is part of the study's record."
+        ),
+        (
+            "V7 is a fresh run; no model output or scorecard from an earlier version "
+            "is reused."
+        ),
+    ]
+    assert (
+        limitations[:-11]
+        == cast(
+            list[str],
+            build_study_manifest(V6_TARGETS[0], registered_at=NOW)["limitations"],
+        )[:-10]
+    )
+    hosted = cast(
+        list[str],
+        build_study_manifest(V7_TARGETS[2], registered_at=NOW)["limitations"],
+    )
+    assert (
+        "No official public Qwen 3.7 Plus checkpoint was verified at registration."
+    ) in hosted
+
+
+def test_v7_registers_the_prompted_uniqueness_test_plan_profile() -> None:
+    assert {target.structured_profile_id for target in V6_TARGETS} == {None}
+    assert {target.structured_profile_id for target in V7_TARGETS} == {
+        "diagnosis-assertion-v0.4.0"
+    }
+    for target in V7_TARGETS:
+        profiles = cast(
+            JsonObject,
+            build_study_manifest(target, registered_at=NOW)["profiles"],
+        )
+        structured = cast(JsonObject, profiles["structured"])
+
+        assert structured["profile_id"] == "diagnosis-assertion-v0.4.0"
+        assert structured["expected_observation_values"] == ["A", "B"]
+
+
+def test_v7_manifests_differ_from_v6_only_in_series_limitations_and_test_plan() -> None:
+    for v6_target, v7_target in zip(V6_TARGETS, V7_TARGETS, strict=True):
+        v6_manifest = build_study_manifest(v6_target, registered_at=NOW)
+        v7_manifest = build_study_manifest(v7_target, registered_at=NOW)
+        v6_profiles = cast(JsonObject, v6_manifest["profiles"])
+        v7_profiles = cast(JsonObject, v7_manifest["profiles"])
+        v6_structured = cast(JsonObject, v6_profiles["structured"])
+        v7_structured = cast(JsonObject, v7_profiles["structured"])
+
+        assert {
+            key
+            for key in v6_manifest.keys() | v7_manifest.keys()
+            if v6_manifest.get(key) != v7_manifest.get(key)
+        } == {"comparison_series_id", "limitations", "profiles"}
+        assert v6_profiles["narrative"] == v7_profiles["narrative"]
+        assert {
+            key
+            for key in v6_structured.keys() | v7_structured.keys()
+            if v6_structured.get(key) != v7_structured.get(key)
+        } == {"profile_id", "assertion_schema_sha256", "prompt_payload_sha256"}
+
+
+def test_v7_test_plan_payload_differs_from_v6_only_in_its_schema_and_prompt() -> None:
+    for v6_target, v7_target in zip(V6_TARGETS, V7_TARGETS, strict=True):
+        v6_payloads = _prompt_payloads(v6_target)
+        v7_payloads = _prompt_payloads(v7_target)
+        v6_payload = v6_payloads["structured"]
+        v7_payload = v7_payloads["structured"]
+        v6_messages = cast(list[JsonObject], v6_payload["messages"])
+        v7_messages = cast(list[JsonObject], v7_payload["messages"])
+        v6_format = cast(JsonObject, v6_payload["response_format"])
+        v7_format = cast(JsonObject, v7_payload["response_format"])
+        v6_schema = cast(JsonObject, v6_format["json_schema"])
+        v7_schema = cast(JsonObject, v7_format["json_schema"])
+        expected_schema = cast(JsonObject, json.loads(json.dumps(v6_schema["schema"])))
+        retained = cast(
+            JsonObject,
+            cast(JsonObject, expected_schema["properties"])["retained_hypothesis_ids"],
+        )
+        del retained["uniqueItems"]
+        profiles = cast(
+            JsonObject,
+            build_study_manifest(v7_target, registered_at=NOW)["profiles"],
+        )
+
+        assert v6_payloads["narrative"] == v7_payloads["narrative"]
+        assert {
+            key
+            for key in v6_payload.keys() | v7_payload.keys()
+            if v6_payload.get(key) != v7_payload.get(key)
+        } == {"messages", "response_format"}
+        assert v7_messages[0] == {
+            "role": "system",
+            "content": cast(str, v6_messages[0]["content"])
+            + "\n\nList each identifier in retained_hypothesis_ids once.",
+        }
+        assert v6_schema["name"] == "itself_diagnosis_assertion_v0_3_0"
+        assert v7_schema["name"] == "itself_diagnosis_assertion_v0_4_0"
+        assert v7_schema["strict"] is True
+        assert v7_schema["schema"] == expected_schema
+        assert "uniqueItems" not in json.dumps(v7_schema["schema"])
+        assert cast(str, v7_messages[1]["content"]).endswith(
+            json.dumps(expected_schema, ensure_ascii=False, indent=2, sort_keys=True)
+        )
+        for name in ("narrative", "structured"):
+            profile = cast(JsonObject, profiles[name])
+            assert profile["prompt_payload_sha256"] == json_sha256(v7_payloads[name])
+
+
+def test_v7_manifests_do_not_check_as_v6() -> None:
+    with pytest.raises(
+        ComparisonManifestValidationError,
+        match="manifest differs from the registered study",
+    ):
+        validate_study_manifests(COMMITTED_MANIFESTS / "v7", study_version="6")
+
+
 def _prompt_payloads(target: ComparisonStudyTarget) -> dict[str, JsonObject]:
     request = study_module._request().to_json_object()
     endpoint = target.endpoint()
@@ -636,7 +824,10 @@ def _prompt_payloads(target: ComparisonStudyTarget) -> dict[str, JsonObject]:
         "structured": build_structured_output_payload(
             endpoint,
             request,
-            diagnosis_output_profile(target.expected_observation_values),
+            diagnosis_output_profile(
+                target.expected_observation_values,
+                profile_id=target.structured_profile_id,
+            ),
         ),
     }
 
@@ -680,21 +871,31 @@ import itself.inference as shipped
 shipped.ADAPTER_VERSION = "9.9.9"
 from experiments.cases import cache_key_comparison_study as study
 
-directory = sys.argv[1]
+directory, version = sys.argv[1:]
 study.write_study_manifests(
-    directory, registered_at=datetime(2026, 7, 24, tzinfo=UTC), study_version="6"
+    directory, registered_at=datetime(2026, 7, 24, tzinfo=UTC), study_version=version
 )
-manifests = study.validate_study_manifests(directory, study_version="6")
+manifests = study.validate_study_manifests(directory, study_version=version)
 pins = {json.dumps(m["diagnostician"]["shipped_adapter"]) for m in manifests}
 sys.stdout.write(json.dumps(sorted(pins)))
 """
 
 
-def test_v6_pins_the_shipped_client_as_a_literal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("study_version", TOGETHER_VERSIONS)
+def test_v6_and_v7_pin_the_shipped_client_as_a_literal(
+    tmp_path: Path,
+    study_version: str,
+) -> None:
     # A process whose shipped client reports another version from the start
-    # still builds and checks the v6 registration with the pinned version.
+    # still builds and checks the registration with the pinned version.
     completed = subprocess.run(
-        [sys.executable, "-c", _PIN_PROBE, str(tmp_path / "v6")],
+        [
+            sys.executable,
+            "-c",
+            _PIN_PROBE,
+            str(tmp_path / f"v{study_version}"),
+            study_version,
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -711,22 +912,26 @@ def test_v6_pins_the_shipped_client_as_a_literal(tmp_path: Path) -> None:
     ]
 
 
-def test_v6_checks_while_the_running_client_reports_another_version(
+@pytest.mark.parametrize("study_version", TOGETHER_VERSIONS)
+def test_v6_and_v7_check_while_the_running_client_reports_another_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    study_version: str,
 ) -> None:
-    directory = tmp_path / "v6"
-    write_study_manifests(directory, registered_at=NOW, study_version="6")
+    directory = tmp_path / f"v{study_version}"
+    write_study_manifests(directory, registered_at=NOW, study_version=study_version)
     monkeypatch.setattr(shipped_inference, "ADAPTER_VERSION", "9.9.9")
 
-    assert len(validate_study_manifests(directory, study_version="6")) == 3
+    assert len(validate_study_manifests(directory, study_version=study_version)) == 3
 
 
-def test_v6_registers_and_checks_from_the_command_line(
+@pytest.mark.parametrize("study_version", TOGETHER_VERSIONS)
+def test_v6_and_v7_register_and_check_from_the_command_line(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    study_version: str,
 ) -> None:
-    directory = tmp_path / "v6"
+    directory = tmp_path / f"v{study_version}"
     registered_at = "2026-11-26T12:00:00Z"
 
     assert (
@@ -738,24 +943,25 @@ def test_v6_registers_and_checks_from_the_command_line(
                 "--registered-at",
                 registered_at,
                 "--study-version",
-                "6",
+                study_version,
             ]
         )
         == 0
     )
     registered = json.loads(capsys.readouterr().out)
-    assert main(["check", "--directory", str(directory), "--study-version", "6"]) == 0
+    check = ["check", "--directory", str(directory), "--study-version", study_version]
+    assert main(check) == 0
     checked = json.loads(capsys.readouterr().out)
 
     assert registered == {
         "manifest_count": 3,
         "output_directory": str(directory),
-        "study_version": "6",
+        "study_version": study_version,
     }
     assert checked == {
         "manifest_count": 3,
         "directory": str(directory),
-        "study_version": "6",
+        "study_version": study_version,
     }
     assert sorted(path.name for path in directory.iterdir()) == sorted(
         f"{target_id}.json" for target_id in V6_TARGET_ORDER
@@ -764,7 +970,7 @@ def test_v6_registers_and_checks_from_the_command_line(
         validate_study_manifests(directory, study_version="5")
 
 
-def test_the_command_line_registers_and_checks_v6_by_default(
+def test_the_command_line_registers_and_checks_v7_by_default(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -782,6 +988,6 @@ def test_the_command_line_registers_and_checks_v6_by_default(
         )
         == 0
     )
-    assert json.loads(capsys.readouterr().out)["study_version"] == "6"
+    assert json.loads(capsys.readouterr().out)["study_version"] == "7"
     assert main(["check", "--directory", str(directory)]) == 0
-    assert json.loads(capsys.readouterr().out)["study_version"] == "6"
+    assert json.loads(capsys.readouterr().out)["study_version"] == "7"

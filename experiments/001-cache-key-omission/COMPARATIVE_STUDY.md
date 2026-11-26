@@ -46,6 +46,13 @@ response says the provider's structured-output grammar does not implement the
 gives no specific reason. V6 differs from v5 in provider, in one model, and in
 the study contract, so the two results are not pooled or compared.
 
+V7 is registered and has not yet run. It repeats v6 with one change: the
+test-plan schema sent to the provider omits the `uniqueItems` keyword, which
+the provider's structured output refused for two of v6's three models, and the
+system prompt states that requirement instead. Because its test-plan output
+profile differs, its result will not be pooled with or compared to v5's or
+v6's.
+
 ## Question
 
 For the same visible failure history and candidate explanations, what changes
@@ -239,6 +246,13 @@ round-robin by replicate index in the registered target order—GLM 5.2,
 MiniMax M3.1 Flash, then Qwen 3.7 Plus. All three manifests were frozen under
 [`manifests/v6`](manifests/v6) before execution.
 
+V7 registers v6's three targets, with the same model identifiers and
+checkpoint classifications, through the same Together AI endpoint. Every v7
+target has five registered replicates: 15 paired replicates, 30 model
+attempts, and 45 projected condition branches in total, run round-robin by
+replicate index in v6's target order. All three manifests are frozen under
+[`manifests/v7`](manifests/v7).
+
 ## Registered generation profile
 
 All served targets use the same harness-level controls:
@@ -292,6 +306,21 @@ A v6 prompt payload therefore differs from the matching v5 payload only in its
 model identifier and its `stream_options` field. A failure of the harness after
 a request was sent is recorded as its own outcome, with any captured response,
 and counted apart from provider and model-output failures.
+
+V7 keeps every v6 setting, including the three study contract v2 settings
+above, and changes only the test-plan output profile, from
+`diagnosis-assertion-v0.3.0` to `diagnosis-assertion-v0.4.0`. The provider's
+structured output refused v6's test-plan request for two of its three models
+because that request's schema uses the `uniqueItems` keyword, on
+`retained_hypothesis_ids`. The v0.4.0 schema sent to the provider is v0.3.0's
+without that keyword, and its system prompt is v0.3.0's followed by one
+sentence: “List each identifier in retained_hypothesis_ids once.” The diagnosis
+contract is unchanged. The harness still decodes every returned plan against
+it, so a plan that repeats a retained identifier stops as an
+`assertion_contract` failure rather than a `response_schema` failure. A v7
+ordinary-answer payload is identical to v6's, and a v7 test-plan payload
+differs from v6's only in that sentence, in the schema it carries in both its
+prompt and its response format, and in the schema's name.
 
 ## Execution binding
 
@@ -349,7 +378,7 @@ relations, and final epistemic states are therefore defined for conforming v5
 bundles. This correction does not retroactively validate the corresponding v2
 fields. V3 bundles are not analyzed because that study stopped on an
 instrumentation-integrity defect. V5 also does not reuse v4 outputs. V6
-preserves the same treatment and reuses no earlier output.
+preserves the same treatment and reuses no earlier output, and so does v7.
 
 Most importantly, repeatedly sampling this one transparent case measures
 within-prompt behavior, not cross-task causal-reasoning ability. A later study
@@ -384,6 +413,11 @@ part of the research record:
   [report](../results/current/2026-11-26-case-001-comparison-v6.md) is a
   fresh result that reuses no earlier output and is not pooled with or
   compared to v5.
+- V7 repeats v6's design with a test-plan schema that omits the `uniqueItems`
+  keyword, which the provider's structured output refused for two of v6's
+  three models; the system prompt states the requirement instead. It is a
+  fresh run that will reuse no earlier output and will not be pooled with or
+  compared to v5 or v6. It is registered and has not yet run.
 
 The immutable registrations are retained under [`manifests/`](manifests/).
 
@@ -395,9 +429,9 @@ The immutable registrations are retained under [`manifests/`](manifests/).
   scoring.
 - The structured schema itself may scaffold a better assertion; that is part of
   the A-to-B treatment, not proof of internal reasoning.
-- The v5 and v6 categorical observation vocabulary is an additional harness
-  treatment and may improve formatting compliance independently of causal
-  diagnosis.
+- The v5, v6, and v7 categorical observation vocabulary is an additional
+  harness treatment and may improve formatting compliance independently of
+  causal diagnosis.
 - B and C are deliberately dependent branches and must never be counted as two
   independent model samples.
 - The case-specific deterministic oracle is custom verification infrastructure;
@@ -418,6 +452,17 @@ The immutable registrations are retained under [`manifests/`](manifests/).
 - V6 was registered without first checking that each endpoint's structured
   output accepts both output schemas. Only GLM 5.2 completed any run, so v6
   holds no behavioral measurement for MiniMax M3.1 Flash or Qwen 3.7 Plus.
+- V7 differs from v6 in its test-plan output profile, so the two results
+  cannot be pooled or compared.
+- V7's test-plan schema no longer states that retained identifiers are unique.
+  The system prompt states the requirement instead, and the harness still
+  refuses a plan that repeats an identifier, as an `assertion_contract`
+  failure. That added sentence is also a change to what each model sees.
+- Before registration, endpoints were sent the output schemas with a neutral
+  prompt to confirm that each accepts them, and the Qwen 3.7 Plus endpoint was
+  earlier sent v6's test-plan request with the uniqueItems keyword removed from
+  its response format. None of those responses was scored or is part of the
+  study's record.
 - One case, a small provider/model cohort, and five replicates per cell cannot
   support a general claim.
 

@@ -31,7 +31,12 @@ from experiments.comparison_manifests import (
     load_comparison_manifest,
 )
 from experiments.diagnostician import DiagnosisRequest
-from experiments.model_adapters import OpenAIChatEndpoint, ShippedAdapterIdentity
+from experiments.model_adapters import (
+    PROMPTED_UNIQUENESS_PROFILE_ID,
+    ModelAdapterFailure,
+    OpenAIChatEndpoint,
+    ShippedAdapterIdentity,
+)
 from experiments.trial_manifests import canonical_json_bytes
 from itself import JsonObject, JsonValue, StrPath
 from itself._filesystem import publish_path_no_replace, write_file_exclusive
@@ -39,11 +44,13 @@ from itself._filesystem import publish_path_no_replace, write_file_exclusive
 from .cache_key_comparison import build_comparison_request
 from .cache_key_omission import CaseEnvironment, Mechanism
 
-STUDY_VERSION: Final = "6"
+STUDY_VERSION: Final = "7"
 # Versions whose results are current.  V6 differs from v5 in provider, in one
-# model, and in the study contract, so it does not supersede v5; the two are
-# not pooled or compared.  A report on any other version is historical.
-CURRENT_STUDY_VERSIONS: Final = frozenset({"5", "6"})
+# model, and in the study contract, so it does not supersede v5.  V7 repeats
+# v6 with a different test-plan output profile, so it does not supersede v6.
+# None of them is pooled with or compared to another.  A report on any other
+# version is historical.
+CURRENT_STUDY_VERSIONS: Final = frozenset({"5", "6", "7"})
 REPLICATE_COUNT: Final = 5
 TEMPERATURE: Final = 1.0
 TOP_P: Final = 0.95
@@ -81,12 +88,12 @@ V6_TARGET_ORDER: Final = (
     "together-qwen3p7-plus",
 )
 # Each primary behavioral study fixes one provider endpoint and registers the
-# order in which its targets run.
+# order in which its targets run.  V7 repeats v6's endpoint and order.
 PRIMARY_ENDPOINT_BY_VERSION: Final[Mapping[str, ProviderEndpoint]] = MappingProxyType(
-    {"5": FIREWORKS_ENDPOINT, "6": TOGETHER_ENDPOINT}
+    {"5": FIREWORKS_ENDPOINT, "6": TOGETHER_ENDPOINT, "7": TOGETHER_ENDPOINT}
 )
 TARGET_ORDER_BY_VERSION: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
-    {"5": V5_TARGET_ORDER, "6": V6_TARGET_ORDER}
+    {"5": V5_TARGET_ORDER, "6": V6_TARGET_ORDER, "7": V6_TARGET_ORDER}
 )
 # V6 pins the shipped client as a literal, not as the running client, so its
 # registration stays checkable after the client's version moves on.
@@ -95,6 +102,9 @@ V6_SHIPPED_ADAPTER: Final = ShippedAdapterIdentity(
     adapter_version="0.4.0",
 )
 V6_DEADLINE_SECONDS: Final = 600.0
+# V7's test-plan profile sends a schema without the ``uniqueItems`` keyword,
+# which the provider's structured output refused for two of v6's models.
+V7_STRUCTURED_PROFILE_ID: Final = PROMPTED_UNIQUENESS_PROFILE_ID
 
 _GENERAL_LIMITATIONS: Final = (
     "This transparent closed-set case does not establish cross-task transfer.",
@@ -120,9 +130,11 @@ class ComparisonStudyTarget:
     ``contract`` is the study contract its manifests use.  A v2 target also
     pins the shipped client, may ask a stream for its token usage, and may
     bound each request with a deadline; a v1 target does none of these.
+    ``structured_profile_id`` names the test-plan output profile; when it is
+    ``None`` the profile follows ``expected_observation_values``.
     """
 
-    study_version: Literal["1", "2", "3", "4", "5", "6"]
+    study_version: Literal["1", "2", "3", "4", "5", "6", "7"]
     target_id: str
     provider: str
     model_family: str
@@ -138,6 +150,7 @@ class ComparisonStudyTarget:
     shipped_adapter: ShippedAdapterIdentity | None = None
     stream_include_usage: bool = False
     deadline_seconds: float | None = None
+    structured_profile_id: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.stream) is not bool:
@@ -378,16 +391,18 @@ def _v5_targets() -> tuple[ComparisonStudyTarget, ...]:
     return tuple(targets_by_id[target_id] for target_id in V5_TARGET_ORDER)
 
 
-def _v6_target(
+def _together_v2_target(
+    study_version: Literal["6", "7"],
     target_id: str,
     *,
     model_family: str,
     model_id: str,
     checkpoint_url: str | None,
     license_name: str | None,
+    structured_profile_id: str | None,
 ) -> ComparisonStudyTarget:
     return ComparisonStudyTarget(
-        study_version="6",
+        study_version=study_version,
         target_id=target_id,
         provider=TOGETHER_ENDPOINT.provider,
         model_family=model_family,
@@ -403,36 +418,57 @@ def _v6_target(
         shipped_adapter=V6_SHIPPED_ADAPTER,
         stream_include_usage=True,
         deadline_seconds=V6_DEADLINE_SECONDS,
+        structured_profile_id=structured_profile_id,
     )
 
 
-def _v6_targets() -> tuple[ComparisonStudyTarget, ...]:
+def _together_v2_targets(
+    study_version: Literal["6", "7"],
+    *,
+    structured_profile_id: str | None = None,
+) -> tuple[ComparisonStudyTarget, ...]:
     # V5's model versions where Together AI served them at registration.  It
     # did not serve MiniMax M3, so the successor in the same line takes that
     # cell.
     return (
-        _v6_target(
+        _together_v2_target(
+            study_version,
             "together-glm-5p2",
             model_family="GLM 5.2",
             model_id="zai-org/GLM-5.2",
             checkpoint_url="https://huggingface.co/zai-org/GLM-5.2",
             license_name="MIT",
+            structured_profile_id=structured_profile_id,
         ),
-        _v6_target(
+        _together_v2_target(
+            study_version,
             "together-minimax-m3p1-flash",
             model_family="MiniMax M3.1 Flash",
             model_id="MiniMaxAI/MiniMax-M3.1-Flash",
             checkpoint_url="https://huggingface.co/MiniMaxAI/MiniMax-M3.1-Flash",
             license_name="MiniMax Community License",
+            structured_profile_id=structured_profile_id,
         ),
-        _v6_target(
+        _together_v2_target(
+            study_version,
             "together-qwen3p7-plus",
             model_family="Qwen 3.7 Plus",
             model_id="Qwen/Qwen3.7-Plus",
             checkpoint_url=None,
             license_name=None,
+            structured_profile_id=structured_profile_id,
         ),
     )
+
+
+def _v6_targets() -> tuple[ComparisonStudyTarget, ...]:
+    return _together_v2_targets("6")
+
+
+def _v7_targets() -> tuple[ComparisonStudyTarget, ...]:
+    # V6's targets and settings, with the test-plan profile the provider
+    # accepts.
+    return _together_v2_targets("7", structured_profile_id=V7_STRUCTURED_PROFILE_ID)
 
 
 STUDY_TARGETS_BY_VERSION: Final[Mapping[str, tuple[ComparisonStudyTarget, ...]]] = (
@@ -444,6 +480,7 @@ STUDY_TARGETS_BY_VERSION: Final[Mapping[str, tuple[ComparisonStudyTarget, ...]]]
             "4": _v4_targets(),
             "5": _v5_targets(),
             "6": _v6_targets(),
+            "7": _v7_targets(),
         }
     )
 )
@@ -517,7 +554,8 @@ def _study_targets(study_version: str) -> tuple[ComparisonStudyTarget, ...]:
         ) from None
 
 
-_V6_LIMITATIONS: Final = (
+# The limitations that v6 and v7 share, which each places in its own order.
+_TOGETHER_STUDY_LIMITATIONS: Final = (
     (
         "Expected observations are constrained to the preregistered revision "
         "codes A and B; this is a harness treatment."
@@ -535,20 +573,13 @@ _V6_LIMITATIONS: Final = (
         "Execution is round-robin by replicate index in the registered target "
         f"order: {', '.join(V6_TARGET_ORDER)}."
     ),
-    (
-        "V6 differs from v5 in provider, in one model, and in study contract, "
-        "so v5 and v6 results are not pooled or compared."
-    ),
-    (
-        "MiniMax M3.1 Flash takes the MiniMax cell because Together AI did not "
-        "serve MiniMax M3 at registration; it is a different model from the one "
-        "v5 measured."
-    ),
-    (
-        "Together AI GLM 5.2 was excluded from v3 and v4 after v2 produced four "
-        "provider rate-limit failures; v6 includes it, and a rate-limit failure "
-        "stays in the record as a failed replicate, not retried or replaced."
-    ),
+)
+_MINIMAX_SUCCESSOR_LIMITATION: Final = (
+    "MiniMax M3.1 Flash takes the MiniMax cell because Together AI did not "
+    "serve MiniMax M3 at registration; it is a different model from the one "
+    "v5 measured."
+)
+_V2_CONTRACT_LIMITATIONS: Final = (
     (
         "Each stream asks the provider to report token usage; a response that "
         "still reports none stops as a response_usage failure."
@@ -557,8 +588,49 @@ _V6_LIMITATIONS: Final = (
         f"Each request has a {V6_DEADLINE_SECONDS:g}-second deadline; a response "
         "still arriving when it passes stops as a transport failure."
     ),
+)
+_V6_LIMITATIONS: Final = (
+    *_TOGETHER_STUDY_LIMITATIONS,
+    (
+        "V6 differs from v5 in provider, in one model, and in study contract, "
+        "so v5 and v6 results are not pooled or compared."
+    ),
+    _MINIMAX_SUCCESSOR_LIMITATION,
+    (
+        "Together AI GLM 5.2 was excluded from v3 and v4 after v2 produced four "
+        "provider rate-limit failures; v6 includes it, and a rate-limit failure "
+        "stays in the record as a failed replicate, not retried or replaced."
+    ),
+    *_V2_CONTRACT_LIMITATIONS,
     (
         "V6 is a fresh run; no model output or scorecard from an earlier version "
+        "is reused."
+    ),
+)
+_V7_LIMITATIONS: Final = (
+    *_TOGETHER_STUDY_LIMITATIONS,
+    (
+        "V7 repeats v6's design with a different test-plan output profile, so "
+        "v5, v6, and v7 results are not pooled or compared."
+    ),
+    (
+        "The test-plan schema sent to the provider omits the uniqueItems "
+        "keyword, which the provider's structured output refused for two of "
+        "v6's three models. The system prompt states the requirement instead, "
+        "and the harness still refuses a plan that repeats an identifier, as an "
+        f"{ModelAdapterFailure.ASSERTION_CONTRACT} failure."
+    ),
+    _MINIMAX_SUCCESSOR_LIMITATION,
+    *_V2_CONTRACT_LIMITATIONS,
+    (
+        "Before registration, endpoints were sent the output schemas with a "
+        "neutral prompt to confirm that each accepts them, and the Qwen 3.7 Plus "
+        "endpoint was earlier sent v6's test-plan request with the uniqueItems "
+        "keyword removed from its response format. None of those responses was "
+        "scored or is part of the study's record."
+    ),
+    (
+        "V7 is a fresh run; no model output or scorecard from an earlier version "
         "is reused."
     ),
 )
@@ -630,6 +702,8 @@ def build_study_manifest(
         )
     if target.study_version == "6":
         limitations.extend(_V6_LIMITATIONS)
+    if target.study_version == "7":
+        limitations.extend(_V7_LIMITATIONS)
     return build_comparison_manifest(
         target.endpoint(),
         _request(),
@@ -641,6 +715,7 @@ def build_study_manifest(
         expected_observation_values=target.expected_observation_values,
         contract=target.contract,
         shipped_adapter=target.shipped_adapter,
+        structured_profile_id=target.structured_profile_id,
     )
 
 

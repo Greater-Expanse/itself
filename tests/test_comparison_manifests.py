@@ -27,7 +27,7 @@ from experiments.comparison_manifests import (
     load_comparison_manifest,
 )
 from experiments.diagnostician import DiagnosisRequest
-from experiments.model_adapters import OpenAIChatEndpoint
+from experiments.model_adapters import OpenAIChatEndpoint, diagnosis_output_profile
 from itself import JsonObject, JsonValue
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -366,6 +366,139 @@ def test_manifest_rejects_categorical_observation_profile_drift() -> None:
             _endpoint(),
             _request(),
         )
+
+
+def _profiled_manifest(
+    expected_observation_values: tuple[str, ...],
+    structured_profile_id: str | None = None,
+) -> JsonObject:
+    return build_comparison_manifest(
+        _endpoint(),
+        _request(),
+        comparison_series_id="case-001-structured-profile-study",
+        registered_at=datetime(2026, 11, 26, 18, tzinfo=UTC),
+        replicate_count=5,
+        study_phase="preregistered_study",
+        limitations=("One transparent case does not establish transfer.",),
+        expected_observation_values=expected_observation_values,
+        structured_profile_id=structured_profile_id,
+    )
+
+
+def _structured_profile(manifest: JsonObject) -> JsonObject:
+    profiles = cast(JsonObject, manifest["profiles"])
+    return cast(JsonObject, profiles["structured"])
+
+
+@pytest.mark.parametrize(
+    ("values", "structured_profile_id", "expected_profile_id"),
+    [
+        ((), None, "diagnosis-assertion-v0.2.0"),
+        ((), "diagnosis-assertion-v0.2.0", "diagnosis-assertion-v0.2.0"),
+        (("A", "B"), None, "diagnosis-assertion-v0.3.0"),
+        (("A", "B"), "diagnosis-assertion-v0.3.0", "diagnosis-assertion-v0.3.0"),
+        (("A", "B"), "diagnosis-assertion-v0.4.0", "diagnosis-assertion-v0.4.0"),
+    ],
+)
+def test_manifest_profile_id_selects_the_structured_profile(
+    values: tuple[str, ...],
+    structured_profile_id: str | None,
+    expected_profile_id: str,
+) -> None:
+    manifest = _profiled_manifest(values, structured_profile_id)
+
+    profile = diagnosis_profile_from_comparison_manifest(manifest)
+
+    assert _structured_profile(manifest)["profile_id"] == expected_profile_id
+    assert profile.profile_id == expected_profile_id
+    assert profile == diagnosis_output_profile(values, profile_id=expected_profile_id)
+    ComparisonManifestValidator().validate_against(manifest, _endpoint(), _request())
+
+
+def test_manifest_builder_defaults_to_the_profile_its_values_imply() -> None:
+    assert _profiled_manifest(("A", "B")) == _profiled_manifest(
+        ("A", "B"),
+        "diagnosis-assertion-v0.3.0",
+    )
+    assert _profiled_manifest(()) == _profiled_manifest(
+        (),
+        "diagnosis-assertion-v0.2.0",
+    )
+
+
+def test_manifest_binds_the_profile_its_profile_id_names() -> None:
+    manifest = _profiled_manifest(("A", "B"))
+    _structured_profile(manifest)["profile_id"] = "diagnosis-assertion-v0.4.0"
+
+    with pytest.raises(ComparisonManifestValidationError) as captured:
+        ComparisonManifestValidator().validate_against(
+            manifest,
+            _endpoint(),
+            _request(),
+        )
+
+    assert str(captured.value).splitlines() == [
+        "profiles.structured.assertion_schema_sha256 does not match the bound "
+        "execution",
+        "profiles.structured.prompt_payload_sha256 does not match the bound execution",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("values", "profile_id", "message"),
+    [
+        (
+            ("A", "B"),
+            "diagnosis-assertion-v9.9.9",
+            "profiles.structured.profile_id: unknown diagnosis output profile "
+            "'diagnosis-assertion-v9.9.9'; expected one of "
+            "diagnosis-assertion-v0.2.0, diagnosis-assertion-v0.3.0, "
+            "diagnosis-assertion-v0.4.0",
+        ),
+        (
+            (),
+            "diagnosis-assertion-v0.4.0",
+            "profiles.structured.profile_id: diagnosis-assertion-v0.4.0 requires "
+            "registered expected observation values",
+        ),
+        (
+            (),
+            "diagnosis-assertion-v0.3.0",
+            "profiles.structured.profile_id: diagnosis-assertion-v0.3.0 requires "
+            "registered expected observation values",
+        ),
+        (
+            ("A", "B"),
+            "diagnosis-assertion-v0.2.0",
+            "profiles.structured.profile_id: diagnosis-assertion-v0.2.0 does not "
+            "register expected observation values",
+        ),
+    ],
+)
+def test_manifest_refuses_a_profile_id_it_cannot_reconstruct(
+    values: tuple[str, ...],
+    profile_id: str,
+    message: str,
+) -> None:
+    manifest = _profiled_manifest(values)
+    _structured_profile(manifest)["profile_id"] = profile_id
+
+    with pytest.raises(ComparisonManifestValidationError) as validated:
+        ComparisonManifestValidator().validate_against(
+            manifest,
+            _endpoint(),
+            _request(),
+        )
+    with pytest.raises(ComparisonManifestValidationError) as reconstructed:
+        diagnosis_profile_from_comparison_manifest(manifest)
+
+    assert str(validated.value) == message
+    assert str(reconstructed.value) == message
+
+
+def test_manifest_builder_refuses_a_profile_its_values_cannot_bind() -> None:
+    with pytest.raises(ValueError, match="requires registered expected observation"):
+        _profiled_manifest((), "diagnosis-assertion-v0.4.0")
 
 
 def test_comparison_manifest_contains_no_endpoint_url_or_credential_reference() -> None:

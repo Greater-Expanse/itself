@@ -25,7 +25,8 @@
       "enum": [
         "narrative-assertion-v0.2.0",
         "diagnosis-assertion-v0.2.0",
-        "diagnosis-assertion-v0.3.0"
+        "diagnosis-assertion-v0.3.0",
+        "diagnosis-assertion-v0.4.0"
       ]
     },
     "outcome": { "enum": ["adapter_failed", "runner_failed"] },

@@ -178,10 +178,26 @@ their requests run differently. This release implements:
   are retained as failed runs with their status. The report is
   `experiments/results/current/2026-11-26-case-001-comparison-v6.md`. Because
   v6 differs from v5 in provider, in one model, and in study contract, the two
-  are not pooled or compared. `cache_key_comparison_study register` registers
-  v6 by default, and the comparison report renders v6, labels `http_status`,
-  `response_usage`, and `transport` failures, and marks every version other
-  than v5 and v6 as historical.
+  are not pooled or compared. The comparison report renders v6 and labels
+  `http_status`, `response_usage`, and `transport` failures.
+- Case 001 comparison study v7, registered under study contract v2 and not yet
+  run: v6's three targets, endpoint, execution order, and settings, with one
+  change. Its test-plan output profile, `diagnosis-assertion-v0.4.0`, sends
+  v0.3.0's schema without the `uniqueItems` keyword on
+  `retained_hypothesis_ids`, which the provider's structured output refused
+  for two of v6's three models, and its system prompt adds one sentence asking
+  for each identifier once. The diagnosis contract is unchanged, so the
+  harness still refuses a plan that repeats an identifier, as an
+  `assertion_contract` failure. A comparison manifest's
+  `profiles.structured.profile_id` now selects its test-plan profile, and
+  `build_comparison_manifest` takes `structured_profile_id` to ask for
+  v0.4.0; an unknown profile, or one that does not match whether the manifest
+  registers expected observations, is refused. The v2 comparison attempt
+  report schema names `diagnosis-assertion-v0.4.0`. Because v7 differs from v6
+  in its test-plan profile, v5, v6, and v7 are not pooled or compared.
+  `cache_key_comparison_study register` registers v7 by default, and the
+  comparison report renders v7 and marks every version other than v5, v6, and
+  v7 as historical.
 - `docs/INFERENCE.md` says that a provider may report token usage on a stream
   only when asked, and how to ask.
 

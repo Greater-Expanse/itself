@@ -64,5 +64,7 @@ pooled with or compared to v5.
   model and generation configurations.
 - [`manifests/v6/`](manifests/v6/) contains the exact preregistered November
   2026 configurations, under study contract v2.
+- [`manifests/v7/`](manifests/v7/) contains the v7 configurations, registered
+  under study contract v2 and not yet run.
 - [`../cases/`](../cases/) contains the executable environment, runners, and
   report generator.

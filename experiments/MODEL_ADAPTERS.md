@@ -145,6 +145,19 @@ explanatory prose in separate fields. The vocabulary is part of the manifest,
 schema, rendered payload, and digest; it is not inferred from model prose after
 execution.
 
+A comparison manifest names its test-plan profile in
+`profiles.structured.profile_id`, and the harness rebuilds that profile from
+it: `diagnosis-assertion-v0.2.0` registers no expected observations,
+`diagnosis-assertion-v0.3.0` constrains them, and `diagnosis-assertion-v0.4.0`
+constrains them and sends v0.3.0's schema without the `uniqueItems` keyword on
+`retained_hypothesis_ids`, stating that requirement in its system prompt
+instead. Case 001 v7 binds v0.4.0 because a provider's structured output
+refused the keyword. The local check does not change with the profile: the
+returned assertion is decoded against the unchanged contract, so a repeated
+identifier fails as `assertion_contract`. A manifest that names an unknown
+profile, or one that does not match whether it registers expected
+observations, is refused.
+
 ## Relationship to structured-generation libraries
 
 [Instructor][instructor] and [Outlines][outlines] address an adjacent layer of
@@ -330,7 +343,8 @@ and settings render the same payload bytes; the one difference is
 with `contract=V2_CONTRACT` carries the v2 settings. Case 001 comparison study
 v6 is the first study registered under v2: its manifests pin the shipped client
 `openai-compatible-chat-completions` `0.4.0` as a literal, ask every stream for
-usage, and give every request a 600-second deadline.
+usage, and give every request a 600-second deadline. V7 keeps those settings
+and registers the `diagnosis-assertion-v0.4.0` test-plan profile.
 
 1. **Observed HTTP status.** A v2 attempt report keeps the status the
    transport returned, unclamped, including one outside 100–599, and `null`

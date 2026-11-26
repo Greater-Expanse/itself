@@ -635,6 +635,31 @@ def _limitations(
             else []
         ),
         *(
+            [
+                (
+                    "V7 fixes one provider as controlled infrastructure; provider "
+                    "identity is provenance only."
+                ),
+                (
+                    "V7 repeats v6's design with a different test-plan output "
+                    "profile; v5, v6, and v7 are not pooled or compared."
+                ),
+                (
+                    "V7's test-plan schema omits the uniqueItems keyword; its "
+                    "prompt states the requirement, and a plan that repeats an "
+                    "identifier is refused as an assertion_contract failure."
+                ),
+                "No model output or scorecard from an earlier version is reused in v7.",
+                (
+                    "Harness failures after a request was sent are counted apart "
+                    "from provider and model-output failures; they are not scored "
+                    "as wrong diagnoses."
+                ),
+            ]
+            if study_version == "7"
+            else []
+        ),
+        *(
             f"{family} is a hosted-only comparator, not an open-weight result."
             for family in hosted_only_families
         ),
@@ -889,6 +914,15 @@ _CONTROLLED_STUDY_TEXT: Final = MappingProxyType(
             "behavioral metric, and no model output or scorecard from an earlier "
             "version is reused. V6 differs from v5 in provider, in one model, and in "
             "study contract, so the two results are not pooled or compared."
+        ),
+        "7": (
+            "V7 fixes one provider and one compatible base endpoint across all three "
+            "model targets. Calls are executed round-robin by replicate index to "
+            "distribute temporal serving variation. Provider identity is not a "
+            "behavioral metric, and no model output or scorecard from an earlier "
+            "version is reused. V7 repeats v6's design with a test-plan output "
+            "profile whose schema omits the uniqueItems keyword, so v5, v6, and v7 "
+            "results are not pooled or compared."
         ),
     }
 )

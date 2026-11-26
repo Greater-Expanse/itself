@@ -130,6 +130,8 @@ model and generation configurations are retained under
 [`001-cache-key-omission/manifests/v5/`](001-cache-key-omission/manifests/v5/).
 The v6 configurations, registered under study contract v2, are retained under
 [`001-cache-key-omission/manifests/v6/`](001-cache-key-omission/manifests/v6/).
+V7, registered under study contract v2 and not yet run, is retained under
+[`001-cache-key-omission/manifests/v7/`](001-cache-key-omission/manifests/v7/).
 
 Each registered manifest set can be checked without a network call:
 
@@ -142,6 +144,10 @@ uv run --frozen python \
   -m experiments.cases.cache_key_comparison_study check \
   --study-version 6 \
   --directory experiments/001-cache-key-omission/manifests/v6
+uv run --frozen python \
+  -m experiments.cases.cache_key_comparison_study check \
+  --study-version 7 \
+  --directory experiments/001-cache-key-omission/manifests/v7
 ```
 
 Re-executing the hosted study requires access to the registered endpoint and

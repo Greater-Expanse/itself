@@ -3,7 +3,7 @@
 
 # pyright: reportPrivateUsage=false
 
-"""Run every registered v6 slot over fake transports, then report the study."""
+"""Run every registered v6 and v7 slot over fake transports, then report each."""
 
 from __future__ import annotations
 
@@ -44,18 +44,37 @@ from experiments.cases.cache_key_diagnostician import (
 from experiments.diagnostician import DiagnosisRequest, DiagnosisResult
 from experiments.model_adapters import HttpRequest, HttpResponse
 from experiments.narrative_diagnostician import NarrativeResult
-from itself import InferenceError, InferenceFailure, JsonObject
+from itself import InferenceError, InferenceFailure, JsonObject, JsonValue
 
-SECRET = "v6-study-secret-that-must-not-leak"
+SECRET = "study-secret-that-must-not-leak"
 NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
-TARGETS = {target.target_id: target for target in STUDY_TARGETS_BY_VERSION["6"]}
+# V7 repeats v6's targets in v6's order, so one script serves both versions.
 SLOTS = STUDY_EXECUTION_SLOTS_BY_VERSION["6"]
 # The slots that stop, and how: two provider failures, one response that
-# reports no token usage, and one failure of the harness after both responses.
+# reports no token usage, one test plan that repeats a retained identifier,
+# and one failure of the harness after both responses.
 RATE_LIMITED = ("together-glm-5p2", 2)
 PAST_DEADLINE = ("together-glm-5p2", 5)
 WITHOUT_USAGE = ("together-minimax-m3p1-flash", 4)
+REPEATED_RETAINED_ID = ("together-minimax-m3p1-flash", 2)
 HARNESS_FAILURE = ("together-qwen3p7-plus", 3)
+# V6's test-plan schema states uniqueItems, so the shipped client refuses the
+# repeated identifier; v7's does not, so the diagnosis contract refuses it.
+REPEATED_RETAINED_ID_KIND = {"6": "response_schema", "7": "assertion_contract"}
+TEST_PLAN_SCHEMA_NAME = {
+    "6": "itself_diagnosis_assertion_v0_3_0",
+    "7": "itself_diagnosis_assertion_v0_4_0",
+}
+TEST_PLAN_PROFILE_ID = {
+    "6": "diagnosis-assertion-v0.3.0",
+    "7": "diagnosis-assertion-v0.4.0",
+}
+
+
+def _targets(study_version: str) -> dict[str, ComparisonStudyTarget]:
+    return {
+        target.target_id: target for target in STUDY_TARGETS_BY_VERSION[study_version]
+    }
 
 
 def _requests() -> list[HttpRequest]:
@@ -145,11 +164,15 @@ def _script(
         ]
     narrative = CacheKeyNarrativeFixtureDiagnostician().diagnose(_request())
     structured = CacheKeyFixtureDiagnostician().diagnose(_request())
+    test_plan = structured.assertion.to_model_json_object()
+    if slot == REPEATED_RETAINED_ID:
+        retained = cast(list[JsonValue], test_plan["retained_hypothesis_ids"])
+        retained.append(retained[0])
     return [
         _streamed(target, narrative.assertion.to_json_object(), input_tokens=157),
         _streamed(
             target,
-            structured.assertion.to_model_json_object(),
+            test_plan,
             input_tokens=200,
             usage=slot != WITHOUT_USAGE,
         ),
@@ -170,21 +193,37 @@ def _fail_projection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @dataclass(frozen=True, slots=True)
 class StudyRun:
+    study_version: str
     report: JsonObject
     requests: tuple[tuple[str, int, HttpRequest], ...]
+    bundles: Path
 
 
-# One run of all fifteen slots serves every test in this module.
-@pytest.fixture(scope="module")
-def study_run(tmp_path_factory: pytest.TempPathFactory) -> StudyRun:
+# One run of all fifteen slots of each version serves every test in this module.
+@pytest.fixture(scope="module", params=["6", "7"])
+def study_run(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> StudyRun:
+    study_version = cast(str, request.param)
     with pytest.MonkeyPatch.context() as monkeypatch:
-        return _run_study(tmp_path_factory.mktemp("v6-study"), monkeypatch)
+        return _run_study(
+            study_version,
+            tmp_path_factory.mktemp(f"v{study_version}-study"),
+            monkeypatch,
+        )
 
 
-def _run_study(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> StudyRun:
+def _run_study(
+    study_version: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> StudyRun:
     manifests = tmp_path / "manifests"
     bundles = tmp_path / "bundles"
-    write_study_manifests(manifests, registered_at=NOW, study_version="6")
+    targets = _targets(study_version)
+    assert STUDY_EXECUTION_SLOTS_BY_VERSION[study_version] == SLOTS
+    write_study_manifests(manifests, registered_at=NOW, study_version=study_version)
     # The run executes under the client its manifests pin.
     monkeypatch.setattr(
         shipped_inference,
@@ -194,7 +233,7 @@ def _run_study(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> StudyRun:
     clock = itertools.count(1_000_000, 1_000_000)
     sent: list[tuple[str, int, HttpRequest]] = []
     for target_id, replicate_index in SLOTS:
-        target = TARGETS[target_id]
+        target = targets[target_id]
         transport = ScriptedTransport(_script(target, replicate_index))
         with monkeypatch.context() as patch:
             if (target_id, replicate_index) == HARNESS_FAILURE:
@@ -214,8 +253,17 @@ def _run_study(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> StudyRun:
         sent.extend(
             (target_id, replicate_index, request) for request in transport.requests
         )
-    report = build_comparison_report(bundles, study_version="6", reported_at=NOW)
-    return StudyRun(report=report, requests=tuple(sent))
+    report = build_comparison_report(
+        bundles,
+        study_version=study_version,
+        reported_at=NOW,
+    )
+    return StudyRun(
+        study_version=study_version,
+        report=report,
+        requests=tuple(sent),
+        bundles=bundles,
+    )
 
 
 def test_the_runner_sends_every_slot_round_robin_to_the_one_endpoint(
@@ -233,19 +281,71 @@ def test_the_runner_sends_every_slot_round_robin_to_the_one_endpoint(
         ("together-glm-5p2", 2),
     ]
     assert len(study_run.requests) == 2 * len(SLOTS) - 2
+    targets = _targets(study_run.study_version)
     for target_id, _, request in study_run.requests:
         payload = cast(JsonObject, json.loads(request.body))
         assert request.url.startswith(TOGETHER_ENDPOINT.base_url + "/")
         assert request.deadline_seconds == 600.0
         assert request.timeout_seconds == 300.0
-        assert payload["model"] == TARGETS[target_id].model_id
+        assert payload["model"] == targets[target_id].model_id
         assert payload["stream"] is True
         assert payload["stream_options"] == {"include_usage": True}
         assert payload["temperature"] == 1.0
         assert payload["top_p"] == 0.95
 
 
-def test_the_v6_report_counts_each_kind_of_stopped_run(study_run: StudyRun) -> None:
+def _sent_schema(request: HttpRequest) -> JsonObject:
+    payload = cast(JsonObject, json.loads(request.body))
+    response_format = cast(JsonObject, payload["response_format"])
+    return cast(JsonObject, response_format["json_schema"])
+
+
+def test_every_test_plan_request_sends_the_version_s_profile(
+    study_run: StudyRun,
+) -> None:
+    requests_by_slot: dict[tuple[str, int], list[HttpRequest]] = {}
+    for target_id, replicate_index, request in study_run.requests:
+        requests_by_slot.setdefault((target_id, replicate_index), []).append(request)
+    test_plan_schemas = [
+        _sent_schema(requests[1])
+        for requests in requests_by_slot.values()
+        if len(requests) == 2
+    ]
+    retained_ids = [
+        cast(
+            JsonObject,
+            cast(JsonObject, cast(JsonObject, schema["schema"])["properties"])[
+                "retained_hypothesis_ids"
+            ],
+        )
+        for schema in test_plan_schemas
+    ]
+
+    assert len(test_plan_schemas) == len(SLOTS) - 2
+    assert {cast(str, schema["name"]) for schema in test_plan_schemas} == {
+        TEST_PLAN_SCHEMA_NAME[study_run.study_version]
+    }
+    assert [retained.get("uniqueItems") for retained in retained_ids] == [
+        None if study_run.study_version == "7" else True
+    ] * len(retained_ids)
+
+
+def test_a_refused_test_plan_is_kept_as_a_failed_bundle(study_run: StudyRun) -> None:
+    target_id, replicate_index = REPEATED_RETAINED_ID
+    replicate = study_run.bundles / target_id / f"replicate-{replicate_index:03d}"
+    attempt_report = cast(
+        JsonObject,
+        json.loads((replicate / "attempt-report.json").read_text(encoding="utf-8")),
+    )
+    failure = cast(JsonObject, attempt_report["failure"])
+
+    assert attempt_report["attempt_report_version"] == "0.3.0"
+    assert attempt_report["attempt_id"] == STRUCTURED_ATTEMPT_ID
+    assert attempt_report["profile_id"] == TEST_PLAN_PROFILE_ID[study_run.study_version]
+    assert failure["kind"] == REPEATED_RETAINED_ID_KIND[study_run.study_version]
+
+
+def test_the_report_counts_each_kind_of_stopped_run(study_run: StudyRun) -> None:
     report = study_run.report
     totals = cast(JsonObject, report["totals"])
     summaries = {
@@ -259,20 +359,26 @@ def test_the_v6_report_counts_each_kind_of_stopped_run(study_run: StudyRun) -> N
         for replicate in cast(list[JsonObject], report["replicates"])
     }
 
-    assert report["study_version"] == "6"
+    assert report["study_version"] == study_run.study_version
     assert report["report_version"] == "0.4.0"
     assert totals["registered_replicates"] == 15
-    assert totals["completed_replicates"] == 11
-    assert totals["failed_replicates"] == 3
+    assert totals["completed_replicates"] == 10
+    assert totals["failed_replicates"] == 4
     assert totals["runner_failed_replicates"] == 1
     assert sorted(
         (cast(str, failure["attempt_id"]), cast(str, failure["kind"]))
         for failure in cast(list[JsonObject], totals["failures"])
-    ) == [
-        (NARRATIVE_ATTEMPT_ID, "http_rate_limit"),
-        (NARRATIVE_ATTEMPT_ID, "transport"),
-        (STRUCTURED_ATTEMPT_ID, "response_usage"),
-    ]
+    ) == sorted(
+        [
+            (NARRATIVE_ATTEMPT_ID, "http_rate_limit"),
+            (NARRATIVE_ATTEMPT_ID, "transport"),
+            (STRUCTURED_ATTEMPT_ID, "response_usage"),
+            (
+                STRUCTURED_ATTEMPT_ID,
+                REPEATED_RETAINED_ID_KIND[study_run.study_version],
+            ),
+        ]
+    )
     assert totals["runner_failures"] == [
         {"attempt_id": STRUCTURED_ATTEMPT_ID, "kind": "runner_error", "count": 1}
     ]
@@ -281,18 +387,19 @@ def test_the_v6_report_counts_each_kind_of_stopped_run(study_run: StudyRun) -> N
         for target_id, summary in summaries.items()
     } == {
         "together-glm-5p2": 3,
-        "together-minimax-m3p1-flash": 4,
+        "together-minimax-m3p1-flash": 3,
         "together-qwen3p7-plus": 4,
     }
     assert outcomes[HARNESS_FAILURE] == "runner_failed"
     assert [
-        outcomes[slot] for slot in (RATE_LIMITED, PAST_DEADLINE, WITHOUT_USAGE)
-    ] == ["adapter_failed"] * 3
+        outcomes[slot]
+        for slot in (RATE_LIMITED, PAST_DEADLINE, WITHOUT_USAGE, REPEATED_RETAINED_ID)
+    ] == ["adapter_failed"] * 4
     assert SECRET not in json.dumps(report)
     assert "projection failed" not in json.dumps(report)
 
 
-def test_the_v6_report_carries_its_design(study_run: StudyRun) -> None:
+def test_the_report_carries_its_design(study_run: StudyRun) -> None:
     design = cast(JsonObject, study_run.report["design"])
     provider_control = cast(JsonObject, design["provider_control"])
 
@@ -306,21 +413,79 @@ def test_the_v6_report_carries_its_design(study_run: StudyRun) -> None:
     assert provider_control["providers"] == ["Together AI"]
 
 
-def test_the_v6_markdown_states_its_design_and_failures(study_run: StudyRun) -> None:
+# What each version's report says that the other's does not.
+CONTROLLED_STUDY_TEXT = {
+    "6": (
+        "V6 fixes one provider and one compatible base endpoint across all three "
+        "model targets. Calls are executed round-robin by replicate index to "
+        "distribute temporal serving variation. Provider identity is not a "
+        "behavioral metric, and no model output or scorecard from an earlier "
+        "version is reused. V6 differs from v5 in provider, in one model, and in "
+        "study contract, so the two results are not pooled or compared."
+    ),
+    "7": (
+        "V7 fixes one provider and one compatible base endpoint across all three "
+        "model targets. Calls are executed round-robin by replicate index to "
+        "distribute temporal serving variation. Provider identity is not a "
+        "behavioral metric, and no model output or scorecard from an earlier "
+        "version is reused. V7 repeats v6's design with a test-plan output "
+        "profile whose schema omits the uniqueItems keyword, so v5, v6, and v7 "
+        "results are not pooled or compared."
+    ),
+}
+REPEATED_RETAINED_ID_LABEL = {
+    "6": (
+        "1 test-plan request: response did not match the required JSON shape "
+        "(`response_schema`)"
+    ),
+    "7": (
+        "1 test-plan request: response violated the requested task rules "
+        "(`assertion_contract`)"
+    ),
+}
+VERSION_LIMITATIONS = {
+    "6": [
+        "V6 fixes one provider as controlled infrastructure; provider identity "
+        "is provenance only.",
+        "V6 differs from v5 in provider, in one model, and in study contract; "
+        "the two are not pooled or compared.",
+        "No model output or scorecard from an earlier version is reused in v6.",
+        "Harness failures after a request was sent are counted apart from "
+        "provider and model-output failures; they are not scored as wrong "
+        "diagnoses.",
+    ],
+    "7": [
+        "V7 fixes one provider as controlled infrastructure; provider identity "
+        "is provenance only.",
+        "V7 repeats v6's design with a different test-plan output profile; v5, "
+        "v6, and v7 are not pooled or compared.",
+        "V7's test-plan schema omits the uniqueItems keyword; its prompt states "
+        "the requirement, and a plan that repeats an identifier is refused as an "
+        "assertion_contract failure.",
+        "No model output or scorecard from an earlier version is reused in v7.",
+        "Harness failures after a request was sent are counted apart from "
+        "provider and model-output failures; they are not scored as wrong "
+        "diagnoses.",
+    ],
+}
+
+
+def test_the_markdown_states_its_design_and_failures(study_run: StudyRun) -> None:
+    version = study_run.study_version
     markdown = render_markdown(study_run.report)
 
     assert markdown == render_markdown(
         cast(JsonObject, json.loads(json.dumps(study_run.report)))
     )
-    assert markdown.startswith("# Case 001 comparison study v6\n\n## What the")
+    assert markdown.startswith(f"# Case 001 comparison study v{version}\n\n## What")
     assert "Status: historical study version" not in markdown
     assert (
         "We scheduled that two-call, three-path procedure 15 times—5 times for "
         "each of 3 models."
     ) in markdown
     assert (
-        "Of those planned runs, 11 completed both model calls and all three "
-        "paths. Of the other 4, 3 stopped on an explicit provider or "
+        "Of those planned runs, 10 completed both model calls and all three "
+        "paths. Of the other 5, 4 stopped on an explicit provider or "
         "model-output failure and 1 on a failure of the harness itself after a "
         "request was sent."
     ) in markdown
@@ -334,23 +499,19 @@ def test_the_v6_markdown_states_its_design_and_failures(study_run: StudyRun) -> 
         "passed its deadline (`transport`)",
         "1 test-plan request: response did not report valid token usage "
         "(`response_usage`)",
+        REPEATED_RETAINED_ID_LABEL[version],
         "harness: 1 test-plan request: harness failed after the request was "
         "sent (`runner_error`)",
     ):
         assert label in markdown
     assert (
         "## How the experiment was controlled\n\n"
-        "V6 binds `expected_observation` to the exact revision codes `A` and `B` "
-        "in every manifest, output schema, and rendered payload. The "
+        f"V{version} binds `expected_observation` to the exact revision codes "
+        "`A` and `B` in every manifest, output schema, and rendered payload. The "
         "deterministic scorer therefore compares like-for-like categorical "
         "values without a text parser or post-hoc reinterpretation.\n\n"
-        "V6 fixes one provider and one compatible base endpoint across all three "
-        "model targets. Calls are executed round-robin by replicate index to "
-        "distribute temporal serving variation. Provider identity is not a "
-        "behavioral metric, and no model output or scorecard from an earlier "
-        "version is reused. V6 differs from v5 in provider, in one model, and in "
-        "study contract, so the two results are not pooled or compared.\n\n"
-        "V6 ran under study contract v2: every request had a 600-second "
+        f"{CONTROLLED_STUDY_TEXT[version]}\n\n"
+        f"V{version} ran under study contract v2: every request had a 600-second "
         "deadline, every stream asked the provider to report its token usage, "
         "and every manifest pinned Itself's shipped client, "
         "`openai-compatible-chat-completions` `0.4.0`. A failure of the harness "
@@ -366,21 +527,18 @@ def test_the_v6_markdown_states_its_design_and_failures(study_run: StudyRun) -> 
         assert row in markdown
 
 
-def test_the_v6_report_states_its_limitations(study_run: StudyRun) -> None:
+def test_the_report_states_its_limitations(study_run: StudyRun) -> None:
     limitations = cast(list[str], study_run.report["limitations"])
+    other_version = {"6": "7", "7": "6"}[study_run.study_version]
 
     for limitation in (
-        "V6 fixes one provider as controlled infrastructure; provider identity "
-        "is provenance only.",
-        "V6 differs from v5 in provider, in one model, and in study contract; "
-        "the two are not pooled or compared.",
-        "No model output or scorecard from an earlier version is reused in v6.",
-        "Harness failures after a request was sent are counted apart from "
-        "provider and model-output failures; they are not scored as wrong "
-        "diagnoses.",
+        *VERSION_LIMITATIONS[study_run.study_version],
         "Qwen 3.7 Plus is a hosted-only comparator, not an open-weight result.",
     ):
         assert limitation in limitations
+    for limitation in VERSION_LIMITATIONS[other_version]:
+        if limitation not in VERSION_LIMITATIONS[study_run.study_version]:
+            assert limitation not in limitations
     assert not any("v4" in limitation for limitation in limitations)
 
 
