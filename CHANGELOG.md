@@ -335,6 +335,15 @@ their requests run differently. This release implements:
   was accepted and the resource path was appended after the marker.
 - `UrllibHttpTransport` refuses a `max_response_bytes` that is not an integer,
   such as `2.0` or `"3"`, with `ValueError`.
+- `DecisionModelClient` checks a score answer's `score` to the precision the
+  answer reports. Before, many multi-level score answers from an endpoint that
+  rounds the numbers it reports were refused with `response_schema` at the
+  default tolerance: a ten-level score of `6.78` over two-place probabilities
+  whose expected level is `6.76`, exactly what such rounding produces, was one.
+  The allowance now adds one unit of the score's last place and
+  `count**2 // 4` units of the finest place among the probabilities, compared
+  exactly on the reported decimals. Every answer accepted before still is, and
+  a full-precision answer is checked essentially as strictly as before.
 - The CLI names itself `itself` in usage and `--version` output however it is
   started, and a blank `--trusted-authorizer` is a usage error with exit
   status 2 instead of an uncaught `ValueError`.

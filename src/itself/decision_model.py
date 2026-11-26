@@ -23,6 +23,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from fractions import Fraction
 from itertools import combinations
 from typing import Final, Protocol, TypeVar, cast
 
@@ -288,6 +289,11 @@ class DecisionModelEndpoint:
     probable option's.  A score may sit up to the tolerance times the number
     of levels minus one from its distribution's expected level, since the
     expected level weights each probability by an index up to that number.
+    A score is also allowed what rounding to the answer's reported decimal
+    places explains: one unit of the score's last place, plus one unit of the
+    finest place among its probabilities times the number of levels squared
+    over four, rounded down.  A full-precision answer is held to essentially
+    the tolerance alone.
     """
 
     actor_id: str
@@ -852,6 +858,52 @@ def _check_legend(
         raise ValueError("score legend does not match the levels the request showed")
 
 
+def _shortest_decimal(value: float) -> tuple[Fraction, int]:
+    """Return the shortest decimal that reads back as a number, and its places.
+
+    When an endpoint wrote at most fifteen significant digits, the shortest
+    decimal has the value it wrote.  Its places count the digits after the
+    point, exponent included, so ``1e-05`` has five, and are never fewer than
+    one, so ``1`` and ``1.0``, the same JSON number, are alike.
+    """
+
+    text = repr(float(value))
+    digits, _, exponent = text.partition("e")
+    places = len(digits.partition(".")[2]) - int(exponent or "0")
+    return Fraction(text), max(1, places)
+
+
+def _explained_by_rounding(
+    score: float,
+    probabilities: Sequence[float],
+    tolerance: float,
+) -> bool:
+    """Return whether reported places explain a score's distance from its level.
+
+    An endpoint that rounds the numbers it reports computes its score from
+    unrounded probabilities.  Each reported probability is taken to be within
+    one unit of the finest place the distribution shows of its unrounded
+    value, and the score within one unit of its own last place.  Both
+    distributions sum to one, so their differences cancel, and the expected
+    level moves by at most that unit times ``count * count // 4``, the largest
+    ``sum(i * d[i])`` with ``sum(d) == 0`` and every ``abs(d[i]) <= 1``.  The
+    comparison is exact on the shortest decimals, so binary rounding cannot
+    refuse an answer at the edge of the allowance.
+    """
+
+    count = len(probabilities)
+    reported = [_shortest_decimal(probability) for probability in probabilities]
+    score_value, score_places = _shortest_decimal(score)
+    expected = sum(index * value for index, (value, _) in enumerate(reported))
+    finest = max(places for _, places in reported)
+    allowed = (
+        _shortest_decimal(tolerance)[0] * (count - 1)
+        + Fraction(count * count // 4, 10**finest)
+        + Fraction(1, 10**score_places)
+    )
+    return abs(score_value - expected) <= allowed
+
+
 def _answer(
     question: DecisionQuestion,
     order: OptionOrder,
@@ -891,7 +943,12 @@ def _answer(
     if isinstance(score, bool) or not isinstance(score, int | float):
         raise TypeError("expected a JSON number")
     expected = math.fsum(index * shown[str(index)] for index in range(count))
-    if abs(score - expected) > tolerance * (count - 1):
+    # Every score within the tolerance compared in floats is accepted; one
+    # beyond it is accepted only when the places the answer reports explain
+    # the distance.
+    if abs(score - expected) > tolerance * (count - 1) and not _explained_by_rounding(
+        score, list(shown.values()), tolerance
+    ):
         raise ValueError("score is not the expected level of its distribution")
     _check_legend(question, order, value.get("legend"))
     if order is OptionOrder.REVERSED:

@@ -6,12 +6,15 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import pickle
+import random
 import threading
 import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -812,6 +815,236 @@ def test_tolerance_accepts_rounded_distributions_only_when_declared(
     )
     attempt = lenient.ask(STATE, question)
     assert attempt.answers["r1"].probabilities["true"] == 0.3004
+
+
+# Two places over ten levels, whose expected level is 6.76.
+TEN_LEVELS = [0.0, 0.0, 0.01, 0.03, 0.05, 0.09, 0.15, 0.31, 0.31, 0.05]
+
+
+def _rubric(count: int) -> ScoreQuestion:
+    return ScoreQuestion("Rate it.", [f"Level {index}" for index in range(count)])
+
+
+def _score_answer(probabilities: list[float], score: float) -> JsonObject:
+    return {
+        "type": "score",
+        "score": score,
+        "probabilities": {
+            str(index): probability for index, probability in enumerate(probabilities)
+        },
+    }
+
+
+def _score_client(
+    tmp_path: Path,
+    answers: JsonObject,
+    *,
+    probability_tolerance: float = 1e-6,
+) -> DecisionModelClient:
+    response = HttpResponse(
+        status_code=200,
+        headers={"Content-Type": "application/json"},
+        body=_json_body({"answers": answers}),
+    )
+    return _client(
+        tmp_path,
+        FixedTransport(response),
+        endpoint=_endpoint(probability_tolerance=probability_tolerance),
+    )
+
+
+def _rounded(weights: list[int], places: int) -> tuple[list[float], float]:
+    """Report a distribution and its expected level as a rounding endpoint does.
+
+    Each probability is rounded to ``places`` with the residual given to the
+    largest remainders, so the reported distribution sums to exactly one, and
+    the score is the unrounded expected level rounded to the same places.
+    """
+
+    scale = 10**places
+    total = sum(weights)
+    exact = [Fraction(weight * scale, total) for weight in weights]
+    units = [math.floor(value) for value in exact]
+    by_remainder = sorted(
+        range(len(exact)), key=lambda index: units[index] - exact[index]
+    )
+    for index in by_remainder[: scale - sum(units)]:
+        units[index] += 1
+    level = (
+        sum((index * value for index, value in enumerate(exact)), Fraction(0)) / scale
+    )
+    return [unit / scale for unit in units], float(round(level, places))
+
+
+def _full_precision(count: int) -> tuple[list[float], float]:
+    rng = random.Random(count)
+    weights = [rng.random() for _ in range(count)]
+    total = math.fsum(weights)
+    probabilities = [weight / total for weight in weights]
+    level = math.fsum(index * value for index, value in enumerate(probabilities))
+    return probabilities, level
+
+
+@pytest.mark.parametrize("places", [1, 2, 3, 4])
+@pytest.mark.parametrize("probability_tolerance", [1e-6, 0.0])
+def test_score_answers_rounded_by_the_endpoint_are_accepted(
+    tmp_path: Path,
+    places: int,
+    probability_tolerance: float,
+) -> None:
+    rng = random.Random(places)
+    questions: dict[str, DecisionQuestion] = {}
+    answers: JsonObject = {}
+    for count in (*range(2, 11), 255):
+        for trial in range(25):
+            power = rng.choice((1, 2, 4))
+            weights = [rng.randint(1, 1000) ** power for _ in range(count)]
+            probabilities, score = _rounded(weights, places)
+            # Decimals that sum to one need not sum to one as binary values,
+            # and a zero tolerance refuses such a sum before any score check.
+            if probability_tolerance == 0 and math.fsum(probabilities) != 1:
+                continue
+            question_id = f"levels-{count}-{trial}"
+            questions[question_id] = _rubric(count)
+            answers[question_id] = _score_answer(probabilities, score)
+    client = _score_client(
+        tmp_path, answers, probability_tolerance=probability_tolerance
+    )
+
+    attempt = client.ask(STATE, questions)
+
+    assert set(attempt.answers) == set(questions)
+
+
+def test_a_ten_level_score_rounded_to_two_places_is_accepted(tmp_path: Path) -> None:
+    client = _score_client(tmp_path, {"rating": _score_answer(TEN_LEVELS, 6.78)})
+
+    rating = client.ask(STATE, {"rating": _rubric(10)}).answers["rating"]
+
+    assert list(rating.probabilities.values()) == TEN_LEVELS
+    assert rating.expected_level == pytest.approx(6.76)
+
+
+FULL_PRECISION, FULL_PRECISION_LEVEL = _full_precision(10)
+
+# Each case states the allowance, tolerance * (count - 1) plus count**2 // 4
+# units of the finest probability place plus one unit of the score's place,
+# and what a different allowance would decide.
+ACCEPTED_SCORES: dict[str, tuple[list[float], float, float]] = {
+    # 0.02 is within 9e-6 + 25 * 0.01 + 0.01.
+    "ten-levels": (TEN_LEVELS, 6.78, 1e-6),
+    # 0.26 is within 0.260009, which count - 1 for count**2 // 4 makes 0.100009.
+    "level-shift-bound": (TEN_LEVELS, 7.02, 1e-6),
+    # 0.2500091 is exactly 9e-6 + 25 * 0.01 + 1e-7, which floats put past it.
+    "exact-edge": (TEN_LEVELS, 7.0100091, 1e-6),
+    # 0.011 is exactly 0.001 + 0.01 with no tolerance, which floats put past it.
+    "exact-edge-without-tolerance": ([0.221, 0.779], 0.79, 0.0),
+    # 0.05 is within 1e-6 + 0.01 + 0.1, but not without the score's own place.
+    "score-place": ([0.25, 0.75], 0.8, 1e-6),
+    # 0.021 is within 2e-6 + 2 * 0.01 + 0.001: three levels allow two units.
+    "odd-count": ([0.25, 0.5, 0.25], 1.021, 1e-6),
+    # Full precision leaves 9e-6 and a negligible rounding allowance.
+    "full-precision": (FULL_PRECISION, FULL_PRECISION_LEVEL, 1e-6),
+}
+
+REFUSED_SCORES: dict[str, tuple[list[float], float, float]] = {
+    # 0.27 is beyond 0.260009, which count * (count - 1) // 2 makes 0.460009.
+    "just-beyond": (TEN_LEVELS, 7.03, 1e-6),
+    "just-beyond-below": (TEN_LEVELS, 6.49, 1e-6),
+    "one-unit-past-exact-edge": (TEN_LEVELS, 7.0100092, 1e-6),
+    # 0.022 is beyond 0.021002; nine over four not rounded down makes 0.023502.
+    "odd-count-rounds-down": ([0.25, 0.5, 0.25], 1.022, 1e-6),
+    # 9 - 6.76 reads the expected level off the reversed scale.
+    "reversed-scale": (TEN_LEVELS, 2.24, 1e-6),
+    # 0.01 is beyond 2e-6 + 2 * 0.001 + 0.001; at the coarsest place, 0.201002.
+    "finest-probability-place": ([0.5, 0.125, 0.375], 0.885, 1e-6),
+    # 4e-5 is beyond 1e-6 + 1e-5 + 1e-5; read without its exponent, 5e-05 adds 0.1.
+    "score-exponent": ([0.99999, 1e-05], 5e-05, 1e-6),
+    # 0.01 is beyond 2e-6 + 2 * 1e-7 + 1e-7; read without its exponent, 1e-07
+    # makes the finest place 0.1.
+    "probability-exponent": ([0.5, 0.5, 1e-07], 0.5100002, 1e-6),
+    # JSON integers have one place, so 1 is beyond 2e-6 + 2 * 0.1 + 0.1.
+    "integer-distribution": ([0, 1, 0], 2, 1e-6),
+    # 1e+16 has one place, not minus sixteen, so its unit is 0.1.
+    "score-with-positive-exponent": ([0.5, 0.5], 1e16, 1e-6),
+    # Full precision leaves essentially 9e-6.
+    "full-precision-off-by-1e-5": (FULL_PRECISION, FULL_PRECISION_LEVEL + 1e-5, 1e-6),
+    "full-precision-off-by-1e-4": (FULL_PRECISION, FULL_PRECISION_LEVEL + 1e-4, 1e-6),
+}
+
+
+@pytest.mark.parametrize("case", sorted(ACCEPTED_SCORES))
+def test_scores_within_the_places_an_answer_reports_are_accepted(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    probabilities, score, tolerance = ACCEPTED_SCORES[case]
+    client = _score_client(
+        tmp_path,
+        {"rating": _score_answer(probabilities, score)},
+        probability_tolerance=tolerance,
+    )
+
+    attempt = client.ask(STATE, {"rating": _rubric(len(probabilities))})
+
+    assert list(attempt.answers["rating"].probabilities.values()) == probabilities
+
+
+@pytest.mark.parametrize("case", sorted(REFUSED_SCORES))
+def test_scores_beyond_the_places_an_answer_reports_are_refused(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    probabilities, score, tolerance = REFUSED_SCORES[case]
+    client = _score_client(
+        tmp_path,
+        {"rating": _score_answer(probabilities, score)},
+        probability_tolerance=tolerance,
+    )
+
+    with pytest.raises(DecisionModelError) as error:
+        client.ask(STATE, {"rating": _rubric(len(probabilities))})
+
+    assert error.value.failure is InferenceFailure.RESPONSE_SCHEMA
+    assert error.value.detail == "decision answer 'rating' was not a valid score answer"
+
+
+def test_a_score_the_float_comparison_accepts_stays_accepted(tmp_path: Path) -> None:
+    probabilities = [0.356, 0.24, 0.2, 0.20400000000000001]
+    score = 1.2520030000000002
+    # In exact decimals the score sits just beyond 3e-6 plus the rounding
+    # allowance of its sixteen places and the distribution's seventeen, but
+    # it is within the tolerance compared in floats, so it is accepted.
+    level = sum(
+        (index * Fraction(repr(value)) for index, value in enumerate(probabilities)),
+        Fraction(0),
+    )
+    allowance = Fraction(3, 10**6) + Fraction(4, 10**17) + Fraction(1, 10**16)
+    assert Fraction(repr(score)) - level > allowance
+    client = _score_client(tmp_path, {"rating": _score_answer(probabilities, score)})
+
+    attempt = client.ask(STATE, {"rating": _rubric(4)})
+
+    assert list(attempt.answers["rating"].probabilities.values()) == probabilities
+
+
+def test_a_rounded_score_asked_in_reversed_order_maps_to_declared_levels(
+    tmp_path: Path,
+) -> None:
+    question = _rubric(10)
+    # The levels are shown highest first, so 9 - 6.78 is the rounded score.
+    answer = _score_answer(TEN_LEVELS[::-1], 2.22)
+    answer["legend"] = {
+        str(index): level for index, level in enumerate(question.levels[::-1])
+    }
+    client = _score_client(tmp_path, {"rating": answer})
+
+    attempt = client.ask(STATE, {"rating": question}, order=OptionOrder.REVERSED)
+
+    rating = attempt.answers["rating"]
+    assert list(rating.probabilities) == [str(index) for index in range(10)]
+    assert list(rating.probabilities.values()) == TEN_LEVELS
+    assert rating.expected_level == pytest.approx(6.76)
 
 
 def _chat_profile() -> StructuredOutputProfile:
