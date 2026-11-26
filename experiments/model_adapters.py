@@ -19,6 +19,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final, cast
 
+import itself.inference as shipped_inference
 from experiments._schema_validation import contract_schema
 from experiments.diagnostician import (
     CONTRACT_VERSION,
@@ -75,10 +76,6 @@ CONSTRAINED_SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_3_0"
 
 _CONTRACT_ROOT: Final = Path(__file__).resolve().parent / "contracts" / "v1"
 _ASSERTION_SCHEMA_PATH: Final = _CONTRACT_ROOT / "diagnosis-assertion.schema.json"
-# Registered manifests bound each read with ``execution.timeout_seconds`` and
-# register no total deadline, so the shipped client's default deadline would
-# be an unregistered change to how a registered request runs.
-_REGISTERED_DEADLINE_SECONDS: Final = None
 _IDENTIFIER_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_HEADERS: Final = frozenset(
@@ -199,8 +196,102 @@ def _adapter_error(error: InferenceError) -> ModelAdapterError:
 
 
 @dataclass(frozen=True, slots=True)
+class ShippedAdapterIdentity:
+    """The id and version that the shipped ``itself.inference`` client reports."""
+
+    adapter_id: str
+    adapter_version: str
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("adapter_id", self.adapter_id),
+            ("adapter_version", self.adapter_version),
+        ):
+            if not value or value != value.strip():
+                raise ValueError(
+                    f"shipped {name} must be non-empty without outer space"
+                )
+
+    def to_json_object(self) -> JsonObject:
+        """Return the identity as a study record holds it."""
+
+        return {"adapter_id": self.adapter_id, "adapter_version": self.adapter_version}
+
+    @classmethod
+    def from_json_object(cls, value: JsonValue, field: str) -> ShippedAdapterIdentity:
+        """Read an identity that a study record pins or records."""
+
+        if not isinstance(value, dict):
+            raise TypeError(f"{field} must be a JSON object")
+        adapter_id = value.get("adapter_id")
+        adapter_version = value.get("adapter_version")
+        if not isinstance(adapter_id, str) or not isinstance(adapter_version, str):
+            raise TypeError(f"{field} must hold string adapter_id and adapter_version")
+        return cls(adapter_id=adapter_id, adapter_version=adapter_version)
+
+
+def running_shipped_adapter() -> ShippedAdapterIdentity:
+    """Return the identity of the shipped client in this process, read now.
+
+    The shipped client stamps these module values on each result it returns
+    and sends its version in each request's User-Agent, so they name the
+    client that executes a request.  ``SHIPPED_ADAPTER_VERSION`` instead
+    names the client this binding version was last verified against.
+    """
+
+    return ShippedAdapterIdentity(
+        adapter_id=shipped_inference.ADAPTER_ID,
+        adapter_version=shipped_inference.ADAPTER_VERSION,
+    )
+
+
+class StatusObservingTransport:
+    """Send through another transport and keep the last response status.
+
+    The shipped client names a status only when it is not 2xx, so a v2 study
+    record takes it from here, where every response the transport returns
+    passes, including one whose status lies outside 100-599.  A response the
+    transport itself rejects, such as one over the byte limit, never reaches
+    this boundary, so its status stays unknown.
+    """
+
+    __slots__ = ("_request_sent", "_status_code", "_transport")
+
+    def __init__(self, transport: HttpTransport) -> None:
+        self._transport: HttpTransport = transport
+        self._request_sent = False
+        self._status_code: int | None = None
+
+    @property
+    def request_sent(self) -> bool:
+        """Whether a request has been handed to the wrapped transport."""
+
+        return self._request_sent
+
+    @property
+    def status_code(self) -> int | None:
+        """Return the last observed status, or ``None`` if no response arrived."""
+
+        return self._status_code
+
+    def send(self, request: HttpRequest, /) -> HttpResponse:
+        """Send one request and remember the status of its response."""
+
+        self._request_sent = True
+        response = self._transport.send(request)
+        self._status_code = response.status_code
+        return response
+
+
+@dataclass(frozen=True, slots=True)
 class OpenAIChatEndpoint:
-    """Legacy trial configuration bound to the generic compatible endpoint."""
+    """Legacy trial configuration bound to the generic compatible endpoint.
+
+    ``deadline_seconds`` bounds a whole request, where ``timeout_seconds``
+    bounds each read.  It defaults to ``None`` rather than the shipped
+    client's default, because a v1 manifest registers no deadline and a
+    deadline it does not record would change how its requests run.
+    """
 
     actor_id: str
     base_url: str
@@ -217,6 +308,7 @@ class OpenAIChatEndpoint:
         default_factory=_empty_body,
         repr=False,
     )
+    deadline_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if _IDENTIFIER_PATTERN.fullmatch(self.actor_id) is None:
@@ -261,7 +353,7 @@ class OpenAIChatEndpoint:
             stream=self.stream,
             extra_headers=headers,
             extra_body=body,
-            deadline_seconds=_REGISTERED_DEADLINE_SECONDS,
+            deadline_seconds=self.deadline_seconds,
         )
         object.__setattr__(self, "base_url", compatible.base_url)
         object.__setattr__(
@@ -294,7 +386,7 @@ class OpenAIChatEndpoint:
             stream=self.stream,
             extra_headers=self.extra_headers,
             extra_body=self.extra_body,
-            deadline_seconds=_REGISTERED_DEADLINE_SECONDS,
+            deadline_seconds=self.deadline_seconds,
         )
 
 

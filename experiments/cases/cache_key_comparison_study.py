@@ -17,6 +17,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
+from experiments._study_contracts import (
+    STREAM_USAGE_OPTION,
+    V1_CONTRACT,
+    V2_CONTRACT,
+    StudyContract,
+    stream_usage_request,
+)
 from experiments.comparison_manifests import (
     ComparisonManifestValidationError,
     ComparisonManifestValidator,
@@ -24,9 +31,9 @@ from experiments.comparison_manifests import (
     load_comparison_manifest,
 )
 from experiments.diagnostician import DiagnosisRequest
-from experiments.model_adapters import OpenAIChatEndpoint
+from experiments.model_adapters import OpenAIChatEndpoint, ShippedAdapterIdentity
 from experiments.trial_manifests import canonical_json_bytes
-from itself import JsonObject, StrPath
+from itself import JsonObject, JsonValue, StrPath
 from itself._filesystem import publish_path_no_replace, write_file_exclusive
 
 from .cache_key_comparison import build_comparison_request
@@ -66,7 +73,12 @@ _GENERAL_LIMITATIONS: Final = (
 
 @dataclass(frozen=True, slots=True)
 class ComparisonStudyTarget:
-    """One exact provider/model cell and its public provenance classification."""
+    """One exact provider/model cell and its public provenance classification.
+
+    ``contract`` is the study contract its manifests use.  A v2 target also
+    pins the shipped client, may ask a stream for its token usage, and may
+    bound each request with a deadline; a v1 target does none of these.
+    """
 
     study_version: Literal["1", "2", "3", "4", "5"]
     target_id: str
@@ -80,10 +92,30 @@ class ComparisonStudyTarget:
     license_name: str | None
     stream: bool
     expected_observation_values: tuple[str, ...] = ()
+    contract: StudyContract = V1_CONTRACT
+    shipped_adapter: ShippedAdapterIdentity | None = None
+    stream_include_usage: bool = False
+    deadline_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.stream) is not bool:
             raise ValueError("stream must be a boolean")
+        if self.contract is V2_CONTRACT:
+            if self.shipped_adapter is None:
+                raise ValueError("a v2 target must pin its shipped client")
+            if self.stream_include_usage and not self.stream:
+                raise ValueError("only a streamed target can ask for stream usage")
+        elif self.contract is V1_CONTRACT:
+            if (
+                self.shipped_adapter is not None
+                or self.stream_include_usage
+                or self.deadline_seconds is not None
+            ):
+                raise ValueError(
+                    "a v1 target records no shipped client, stream usage, or deadline"
+                )
+        else:
+            raise ValueError(f"unsupported study contract {self.contract!r}")
         if any(
             not value or value != value.strip()
             for value in self.expected_observation_values
@@ -122,6 +154,12 @@ class ComparisonStudyTarget:
     def endpoint(self) -> OpenAIChatEndpoint:
         """Construct the public endpoint configuration bound by the manifest."""
 
+        extra_body: dict[str, JsonValue] = {
+            "temperature": TEMPERATURE,
+            "top_p": TOP_P,
+        }
+        if self.stream_include_usage:
+            extra_body[STREAM_USAGE_OPTION] = stream_usage_request()
         return OpenAIChatEndpoint(
             actor_id=self.actor_id,
             base_url=self.base_url,
@@ -130,10 +168,8 @@ class ComparisonStudyTarget:
             timeout_seconds=TIMEOUT_SECONDS,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             stream=self.stream,
-            extra_body={
-                "temperature": TEMPERATURE,
-                "top_p": TOP_P,
-            },
+            extra_body=extra_body,
+            deadline_seconds=self.deadline_seconds,
         )
 
 
@@ -417,6 +453,8 @@ def build_study_manifest(
         study_phase="preregistered_study",
         limitations=limitations,
         expected_observation_values=target.expected_observation_values,
+        contract=target.contract,
+        shipped_adapter=target.shipped_adapter,
     )
 
 

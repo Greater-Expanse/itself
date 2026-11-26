@@ -22,6 +22,7 @@ from experiments._bundle_validation import (
     FILE_BYTE_LIMIT,
     LEDGER_BYTE_LIMIT,
     RECEIPT_BYTE_LIMIT,
+    RecordingArtifactSink,
     close_staging,
     read_regular_file,
     receipt_recomputes,
@@ -53,6 +54,15 @@ from experiments._contract_values import object_value as _object
 from experiments._contract_values import string_value as _string
 from experiments._contract_values import string_values as _strings
 from experiments._schema_validation import contract_validator
+from experiments._study_contracts import (
+    V1_CONTRACT,
+    V2_CONTRACT,
+    RunnerFailure,
+    StudyContract,
+    UnsupportedStudyContractError,
+    declared_contract,
+    pinned_shipped_adapter,
+)
 from experiments.cases.cache_key_comparison import (
     NARRATIVE_ATTEMPT_ID,
     STRUCTURED_ATTEMPT_ID,
@@ -61,7 +71,10 @@ from experiments.cases.cache_key_comparison import (
     ComparisonCondition,
     project_comparative_results,
 )
-from experiments.comparison_manifests import ComparisonManifestValidator
+from experiments.comparison_manifests import (
+    ComparisonManifestValidator,
+    comparison_manifest_contract,
+)
 from experiments.diagnostician import (
     DiagnosisRequest,
     DiagnosisResult,
@@ -69,8 +82,11 @@ from experiments.diagnostician import (
     RawOutputArtifact,
 )
 from experiments.model_adapters import (
-    DirectoryArtifactSink,
+    HttpTransport,
     ModelAdapterError,
+    ShippedAdapterIdentity,
+    StatusObservingTransport,
+    running_shipped_adapter,
 )
 from experiments.narrative_diagnostician import (
     NarrativeContractValidator,
@@ -93,12 +109,11 @@ from itself.receipts import (
     canonical_ledger_bytes,
 )
 
-COMPARISON_BUNDLE_VERSION: Final = "0.2.0"
-COMPARISON_ATTEMPT_REPORT_VERSION: Final = "0.2.0"
+COMPARISON_BUNDLE_VERSION: Final = V1_CONTRACT.document_version
+COMPARISON_ATTEMPT_REPORT_VERSION: Final = V1_CONTRACT.document_version
 
-_CONTRACT_ROOT: Final = Path(__file__).resolve().parent / "contracts" / "v1"
-_BUNDLE_SCHEMA_PATH: Final = _CONTRACT_ROOT / "comparison-bundle.schema.json"
-_ATTEMPT_SCHEMA_PATH: Final = _CONTRACT_ROOT / "comparison-attempt-report.schema.json"
+_BUNDLE_SCHEMA: Final = "comparison-bundle"
+_ATTEMPT_SCHEMA: Final = "comparison-attempt-report"
 _BUNDLE_MANIFEST_NAME: Final = "bundle.json"
 _COMPARISON_MANIFEST_NAME: Final = "comparison-manifest.json"
 _ATTEMPT_REPORT_NAME: Final = "attempt-report.json"
@@ -107,6 +122,11 @@ _STRUCTURED_RESULT_PATH: Final = f"attempts/{STRUCTURED_ATTEMPT_ID}/result.json"
 _NARRATIVE_ARTIFACT_PREFIX: Final = f"attempts/{NARRATIVE_ATTEMPT_ID}/private"
 _STRUCTURED_ARTIFACT_PREFIX: Final = f"attempts/{STRUCTURED_ATTEMPT_ID}/private"
 _BRANCH_NAMES: Final = tuple(condition.value for condition in ComparisonCondition)
+# A v2 bundle also records a failure of the runner after a request.
+_FAILED_OUTCOMES: Final = {
+    V1_CONTRACT: ("adapter_failed",),
+    V2_CONTRACT: ("adapter_failed", "runner_failed"),
+}
 
 
 class _SchemaValidator(Protocol):
@@ -128,6 +148,51 @@ def _load_json_object(path: Path) -> JsonObject:
         path,
         error_type=ComparisonBundleValidationError,
     )
+
+
+def _document_contract(document: JsonValue, version_field: str) -> StudyContract:
+    try:
+        return declared_contract(document, version_field)
+    except UnsupportedStudyContractError as error:
+        raise ComparisonBundleValidationError(str(error)) from None
+
+
+def _schema_issues(
+    document: JsonValue,
+    *,
+    version_field: str,
+    schema: str,
+) -> list[str]:
+    try:
+        contract = declared_contract(document, version_field)
+    except UnsupportedStudyContractError as error:
+        return [str(error)]
+    validator: _SchemaValidator = contract_validator(contract.schema_path(schema))
+    issues = sorted(
+        validator.iter_errors(document),
+        key=lambda error: tuple(str(item) for item in error.absolute_path),
+    )
+    return [
+        f"{_format_path(tuple(issue.absolute_path))}: {issue.message}"
+        for issue in issues
+    ]
+
+
+def _require_pinned_shipped_adapter(
+    recorded: JsonValue,
+    manifest: JsonObject,
+    *,
+    label: str,
+) -> None:
+    identity = ShippedAdapterIdentity.from_json_object(
+        recorded,
+        f"{label}.shipped_adapter",
+    )
+    if identity != pinned_shipped_adapter(manifest):
+        raise ComparisonBundleValidationError(
+            f"{label} shipped_adapter does not match the client its comparison "
+            "manifest pins"
+        )
 
 
 def _artifact_sha256(path: Path) -> str:
@@ -171,6 +236,26 @@ def _file_entry(
 
 def _branch_path(condition: ComparisonCondition, filename: str) -> str:
     return f"branches/{condition.value}/{filename}"
+
+
+def _artifact_prefix(attempt_id: str) -> str:
+    prefix = {
+        NARRATIVE_ATTEMPT_ID: _NARRATIVE_ARTIFACT_PREFIX,
+        STRUCTURED_ATTEMPT_ID: _STRUCTURED_ARTIFACT_PREFIX,
+    }.get(attempt_id)
+    if prefix is None:
+        raise ValueError(f"unsupported comparison attempt {attempt_id!r}")
+    return prefix
+
+
+def _require_narrative_for(
+    attempt_id: str,
+    narrative_result: NarrativeResult | None,
+) -> None:
+    if (attempt_id == STRUCTURED_ATTEMPT_ID) is (narrative_result is None):
+        raise ComparisonBundleValidationError(
+            "structured failure requires the completed narrative result"
+        )
 
 
 def _attempt_profile_id(manifest: JsonObject, attempt_id: str) -> str:
@@ -239,41 +324,31 @@ class VerifiedFailedComparisonBundle:
 
 
 class ComparisonBundleValidator:
-    """Validate inventory, bindings, projections, scorecards, and receipts."""
+    """Validate inventory, bindings, projections, scorecards, and receipts.
 
-    def __init__(self) -> None:
-        self._bundle_validator: _SchemaValidator = contract_validator(
-            _BUNDLE_SCHEMA_PATH
-        )
-        self._attempt_validator: _SchemaValidator = contract_validator(
-            _ATTEMPT_SCHEMA_PATH
-        )
-
-    @staticmethod
-    def _errors(
-        validator: _SchemaValidator,
-        value: JsonValue,
-    ) -> list[str]:
-        issues = sorted(
-            validator.iter_errors(value),
-            key=lambda error: tuple(str(item) for item in error.absolute_path),
-        )
-        return [
-            f"{_format_path(tuple(issue.absolute_path))}: {issue.message}"
-            for issue in issues
-        ]
+    Each document is validated by the schema its own version declares, and a
+    bundle's manifest and attempt report must declare the bundle's version.
+    """
 
     def validate_manifest(self, bundle_manifest: JsonValue) -> None:
         """Validate comparison bundle metadata against its schema."""
 
-        issues = self._errors(self._bundle_validator, bundle_manifest)
+        issues = _schema_issues(
+            bundle_manifest,
+            version_field="bundle_version",
+            schema=_BUNDLE_SCHEMA,
+        )
         if issues:
             raise ComparisonBundleValidationError("\n".join(issues))
 
     def validate_attempt_report(self, attempt_report: JsonValue) -> None:
         """Validate one sanitized failed-attempt report."""
 
-        issues = self._errors(self._attempt_validator, attempt_report)
+        issues = _schema_issues(
+            attempt_report,
+            version_field="attempt_report_version",
+            schema=_ATTEMPT_SCHEMA,
+        )
         if issues:
             raise ComparisonBundleValidationError("\n".join(issues))
 
@@ -282,14 +357,28 @@ class ComparisonBundleValidator:
         attempt_report: JsonObject,
         manifest: JsonObject,
     ) -> None:
-        """Validate a failure report and bind its profile to its manifest."""
+        """Validate a failure report and bind its profile to its manifest.
+
+        A v2 report must also name the shipped client the manifest pins.
+        """
 
         self.validate_attempt_report(attempt_report)
+        contract = comparison_manifest_contract(manifest)
+        if _document_contract(attempt_report, "attempt_report_version") is not contract:
+            raise ComparisonBundleValidationError(
+                "attempt report version does not match the comparison manifest"
+            )
         attempt_id = _string(attempt_report["attempt_id"], "attempt_id")
         expected_profile_id = _attempt_profile_id(manifest, attempt_id)
         if attempt_report["profile_id"] != expected_profile_id:
             raise ComparisonBundleValidationError(
                 "attempt report profile does not match the comparison manifest"
+            )
+        if contract is V2_CONTRACT:
+            _require_pinned_shipped_adapter(
+                attempt_report["shipped_adapter"],
+                manifest,
+                label="attempt report",
             )
 
     def _validate_inventory(self, root: Path) -> _ValidatedInventory:
@@ -336,6 +425,17 @@ class ComparisonBundleValidator:
         manifest = _load_json_object(root / _COMPARISON_MANIFEST_NAME)
         ComparisonManifestValidator().validate(manifest)
         bundle = inventory.bundle_manifest
+        contract = comparison_manifest_contract(manifest)
+        if contract is not _document_contract(bundle, "bundle_version"):
+            raise ComparisonBundleValidationError(
+                "bundle_version does not match its comparison manifest's version"
+            )
+        if contract is V2_CONTRACT:
+            _require_pinned_shipped_adapter(
+                bundle["shipped_adapter"],
+                manifest,
+                label="bundle",
+            )
         if bundle["comparison_series_id"] != manifest["comparison_series_id"]:
             raise ComparisonBundleValidationError(
                 "bundle comparison_series_id does not match its manifest"
@@ -567,14 +667,19 @@ class ComparisonBundleValidator:
         path: StrPath,
         request: DiagnosisRequest,
     ) -> VerifiedFailedComparisonBundle:
-        """Verify a stopped comparison and its sanitized failure boundary."""
+        """Verify a stopped comparison and its sanitized failure boundary.
+
+        Under v1 the stop is an adapter failure; v2 also records a runner
+        failure after a request was sent.
+        """
 
         root = Path(path)
         inventory = self._validate_inventory(root)
         bundle = inventory.bundle_manifest
-        if bundle["outcome"] != "adapter_failed":
+        failed_outcomes = _FAILED_OUTCOMES[_document_contract(bundle, "bundle_version")]
+        if bundle["outcome"] not in failed_outcomes:
             raise ComparisonBundleValidationError(
-                "comparison bundle outcome is not adapter_failed"
+                "comparison bundle outcome is not " + " or ".join(failed_outcomes)
             )
         manifest = self._comparison_manifest(root, inventory)
         self._require_entry(
@@ -589,10 +694,14 @@ class ComparisonBundleValidator:
             raise ComparisonBundleValidationError(
                 "attempt report series does not match the comparison manifest"
             )
+        if attempt_report["outcome"] != bundle["outcome"]:
+            raise ComparisonBundleValidationError(
+                "attempt report outcome does not match its bundle"
+            )
 
         outcomes = _object(bundle["attempt_outcomes"], "attempt_outcomes")
         failed_attempt = _string(attempt_report["attempt_id"], "attempt_id")
-        if outcomes.get(failed_attempt) != "adapter_failed":
+        if outcomes.get(failed_attempt) != bundle["outcome"]:
             raise ComparisonBundleValidationError(
                 "attempt report does not identify the declared failed attempt"
             )
@@ -692,6 +801,13 @@ class ComparisonBundleBuilder:
     Once staging holds a captured response, an exception never deletes it:
     the staging directory is renamed to ``<destination>.quarantined`` and an
     ``AttemptQuarantinedError`` names that path.
+
+    The bundle has the version of its manifest.  A v2 bundle records the
+    shipped client that ran, takes a failed attempt's status from the
+    transport that ``observed_transport`` returns for that attempt, and
+    records a runner failure after a request with ``fail_runner``.
+    Quarantine is then left for a replicate whose failure bundle cannot
+    itself be published.
     """
 
     def __init__(
@@ -717,12 +833,16 @@ class ComparisonBundleBuilder:
                 "comparison builder requires private raw-response retention"
             )
         self._manifest = deepcopy(comparison_manifest)
+        self._contract = comparison_manifest_contract(comparison_manifest)
         self._request = request
         self._replicate_index = replicate_index
         self._now = now
         self._created_at = _timestamp(now())
         self._staging: Path | None = None
         self._published = False
+        self._sinks: dict[str, RecordingArtifactSink] = {}
+        self._observers: dict[str, StatusObservingTransport] = {}
+        self._written: list[Path] = []
 
     def __enter__(self) -> ComparisonBundleBuilder:
         if self._staging is not None or self._published:
@@ -756,23 +876,88 @@ class ComparisonBundleBuilder:
             raise ComparisonBundleStateError("comparison bundle builder is not active")
         return self._staging
 
-    def _artifact_sink(self, prefix: str) -> DirectoryArtifactSink:
+    def _artifact_sink(self, prefix: str) -> RecordingArtifactSink:
         root = self._active_root()
         artifact_root = root / _normalized_relative_path(prefix)
         ensure_private_directory(root, artifact_root)
-        return DirectoryArtifactSink(artifact_root, uri_prefix=prefix)
+        sink = self._sinks.get(prefix)
+        if sink is None:
+            sink = RecordingArtifactSink(artifact_root, uri_prefix=prefix)
+            self._sinks[prefix] = sink
+        return sink
 
     @property
-    def narrative_artifact_sink(self) -> DirectoryArtifactSink:
+    def narrative_artifact_sink(self) -> RecordingArtifactSink:
         """Return the raw-response sink for the narrative attempt."""
 
         return self._artifact_sink(_NARRATIVE_ARTIFACT_PREFIX)
 
     @property
-    def structured_artifact_sink(self) -> DirectoryArtifactSink:
+    def structured_artifact_sink(self) -> RecordingArtifactSink:
         """Return the raw-response sink for the structured attempt."""
 
         return self._artifact_sink(_STRUCTURED_ARTIFACT_PREFIX)
+
+    def observed_transport(
+        self,
+        transport: HttpTransport,
+        *,
+        attempt_id: str,
+    ) -> HttpTransport:
+        """Return ``transport`` wrapped so a v2 bundle records one attempt.
+
+        The attempt's request must be sent through the returned transport: a
+        v2 failed attempt keeps the status it observed.
+        """
+
+        self._active_root()
+        _artifact_prefix(attempt_id)
+        if self._contract is not V2_CONTRACT:
+            raise ComparisonBundleStateError(
+                "only a v0.3.0 comparison bundle records an observed status"
+            )
+        if attempt_id in self._observers:
+            raise ComparisonBundleStateError(
+                f"attempt {attempt_id!r} already has an observed transport"
+            )
+        observer = StatusObservingTransport(transport)
+        self._observers[attempt_id] = observer
+        return observer
+
+    @property
+    def records_runner_failure(self) -> bool:
+        """Whether ``fail_runner`` would now publish a runner-failed bundle.
+
+        That needs an unpublished v2 bundle that has sent a request; before
+        the first request there is no attempt to keep.
+        """
+
+        return (
+            self._contract is V2_CONTRACT
+            and self._staging is not None
+            and not self._published
+            and any(observer.request_sent for observer in self._observers.values())
+        )
+
+    def _write(self, path: Path, content: bytes) -> None:
+        # The path is noted first, so a write that fails part-way is removed
+        # with the rest when a runner failure replaces what was written.
+        self._written.append(path)
+        _write_private_bytes(self._active_root(), path, content)
+
+    def _discard_written(self) -> None:
+        for path in reversed(self._written):
+            path.unlink(missing_ok=True)
+        self._written.clear()
+
+    def _observed_status(self, attempt_id: str) -> int | None:
+        observer = self._observers.get(attempt_id)
+        if observer is None:
+            raise ComparisonBundleStateError(
+                "a v0.3.0 comparison bundle records the observed status, so "
+                f"attempt {attempt_id!r} must send through observed_transport"
+            )
+        return observer.status_code
 
     def _require_captured_artifact(
         self,
@@ -795,7 +980,7 @@ class ComparisonBundleBuilder:
         ledger_path = _branch_path(branch.condition, "ledger.jsonl")
         scorecard_path = _branch_path(branch.condition, "scorecard.json")
         receipt_path = _branch_path(branch.condition, "reasoning-receipt.json")
-        # A v1 bundle records only receipts that recompute, so a branch whose
+        # A bundle records only receipts that recompute, so a branch whose
         # receipt does not is a failure that keeps its captured responses.
         if not (
             branch.scorecard.receipt_recomputes
@@ -810,18 +995,15 @@ class ComparisonBundleBuilder:
             raise ComparisonBundleValidationError(
                 f"{branch.condition.value} scorecard differs from registered metrics"
             )
-        _write_private_bytes(
-            root,
+        self._write(
             root / _normalized_relative_path(ledger_path),
             canonical_ledger_bytes(branch.ledger),
         )
-        _write_private_bytes(
-            root,
+        self._write(
             root / _normalized_relative_path(scorecard_path),
             _pretty_json_bytes(scorecard),
         )
-        _write_private_bytes(
-            root,
+        self._write(
             root / _normalized_relative_path(receipt_path),
             _pretty_json_bytes(branch.receipt),
         )
@@ -858,7 +1040,7 @@ class ComparisonBundleBuilder:
     ) -> JsonObject:
         files_json: list[JsonValue] = [entry for entry in files]
         without_id: JsonObject = {
-            "bundle_version": COMPARISON_BUNDLE_VERSION,
+            "bundle_version": self._contract.document_version,
             "comparison_series_id": self._manifest["comparison_series_id"],
             "replicate_index": self._replicate_index,
             "outcome": outcome,
@@ -869,6 +1051,8 @@ class ComparisonBundleBuilder:
             "branch_bindings": branch_bindings,
             "files": files_json,
         }
+        if self._contract is V2_CONTRACT:
+            without_id["shipped_adapter"] = running_shipped_adapter().to_json_object()
         bundle_id = (
             "urn:sha256:" + hashlib.sha256(canonical_json_bytes(without_id)).hexdigest()
         )
@@ -876,11 +1060,7 @@ class ComparisonBundleBuilder:
 
     def _publish(self, bundle_manifest: JsonObject) -> JsonObject:
         root = self._active_root()
-        _write_private_bytes(
-            root,
-            root / _BUNDLE_MANIFEST_NAME,
-            _pretty_json_bytes(bundle_manifest),
-        )
+        self._write(root / _BUNDLE_MANIFEST_NAME, _pretty_json_bytes(bundle_manifest))
         ComparisonBundleValidator().validate(root, self._request)
         directories = sorted(
             (path for path in root.rglob("*") if path.is_dir()),
@@ -920,18 +1100,15 @@ class ComparisonBundleBuilder:
             expected_prefix=_STRUCTURED_ARTIFACT_PREFIX,
         )
         root = self._active_root()
-        _write_private_bytes(
-            root,
+        self._write(
             root / _COMPARISON_MANIFEST_NAME,
             _pretty_json_bytes(self._manifest),
         )
-        _write_private_bytes(
-            root,
+        self._write(
             root / _normalized_relative_path(_NARRATIVE_RESULT_PATH),
             _pretty_json_bytes(result.narrative_result.to_json_object()),
         )
-        _write_private_bytes(
-            root,
+        self._write(
             root / _normalized_relative_path(_STRUCTURED_RESULT_PATH),
             _pretty_json_bytes(result.structured_result.to_json_object()),
         )
@@ -1012,24 +1189,31 @@ class ComparisonBundleBuilder:
         ComparisonBundleValidator().validate_manifest(bundle_manifest)
         return self._publish(bundle_manifest)
 
-    def fail(
+    def _failure_status(
         self,
         error: ModelAdapterError,
-        *,
         attempt_id: str,
-        narrative_result: NarrativeResult | None = None,
-    ) -> JsonObject:
-        """Retain a sanitized attempt failure and stop the paired replicate."""
-
-        if attempt_id not in {NARRATIVE_ATTEMPT_ID, STRUCTURED_ATTEMPT_ID}:
-            raise ValueError(f"unsupported comparison attempt {attempt_id!r}")
-        if (attempt_id == STRUCTURED_ATTEMPT_ID) is (narrative_result is None):
+    ) -> int | None:
+        if self._contract is V1_CONTRACT:
+            return recordable_status_code(error.status_code)
+        observed = self._observed_status(attempt_id)
+        if error.status_code is not None and error.status_code != observed:
             raise ComparisonBundleValidationError(
-                "structured failure requires the completed narrative result"
+                "adapter failure status differs from the status the transport observed"
             )
+        return observed
+
+    def _publish_failure(
+        self,
+        *,
+        outcome: str,
+        attempt_id: str,
+        narrative_result: NarrativeResult | None,
+        failure: JsonObject,
+        artifact: RawOutputArtifact | None,
+    ) -> JsonObject:
         root = self._active_root()
-        _write_private_bytes(
-            root,
+        self._write(
             root / _COMPARISON_MANIFEST_NAME,
             _pretty_json_bytes(self._manifest),
         )
@@ -1050,8 +1234,7 @@ class ComparisonBundleBuilder:
                 narrative_result.raw_output_artifact,
                 expected_prefix=_NARRATIVE_ARTIFACT_PREFIX,
             )
-            _write_private_bytes(
-                root,
+            self._write(
                 root / _normalized_relative_path(_NARRATIVE_RESULT_PATH),
                 _pretty_json_bytes(narrative_result.to_json_object()),
             )
@@ -1072,47 +1255,40 @@ class ComparisonBundleBuilder:
                 )
             )
 
-        failure: JsonObject = {
-            "kind": error.failure.value,
-            "retryable": error.retryable,
-            "status_code": recordable_status_code(error.status_code),
-        }
-        if error.artifact is not None:
-            expected_prefix = (
-                _NARRATIVE_ARTIFACT_PREFIX
-                if attempt_id == NARRATIVE_ATTEMPT_ID
-                else _STRUCTURED_ARTIFACT_PREFIX
-            )
+        if artifact is not None:
             self._require_captured_artifact(
-                error.artifact,
-                expected_prefix=expected_prefix,
+                artifact,
+                expected_prefix=_artifact_prefix(attempt_id),
             )
-            failure["response_artifact"] = error.artifact.to_json_object()
+            failure["response_artifact"] = artifact.to_json_object()
             files.append(
                 _file_entry(
                     root,
-                    error.artifact.uri,
-                    media_type=error.artifact.media_type,
+                    artifact.uri,
+                    media_type=artifact.media_type,
                     visibility="private",
                 )
             )
 
         attempt_report: JsonObject = {
-            "attempt_report_version": COMPARISON_ATTEMPT_REPORT_VERSION,
+            "attempt_report_version": self._contract.document_version,
             "comparison_series_id": self._manifest["comparison_series_id"],
             "attempt_id": attempt_id,
             "profile_id": _attempt_profile_id(self._manifest, attempt_id),
-            "outcome": "adapter_failed",
+            "outcome": outcome,
             "completed_at": _timestamp(self._now()),
             "failure": failure,
         }
+        if self._contract is V2_CONTRACT:
+            attempt_report["shipped_adapter"] = (
+                running_shipped_adapter().to_json_object()
+            )
         validator = ComparisonBundleValidator()
         validator.validate_attempt_report_against_manifest(
             attempt_report,
             self._manifest,
         )
-        _write_private_bytes(
-            root,
+        self._write(
             root / _ATTEMPT_REPORT_NAME,
             _pretty_json_bytes(attempt_report),
         )
@@ -1128,19 +1304,19 @@ class ComparisonBundleBuilder:
         attempt_outcomes: JsonObject
         if attempt_id == NARRATIVE_ATTEMPT_ID:
             attempt_outcomes = {
-                NARRATIVE_ATTEMPT_ID: "adapter_failed",
+                NARRATIVE_ATTEMPT_ID: outcome,
                 STRUCTURED_ATTEMPT_ID: "not_run",
             }
         else:
             attempt_outcomes = {
                 NARRATIVE_ATTEMPT_ID: "completed",
-                STRUCTURED_ATTEMPT_ID: "adapter_failed",
+                STRUCTURED_ATTEMPT_ID: outcome,
             }
         null_bindings: JsonObject = {
             condition.value: None for condition in ComparisonCondition
         }
         bundle_manifest = self._bundle_manifest(
-            outcome="adapter_failed",
+            outcome=outcome,
             attempt_outcomes=attempt_outcomes,
             completed_branch_count=0,
             contains_private_artifacts=any(
@@ -1151,3 +1327,88 @@ class ComparisonBundleBuilder:
         )
         validator.validate_manifest(bundle_manifest)
         return self._publish(bundle_manifest)
+
+    def fail(
+        self,
+        error: ModelAdapterError,
+        *,
+        attempt_id: str,
+        narrative_result: NarrativeResult | None = None,
+    ) -> JsonObject:
+        """Retain a sanitized attempt failure and stop the paired replicate.
+
+        A v1 report clamps the adapter's status to 100-599; a v2 report keeps
+        the status the attempt's transport observed, or null when no response
+        arrived.
+        """
+
+        _artifact_prefix(attempt_id)
+        _require_narrative_for(attempt_id, narrative_result)
+        self._active_root()
+        failure: JsonObject = {
+            "kind": error.failure.value,
+            "retryable": error.retryable,
+            "status_code": self._failure_status(error, attempt_id),
+        }
+        return self._publish_failure(
+            outcome="adapter_failed",
+            attempt_id=attempt_id,
+            narrative_result=narrative_result,
+            failure=failure,
+            artifact=error.artifact,
+        )
+
+    def _last_captured_artifact(self, attempt_id: str) -> RawOutputArtifact | None:
+        sink = self._sinks.get(_artifact_prefix(attempt_id))
+        if sink is None or not sink.captured:
+            return None
+        reference = sink.captured[-1]
+        return RawOutputArtifact(
+            uri=reference.uri,
+            media_type=reference.media_type,
+            sha256=reference.sha256,
+            captured_at=reference.captured_at,
+        )
+
+    def fail_runner(
+        self,
+        failure: RunnerFailure,
+        *,
+        attempt_id: str,
+        narrative_result: NarrativeResult | None = None,
+    ) -> JsonObject:
+        """Publish one v2 runner failure after a request, keeping its responses.
+
+        ``attempt_id`` names the attempt whose result was not yet recorded:
+        the attempt in progress, or the structured attempt when the failure
+        followed both responses.  Files written by an earlier ``complete`` or
+        ``fail`` are derived from the responses, so they are removed; a
+        captured response never is.
+        """
+
+        _artifact_prefix(attempt_id)
+        _require_narrative_for(attempt_id, narrative_result)
+        if not self.records_runner_failure:
+            raise ComparisonBundleStateError(
+                "a runner failure is recorded only by an unpublished v0.3.0 "
+                "comparison bundle that has sent a request"
+            )
+        status_code = (
+            self._observers[attempt_id].status_code
+            if attempt_id in self._observers
+            else None
+        )
+        self._discard_written()
+        failure_json: JsonObject = {
+            "kind": failure.kind,
+            "retryable": False,
+            "status_code": status_code,
+            "error": failure.error_json_object(),
+        }
+        return self._publish_failure(
+            outcome="runner_failed",
+            attempt_id=attempt_id,
+            narrative_result=narrative_result,
+            failure=failure_json,
+            artifact=self._last_captured_artifact(attempt_id),
+        )

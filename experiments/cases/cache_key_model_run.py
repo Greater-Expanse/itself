@@ -16,10 +16,17 @@ from typing import Final, cast
 
 from experiments._contract_values import integer_value as _integer
 from experiments._contract_values import object_value as _object
+from experiments._study_contracts import (
+    V2_CONTRACT,
+    RunnerFailure,
+    publish_runner_failure,
+)
+from experiments.diagnostician import DiagnosisRequest
 from experiments.model_adapters import (
     HttpTransport,
     ModelAdapterError,
     OpenAIChatDiagnostician,
+    OpenAIChatEndpoint,
     UrllibHttpTransport,
 )
 from experiments.trial_bundles import (
@@ -32,6 +39,8 @@ from experiments.trial_manifests import (
     TrialManifestValidator,
     endpoint_from_trial_manifest,
     load_trial_manifest,
+    require_running_shipped_adapter,
+    trial_manifest_contract,
 )
 from itself import JsonObject, StrPath
 
@@ -58,6 +67,14 @@ def _error_line(error: Exception) -> str:
     if isinstance(error, _INPUT_ERRORS):
         return f"ERROR: {message}"
     return f"ERROR: {type(error).__name__}: {message}"
+
+
+def _credentials(
+    environment: Mapping[str, str],
+    endpoint: OpenAIChatEndpoint,
+) -> tuple[str, ...]:
+    credential = environment.get(endpoint.api_key_env)
+    return (credential,) if credential else ()
 
 
 def run_cache_key_model_case(
@@ -93,18 +110,32 @@ def run_cache_key_model_case(
     )
     frozen_request = build_exchange_request()
     manifest_validator.validate_against(manifest, endpoint, frozen_request)
+    if trial_manifest_contract(manifest) is V2_CONTRACT:
+        require_running_shipped_adapter(manifest)
 
+    active_transport = UrllibHttpTransport() if transport is None else transport
+    active_environment = os.environ if environment is None else environment
     with TrialBundleBuilder(
         bundle_path,
         manifest,
         now=now,
         metric_fields=SCRIPTED_RUN_METRICS,
     ) as builder:
+        if trial_manifest_contract(manifest) is V2_CONTRACT:
+            return _run_v2_attempt(
+                builder,
+                endpoint,
+                frozen_request,
+                transport=active_transport,
+                environment=active_environment,
+                now=now,
+                monotonic_ns=monotonic_ns,
+            )
         adapter = OpenAIChatDiagnostician(
             endpoint=endpoint,
             artifact_sink=builder.artifact_sink,
-            transport=UrllibHttpTransport() if transport is None else transport,
-            environment=os.environ if environment is None else environment,
+            transport=active_transport,
+            environment=active_environment,
             now=now,
             monotonic_ns=monotonic_ns,
         )
@@ -115,6 +146,48 @@ def run_cache_key_model_case(
         if result.request.to_json_object() != frozen_request.to_json_object():
             raise RuntimeError("case runner request drifted after manifest validation")
         return builder.complete(result)
+
+
+def _run_v2_attempt(
+    builder: TrialBundleBuilder,
+    endpoint: OpenAIChatEndpoint,
+    frozen_request: DiagnosisRequest,
+    *,
+    transport: HttpTransport,
+    environment: Mapping[str, str],
+    now: Callable[[], datetime],
+    monotonic_ns: Callable[[], int],
+) -> JsonObject:
+    """Run one v2 attempt, publishing a runner failure after its request.
+
+    An interrupt after the request is published as an ``interrupted`` runner
+    failure and then raised again, so it still stops the caller.
+    """
+
+    try:
+        adapter = OpenAIChatDiagnostician(
+            endpoint=endpoint,
+            artifact_sink=builder.artifact_sink,
+            transport=builder.observed_transport(transport),
+            environment=environment,
+            now=now,
+            monotonic_ns=monotonic_ns,
+        )
+        try:
+            result = run_scripted_case(adapter)
+        except ModelAdapterError as error:
+            return builder.fail(error)
+        if result.request.to_json_object() != frozen_request.to_json_object():
+            raise RuntimeError("case runner request drifted after manifest validation")
+        return builder.complete(result)
+    except (Exception, KeyboardInterrupt) as error:
+        if not builder.records_runner_failure:
+            raise
+        failure = RunnerFailure.from_exception(
+            error,
+            secrets=_credentials(environment, endpoint),
+        )
+        return publish_runner_failure(error, lambda: builder.fail_runner(failure))
 
 
 def _parser() -> argparse.ArgumentParser:

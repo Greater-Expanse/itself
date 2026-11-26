@@ -86,10 +86,11 @@ committed reports re-render byte for byte, and the request body is the one
 shipped `0.3.1` sent, while the `User-Agent` header names the shipped version.
 A test pins that pairing, so a change to the shipped client fails until the
 pairing is re-verified and the binding version kept or deliberately bumped.
-The binding also sends requests with no total deadline: a registered manifest
-bounds each read with
+Under study contract v1 the binding also sends requests with no total
+deadline: a registered manifest bounds each read with
 `execution.timeout_seconds` and registers no deadline, so the shipped client's
-default deadline would change how a registered request runs.
+default deadline would change how a registered request runs. A v2 manifest
+declares its deadline; see [Study contract v2](#study-contract-v2).
 
 ## Endpoint configuration
 
@@ -244,13 +245,14 @@ result, and controls promotion. The runner produces one of two outcomes:
 
 The runner checks the manifest's metrics against the scorecard fields and
 refuses an existing destination, including a dangling symbolic link, before it
-sends a request. After a response is captured, no exception deletes it. A
-failure that is not an adapter failure, such as a reasoning receipt that does
-not recompute, leaves no published bundle; the staging directory is renamed to
-`<destination>.quarantined` and the error names that path. An HTTP status
-outside 100–599, which v1 attempt reports cannot hold, is recorded as a null
-`status_code` under the `http_status` failure kind, and the raw response is
-kept.
+sends a request. After a response is captured, no exception deletes it. Under
+study contract v1, a failure that is not an adapter failure, such as a
+reasoning receipt that does not recompute, leaves no published bundle; the
+staging directory is renamed to `<destination>.quarantined` and the error names
+that path. An HTTP status outside 100–599, which v1 attempt reports cannot
+hold, is recorded as a null `status_code` under the `http_status` failure kind,
+and the raw response is kept. Study contract v2 publishes both instead; see
+[Study contract v2](#study-contract-v2).
 
 Bundle manifests inventory every retained file by path, media type, visibility,
 byte length, and SHA-256 digest. The bundle identifier binds that inventory and
@@ -308,6 +310,68 @@ baseline and must not be pooled into its scorecards.
 
 The first complete provider-controlled matrix is retained in the
 [current v5 report](results/current/2026-07-24-case-001-comparison-v5.md).
+
+## Study contract v2
+
+Study contract v2 ([`contracts/v2/`](contracts/v2/), document version `0.3.0`)
+records five things that v1 cannot. Each manifest, bundle manifest, and attempt
+report declares its version, and loaders and validators use the schemas of that
+version and refuse any other. Builders and runners follow the manifest they are
+given, so a v1 manifest still binds, runs, and validates exactly as before, and
+no registered study changes. The binding identity is `openai-chat-completions`
+`0.2.0` under both versions, because the same case and settings render the same
+payload bytes; the one difference is `stream_options` when a v2 manifest asks
+for usage on a stream. `build_trial_manifest`, and `build_comparison_manifest`
+with `contract=V2_CONTRACT`, produce v2 manifests, and a `ComparisonStudyTarget`
+with `contract=V2_CONTRACT` carries the v2 settings for a future study.
+
+1. **Observed HTTP status.** A v2 attempt report keeps the status the
+   transport returned, unclamped, including one outside 100–599, and `null`
+   only when no response arrived. The runner reads it from a wrapper around the
+   transport, because the shipped client names a status only for a non-2xx
+   response; a malformed 200 response is therefore recorded with status 200.
+   The shipped transport rejects a body over its byte limit, or one that ends
+   early, before returning it, so that status never reaches the harness and is
+   recorded as `null`. Recording it would need a change to `itself.inference`.
+2. **Request deadline.** `execution.deadline_seconds` is a positive number of
+   seconds, or `null` for none, beside the per-read `timeout_seconds`. The
+   binding passes it to the shipped endpoint, and binding a manifest to an
+   execution checks it like the other execution fields. A v1 binding refuses
+   any deadline.
+3. **Shipped adapter identity.** `diagnostician.shipped_adapter` pins the id
+   and version of the shipped `itself.inference` client. The runner compares
+   the pin with the running client before any request and refuses a mismatch.
+   Every v2 bundle manifest and attempt report records `shipped_adapter`, read
+   from `itself.inference` when the record is written, and validation requires
+   it to equal the pin. Validation does not consult the running client, so a
+   recorded study still verifies after the shipped client changes.
+4. **Runner failure.** A failure after a request was sent that is not an
+   adapter failure, such as a scorer exception or a disk error while the bundle
+   is written, publishes a valid, inventory-bound bundle with outcome
+   `runner_failed`. Its attempt report has failure kind `runner_error`, the
+   observed status, the captured response, and the exception type with a
+   one-line message of at most 500 characters from which the credential is
+   redacted. Files that an unfinished completion wrote are removed first; the
+   captured response never is. An interrupt is published the same way with
+   kind `interrupted` and then raised again, so it still stops the caller.
+   Quarantine remains only for an attempt whose failure bundle cannot itself be
+   published; an interrupt is still raised then, with that failure added as a
+   note. A failure before any request propagates and leaves nothing behind, as
+   under v1. A comparison runner failure belongs to the attempt whose result
+   was not yet recorded: the narrative attempt while it runs, and otherwise the
+   structured attempt, with the narrative result kept. The comparison report
+   (version `0.4.0`) counts runner failures in `runner_failed_replicates` and
+   `runner_failures`, keeps `failed_replicates` and `failures` for adapter
+   failures, reports only a runner failure's exception type, and labels it
+   `harness:` in the Markdown table.
+5. **Token usage on streams.** `generation.stream` and
+   `generation.stream_include_usage` are required, and usage may be requested
+   only on a stream. When it is, the binding sends
+   `stream_options: {"include_usage": true}`, which is part of the bound prompt
+   payload and its digest. A provider may report token usage on a stream only
+   when the request asks for it. No v1 manifest can send `stream_options`, so
+   a streamed v1 comparison against such a provider stops with a
+   `response_usage` adapter failure rather than completing.
 
 ## Deferred work
 

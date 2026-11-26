@@ -216,6 +216,13 @@ It requires one terminal `[DONE]` marker, one completion choice, a stable model
 identity and finish reason, and internally consistent token usage when usage is
 reported. It does not expose partial output as a successful result.
 
+A provider may report token usage on a stream only when the request asks for
+it; otherwise every event can carry `"usage": null`, and the result has no
+token counts. To ask, pass
+`extra_body={"stream_options": {"include_usage": True}}`. A provider that
+honors it sends a last chunk with `"choices": []` and a usage object, which the
+client reads.
+
 ## Structured-output modes
 
 The caller declares endpoint capability explicitly:

@@ -28,6 +28,7 @@ from itself._filesystem import (
     read_and_close,
 )
 from itself._json import strict_json_loads
+from itself.inference import ArtifactReference, DirectoryArtifactSink
 from itself.receipts import ReasoningReceiptValidationError, ReasoningReceiptValidator
 
 BundleError = type[ValueError]
@@ -436,6 +437,48 @@ def receipt_recomputes(receipt: JsonObject, ledger: Ledger) -> bool:
     except ReasoningReceiptValidationError:
         return False
     return True
+
+
+class RecordingArtifactSink:
+    """Capture through a private directory sink and keep each reference.
+
+    An adapter failure carries the response it rejected, but a runner failure
+    after the request carries nothing, so a builder reads the captured
+    response that the failure followed from here.
+    """
+
+    __slots__ = ("_captured", "_sink")
+
+    def __init__(self, root: Path, *, uri_prefix: str) -> None:
+        self._sink: DirectoryArtifactSink = DirectoryArtifactSink(
+            root,
+            uri_prefix=uri_prefix,
+        )
+        self._captured: list[ArtifactReference] = []
+
+    @property
+    def captured(self) -> tuple[ArtifactReference, ...]:
+        """Return every reference this sink has returned, oldest first."""
+
+        return tuple(self._captured)
+
+    def capture(
+        self,
+        content: bytes,
+        /,
+        *,
+        media_type: str,
+        captured_at: datetime,
+    ) -> ArtifactReference:
+        """Capture one response and remember the reference returned for it."""
+
+        reference = self._sink.capture(
+            content,
+            media_type=media_type,
+            captured_at=captured_at,
+        )
+        self._captured.append(reference)
+        return reference
 
 
 def recordable_status_code(status_code: int | None) -> int | None:

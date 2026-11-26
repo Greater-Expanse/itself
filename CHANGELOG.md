@@ -140,6 +140,23 @@ their requests run differently. This release implements:
   `refuted` verdicts without contradicting evidence, a transition that does
   not match its verdict's outcome, and evidence scoped differently from its
   verdict.
+- Study contract v2 in the research harness under `experiments/`, beside v1:
+  six study-record schemas in `experiments/contracts/v2/`, document version
+  `0.3.0`, with examples. A v2 manifest declares a request deadline, whether a
+  stream asks for token usage, which sends `stream_options` and is part of the
+  bound prompt payload, and the shipped `itself.inference` client it runs on;
+  the runners refuse a different running client before any request. v2 bundle
+  manifests and attempt reports record the shipped client actually used, an
+  attempt report keeps the HTTP status the transport observed without clamping,
+  and a harness failure after a request publishes a valid `runner_failed`
+  bundle, with the captured response and a sanitized one-line error, instead of
+  a quarantine. An interrupt is published as `interrupted` and still
+  propagates. The comparison report counts runner failures apart from adapter
+  failures. `build_trial_manifest` and `build_comparison_manifest` build v2
+  manifests. No study is registered under v2, and v1 documents and runs are
+  unchanged.
+- `docs/INFERENCE.md` says that a provider may report token usage on a stream
+  only when asked, and how to ask.
 
 ### Changed
 
@@ -221,12 +238,12 @@ their requests run differently. This release implements:
 - In the research harness under `experiments/`, which is not part of the
   package, no failure deletes a captured provider response. The trial builder
   checks its declared metrics, and both builders check the destination, before
-  any request, and both record an HTTP status outside 100–599 as a failed
-  attempt with a null status code. Any other failure after capture moves
-  staging to `<destination>.quarantined` and raises `AttemptQuarantinedError`
-  naming it, or lets an interrupt such as `KeyboardInterrupt` propagate
-  unchanged, and a later attempt at that destination is refused before any
-  request.
+  any request. Under study contract v1, both record an HTTP status outside
+  100–599 as a failed attempt with a null status code, and any other failure
+  after capture moves staging to `<destination>.quarantined` and raises
+  `AttemptQuarantinedError` naming it, or lets an interrupt such as
+  `KeyboardInterrupt` propagate unchanged. A later attempt at a quarantined
+  destination is refused before any request.
 - `TrialBundleValidator` replays the recorded diagnosis through the case,
   requires the stored ledger and scorecard to equal the replay, and binds the
   trial manifest to the recorded request and diagnostician. Both harness
@@ -244,6 +261,9 @@ their requests run differently. This release implements:
   because the registered manifests record none, and a test pins the shipped
   adapter it was re-verified against. The registered study manifests, results,
   and v1 contracts are byte-identical, and every manifest still validates.
+- The harness loaders and validators choose a study record's schemas from the
+  version it declares. A record that declares neither `0.2.0` nor `0.3.0` is
+  refused with `unsupported version` instead of a schema `const` error.
 - The capacity curve constructs its validators and builder outside the timed
   regions, so its timings no longer include construction. The SDK exercise
   flips one artifact bit instead of appending a byte, so the mutation reaches

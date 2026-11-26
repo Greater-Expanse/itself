@@ -1,0 +1,29 @@
+{
+  "attempt_index": 1,
+  "attempt_report_version": "0.3.0",
+  "completed_at": "2026-11-26T12:05:00Z",
+  "failure": {
+    "error": {
+      "message": "[Errno 28] No space left on device",
+      "type": "OSError"
+    },
+    "kind": "runner_error",
+    "response_artifact": {
+      "captured_at": "2026-11-26T12:05:00Z",
+      "digest": {
+        "algorithm": "sha256",
+        "value": "493842b9a9bf52854afcb56e89460906538158e0efe83c5a5f6b7e7dbe1bddb6"
+      },
+      "media_type": "text/event-stream",
+      "uri": "artifacts/sha256-493842b9a9bf52854afcb56e89460906538158e0efe83c5a5f6b7e7dbe1bddb6.bin"
+    },
+    "retryable": false,
+    "status_code": 200
+  },
+  "outcome": "runner_failed",
+  "shipped_adapter": {
+    "adapter_id": "openai-compatible-chat-completions",
+    "adapter_version": "0.4.0"
+  },
+  "trial_series_id": "case-001-together-gpt-oss-20b-v2-contract-example"
+}

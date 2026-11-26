@@ -23,6 +23,19 @@ from experiments._contract_values import optional_number_value as _optional_numb
 from experiments._contract_values import string_value as _string
 from experiments._contract_values import string_values as _strings
 from experiments._schema_validation import contract_validator
+from experiments._study_contracts import (
+    STREAM_USAGE_OPTION,
+    V1_CONTRACT,
+    V2_CONTRACT,
+    StudyContract,
+    UnsupportedStudyContractError,
+    declared_contract,
+    pinned_shipped_adapter,
+    running_shipped_adapter_issue,
+    stream_usage_request,
+    stream_usage_requested,
+    v2_execution_issues,
+)
 from experiments.cases.cache_key_comparison import (
     COMPARISON_METRICS,
     NARRATIVE_ATTEMPT_ID,
@@ -34,9 +47,11 @@ from experiments.model_adapters import (
     ADAPTER_VERSION,
     PROTOCOL_ID,
     OpenAIChatEndpoint,
+    ShippedAdapterIdentity,
     StructuredOutputProfile,
     build_structured_output_payload,
     diagnosis_output_profile,
+    running_shipped_adapter,
 )
 from experiments.narrative_diagnostician import (
     NARRATIVE_CONTRACT_VERSION,
@@ -48,13 +63,14 @@ from itself import JsonObject, JsonValue, StrPath
 from itself._json import format_json_path as _format_path
 from itself._json import strict_json_loads
 
-COMPARISON_MANIFEST_VERSION: Final = "0.2.0"
+COMPARISON_MANIFEST_VERSION: Final = V1_CONTRACT.document_version
 
-_CONTRACT_ROOT: Final = Path(__file__).resolve().parent / "contracts" / "v1"
-_MANIFEST_SCHEMA_PATH: Final = _CONTRACT_ROOT / "comparison-manifest.schema.json"
+_MANIFEST_SCHEMA: Final = "comparison-manifest"
 _SUPPORTED_REQUEST_OPTIONS: Final = frozenset(
     {"reasoning_effort", "seed", "temperature", "top_p"}
 )
+# A v2 manifest also registers whether a stream reports its token usage.
+_V2_REQUEST_OPTIONS: Final = _SUPPORTED_REQUEST_OPTIONS | {STREAM_USAGE_OPTION}
 _REASONING_EFFORTS: Final = frozenset({"low", "medium", "high"})
 
 
@@ -126,6 +142,27 @@ def _structured_expected_observation_values(
     return _strings(value, "profiles.structured.expected_observation_values")
 
 
+def comparison_manifest_contract(manifest: JsonValue) -> StudyContract:
+    """Return the study contract a comparison manifest declares, refusing others."""
+
+    try:
+        return declared_contract(manifest, "manifest_version")
+    except UnsupportedStudyContractError as error:
+        raise ComparisonManifestValidationError(str(error)) from None
+
+
+def _v2_settings(
+    endpoint: OpenAIChatEndpoint,
+    generation: JsonObject,
+    execution: JsonObject,
+) -> None:
+    generation["stream"] = endpoint.stream
+    generation["stream_include_usage"] = (
+        stream_usage_requested(endpoint.extra_body) is True
+    )
+    execution["deadline_seconds"] = endpoint.deadline_seconds
+
+
 def build_comparison_manifest(
     endpoint: OpenAIChatEndpoint,
     request: DiagnosisRequest,
@@ -136,9 +173,21 @@ def build_comparison_manifest(
     study_phase: str,
     limitations: Sequence[str],
     expected_observation_values: Sequence[str] = (),
+    contract: StudyContract = V1_CONTRACT,
+    shipped_adapter: ShippedAdapterIdentity | None = None,
 ) -> JsonObject:
-    """Build and execution-bind one credential-free comparison manifest."""
+    """Build and execution-bind one credential-free comparison manifest.
 
+    ``contract`` chooses the manifest version.  A v2 manifest pins
+    ``shipped_adapter``, or the running shipped client when it is omitted,
+    and records the stream, whether it asks for token usage, and the request
+    deadline.  A v1 manifest records none of these.
+    """
+
+    if contract not in (V1_CONTRACT, V2_CONTRACT):
+        raise ValueError(f"unsupported study contract {contract.directory!r}")
+    if contract is V1_CONTRACT and shipped_adapter is not None:
+        raise ValueError("a v0.2.0 comparison manifest pins no shipped client")
     narrative_output = narrative_output_profile()
     constrained_values = tuple(expected_observation_values)
     structured_output = diagnosis_output_profile(constrained_values)
@@ -156,7 +205,29 @@ def build_comparison_manifest(
         ),
         "max_output_tokens": endpoint.max_output_tokens,
     }
-    if endpoint.stream:
+    execution: JsonObject = {
+        "max_attempts_per_model_attempt": 1,
+        "timeout_seconds": endpoint.timeout_seconds,
+        "automatic_retry": False,
+        "json_repair": False,
+        "fallback": False,
+        "failure_mode": "stop_after_failed_attempt",
+    }
+    diagnostician: JsonObject = {
+        "actor_id": endpoint.actor_id,
+        "protocol": PROTOCOL_ID,
+        "adapter_id": ADAPTER_ID,
+        "adapter_version": ADAPTER_VERSION,
+        "base_url_sha256": text_sha256(endpoint.base_url),
+        "model": endpoint.model,
+    }
+    if contract is V2_CONTRACT:
+        _v2_settings(endpoint, generation, execution)
+        pinned = (
+            running_shipped_adapter() if shipped_adapter is None else shipped_adapter
+        )
+        diagnostician["shipped_adapter"] = pinned.to_json_object()
+    elif endpoint.stream:
         generation["stream"] = True
     structured_profile: JsonObject = {
         "attempt_id": STRUCTURED_ATTEMPT_ID,
@@ -174,7 +245,7 @@ def build_comparison_manifest(
         observation_values: list[JsonValue] = [value for value in constrained_values]
         structured_profile["expected_observation_values"] = observation_values
     manifest: JsonObject = {
-        "manifest_version": COMPARISON_MANIFEST_VERSION,
+        "manifest_version": contract.document_version,
         "comparison_series_id": comparison_series_id,
         "study_phase": study_phase,
         "registered_at": _timestamp(registered_at),
@@ -208,14 +279,7 @@ def build_comparison_manifest(
                 },
             },
         },
-        "diagnostician": {
-            "actor_id": endpoint.actor_id,
-            "protocol": PROTOCOL_ID,
-            "adapter_id": ADAPTER_ID,
-            "adapter_version": ADAPTER_VERSION,
-            "base_url_sha256": text_sha256(endpoint.base_url),
-            "model": endpoint.model,
-        },
+        "diagnostician": diagnostician,
         "profiles": {
             "narrative": {
                 "attempt_id": NARRATIVE_ATTEMPT_ID,
@@ -232,14 +296,7 @@ def build_comparison_manifest(
             "structured": structured_profile,
         },
         "generation": generation,
-        "execution": {
-            "max_attempts_per_model_attempt": 1,
-            "timeout_seconds": endpoint.timeout_seconds,
-            "automatic_retry": False,
-            "json_repair": False,
-            "fallback": False,
-            "failure_mode": "stop_after_failed_attempt",
-        },
+        "execution": execution,
         "artifact_policy": {
             "raw_provider_response": "private",
             "published_representation": "metadata_and_digest",
@@ -254,16 +311,23 @@ def build_comparison_manifest(
 
 
 class ComparisonManifestValidator:
-    """Validate shape and bind a comparison to two exact model payloads."""
+    """Validate shape and bind a comparison to two exact model payloads.
 
-    def __init__(self) -> None:
-        self._validator: _SchemaValidator = contract_validator(_MANIFEST_SCHEMA_PATH)
+    The schema is the one that the manifest's ``manifest_version`` declares.
+    """
 
     def errors(self, manifest: JsonValue) -> list[str]:
         """Return stable schema and exact-metric errors."""
 
+        try:
+            contract = declared_contract(manifest, "manifest_version")
+        except UnsupportedStudyContractError as error:
+            return [str(error)]
+        validator: _SchemaValidator = contract_validator(
+            contract.schema_path(_MANIFEST_SCHEMA)
+        )
         issues = sorted(
-            self._validator.iter_errors(manifest),
+            validator.iter_errors(manifest),
             key=lambda error: tuple(str(item) for item in error.absolute_path),
         )
         messages = [
@@ -299,6 +363,7 @@ class ComparisonManifestValidator:
         """Require one manifest to match both rendered model attempts exactly."""
 
         self.validate(manifest)
+        contract = comparison_manifest_contract(manifest)
         case = _object(manifest["case"], "case")
         diagnostician = _object(manifest["diagnostician"], "diagnostician")
         profiles = _object(manifest["profiles"], "profiles")
@@ -308,8 +373,13 @@ class ComparisonManifestValidator:
         execution = _object(manifest["execution"], "execution")
 
         issues: list[str] = []
+        supported_options = (
+            _V2_REQUEST_OPTIONS
+            if contract is V2_CONTRACT
+            else _SUPPORTED_REQUEST_OPTIONS
+        )
         unsupported_options = sorted(
-            set(endpoint.extra_body).difference(_SUPPORTED_REQUEST_OPTIONS)
+            set(endpoint.extra_body).difference(supported_options)
         )
         if unsupported_options:
             issues.append(
@@ -317,7 +387,14 @@ class ComparisonManifestValidator:
                 + ", ".join(unsupported_options)
             )
         if endpoint.extra_headers:
-            issues.append("endpoint extra_headers must be empty for manifest v0.2.0")
+            issues.append(
+                "endpoint extra_headers must be empty for manifest "
+                f"v{contract.document_version}"
+            )
+        if contract is V1_CONTRACT and endpoint.deadline_seconds is not None:
+            issues.append("endpoint deadline_seconds must be None for manifest v0.2.0")
+        if contract is V2_CONTRACT:
+            issues.extend(v2_execution_issues(generation, execution, endpoint))
         if "expected_observation_values" in narrative_profile:
             issues.append(
                 "profiles.narrative cannot declare expected observation values"
@@ -480,6 +557,7 @@ def endpoint_from_comparison_manifest(
     """Construct the only common endpoint authorized by a comparison manifest."""
 
     ComparisonManifestValidator().validate(manifest)
+    contract = comparison_manifest_contract(manifest)
     diagnostician = _object(manifest["diagnostician"], "diagnostician")
     generation = _object(manifest["generation"], "generation")
     execution = _object(manifest["execution"], "execution")
@@ -496,6 +574,14 @@ def endpoint_from_comparison_manifest(
     reasoning_effort = generation.get("reasoning_effort")
     if reasoning_effort is not None:
         extra_body["reasoning_effort"] = reasoning_effort
+    deadline_seconds: float | None = None
+    if contract is V2_CONTRACT:
+        if generation["stream_include_usage"] is True:
+            extra_body[STREAM_USAGE_OPTION] = stream_usage_request()
+        deadline_seconds = _optional_number(
+            execution["deadline_seconds"],
+            "deadline_seconds",
+        )
     return OpenAIChatEndpoint(
         actor_id=_string(diagnostician["actor_id"], "actor_id"),
         base_url=base_url,
@@ -508,7 +594,24 @@ def endpoint_from_comparison_manifest(
         ),
         stream=generation.get("stream", False) is True,
         extra_body=extra_body,
+        deadline_seconds=deadline_seconds,
     )
+
+
+def require_running_shipped_adapter(manifest: JsonObject) -> None:
+    """Refuse a v0.3.0 comparison whose pinned shipped client is not running.
+
+    A v0.2.0 manifest pins no shipped client, so it is refused here too.
+    """
+
+    ComparisonManifestValidator().validate(manifest)
+    if comparison_manifest_contract(manifest) is not V2_CONTRACT:
+        raise ComparisonManifestValidationError(
+            "only a v0.3.0 comparison manifest pins the shipped client"
+        )
+    issue = running_shipped_adapter_issue(pinned_shipped_adapter(manifest))
+    if issue is not None:
+        raise ComparisonManifestValidationError(issue)
 
 
 def diagnosis_profile_from_comparison_manifest(
