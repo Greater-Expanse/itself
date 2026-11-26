@@ -19,7 +19,9 @@ from urllib.request import Request
 
 import pytest
 
+import experiments.model_adapters as model_adapters
 import itself._http_transport as http_transport_module
+import itself.inference as inference
 from experiments.cases.cache_key_diagnostician import (
     CacheKeyFixtureDiagnostician,
     build_cache_key_request,
@@ -713,3 +715,32 @@ def test_urllib_transport_sanitizes_network_failures(
     assert captured.value.failure is InferenceFailure.TRANSPORT
     assert captured.value.retryable is True
     assert "private network detail" not in str(captured.value)
+
+
+def test_the_binding_version_pins_the_shipped_adapter_that_executes_requests() -> None:
+    # Registered manifests record the binding identity, and the shipped client
+    # sends the requests.  A change to the shipped adapter fails here until the
+    # binding version is deliberately bumped and its pairing re-verified.
+    assert (model_adapters.ADAPTER_ID, model_adapters.ADAPTER_VERSION) == (
+        "openai-chat-completions",
+        "0.2.0",
+    )
+    assert (
+        model_adapters.SHIPPED_ADAPTER_ID,
+        model_adapters.SHIPPED_ADAPTER_VERSION,
+    ) == ("openai-compatible-chat-completions", "0.3.1")
+    assert (inference.ADAPTER_ID, inference.ADAPTER_VERSION) == (
+        model_adapters.SHIPPED_ADAPTER_ID,
+        model_adapters.SHIPPED_ADAPTER_VERSION,
+    )
+
+
+def test_the_binding_sends_requests_without_a_deadline(tmp_path: Path) -> None:
+    # Registered manifests record a per-read timeout and no total deadline, so
+    # the shipped client's default deadline would be an unregistered change.
+    adapter, transport = _adapter(tmp_path)
+
+    adapter.diagnose(_request())
+
+    assert _endpoint().as_compatible_endpoint().deadline_seconds is None
+    assert [request.deadline_seconds for request in transport.requests] == [None]

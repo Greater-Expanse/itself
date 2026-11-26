@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import stat
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +17,10 @@ import pytest
 
 from experiments.cases.cache_key_diagnostician import CacheKeyFixtureDiagnostician
 from experiments.cases.cache_key_exchange import build_exchange_request
-from experiments.cases.cache_key_scripted_run import run_scripted_case
+from experiments.cases.cache_key_scripted_run import (
+    SCRIPTED_RUN_METRICS,
+    run_scripted_case,
+)
 from experiments.model_adapters import (
     HttpRequest,
     HttpResponse,
@@ -30,9 +36,17 @@ from experiments.trial_bundles import (
 )
 from experiments.trial_manifests import (
     TrialManifestValidator,
+    canonical_json_bytes,
     load_trial_manifest,
 )
-from itself import JsonObject
+from itself import (
+    EvidenceBundleLimits,
+    JsonlLedgerStore,
+    JsonObject,
+    Ledger,
+    build_reasoning_receipt,
+)
+from itself.receipts import canonical_ledger_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = (
@@ -94,7 +108,9 @@ def _build_bundle(path: Path) -> tuple[JsonObject, bytes]:
     request = build_exchange_request()
     TrialManifestValidator().validate_against(manifest, endpoint, request)
     raw_response = _completion_body()
-    with TrialBundleBuilder(path, manifest, now=NOW) as builder:
+    with TrialBundleBuilder(
+        path, manifest, now=lambda: NOW, metric_fields=SCRIPTED_RUN_METRICS
+    ) as builder:
         adapter = OpenAIChatDiagnostician(
             endpoint=endpoint,
             artifact_sink=builder.artifact_sink,
@@ -219,7 +235,9 @@ def test_failed_attempt_bundle_retains_sanitized_error_and_private_body(
     endpoint = _endpoint()
     private_body = b'{"error":"private provider detail"}'
 
-    with TrialBundleBuilder(path, manifest, now=NOW) as builder:
+    with TrialBundleBuilder(
+        path, manifest, now=lambda: NOW, metric_fields=SCRIPTED_RUN_METRICS
+    ) as builder:
         adapter = OpenAIChatDiagnostician(
             endpoint=endpoint,
             artifact_sink=builder.artifact_sink,
@@ -252,7 +270,9 @@ def test_failed_attempt_without_response_has_no_private_artifact(
     path = tmp_path / "trial-failed"
     manifest = load_trial_manifest(MANIFEST_PATH)
 
-    with TrialBundleBuilder(path, manifest, now=NOW) as builder:
+    with TrialBundleBuilder(
+        path, manifest, now=lambda: NOW, metric_fields=SCRIPTED_RUN_METRICS
+    ) as builder:
         adapter = OpenAIChatDiagnostician(
             endpoint=_endpoint(),
             artifact_sink=builder.artifact_sink,
@@ -280,7 +300,9 @@ def test_builder_does_not_publish_partial_bundle_on_exception(tmp_path: Path) ->
 
     with (
         pytest.raises(RuntimeError, match="simulated interruption"),
-        TrialBundleBuilder(path, manifest, now=NOW),
+        TrialBundleBuilder(
+            path, manifest, now=lambda: NOW, metric_fields=SCRIPTED_RUN_METRICS
+        ),
     ):
         raise RuntimeError("simulated interruption")
 
@@ -299,7 +321,8 @@ def test_builder_never_overwrites_existing_destination(tmp_path: Path) -> None:
         TrialBundleBuilder(
             path,
             load_trial_manifest(MANIFEST_PATH),
-            now=NOW,
+            now=lambda: NOW,
+            metric_fields=SCRIPTED_RUN_METRICS,
         ),
     ):
         pass
@@ -314,3 +337,139 @@ def test_builder_never_overwrites_existing_destination(tmp_path: Path) -> None:
 def test_bundle_rejects_path_smuggling(value: str) -> None:
     with pytest.raises(TrialBundleValidationError, match="normalized relative"):
         parse_bundle_relative_path(value)
+
+
+def _load(path: Path) -> JsonObject:
+    return cast(JsonObject, json.loads(path.read_text(encoding="utf-8")))
+
+
+def _write(path: Path, value: JsonObject) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", "utf-8")
+
+
+def _rebind(root: Path) -> None:
+    """Re-digest every inventoried file and recompute the bundle identifier.
+
+    This is what a forger who controls the bundle bytes can do, so only checks
+    beyond the inventory can reject what follows.
+    """
+
+    manifest_path = root / "bundle.json"
+    manifest = _load(manifest_path)
+    for entry in cast(list[JsonObject], manifest["files"]):
+        content = (root / cast(str, entry["path"])).read_bytes()
+        entry["size_bytes"] = len(content)
+        entry["digest"] = {
+            "algorithm": "sha256",
+            "value": hashlib.sha256(content).hexdigest(),
+        }
+    del manifest["bundle_id"]
+    digest = hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
+    manifest["bundle_id"] = f"urn:sha256:{digest}"
+    _write(manifest_path, manifest)
+
+
+def test_validator_recomputes_the_scorecard_from_the_diagnosis(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    scorecard = _load(path / "scorecard.json")
+    scorecard["ground_truth_identified"] = False
+    scorecard["predictions_correct"] = 0
+    scorecard["false_promotions_accepted"] = 7
+    _write(path / "scorecard.json", scorecard)
+    _rebind(path)
+
+    with pytest.raises(TrialBundleValidationError, match="scorecard"):
+        TrialBundleValidator().validate(path, build_exchange_request())
+
+
+def test_validator_recomputes_the_ledger_from_the_diagnosis(tmp_path: Path) -> None:
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    ledger = JsonlLedgerStore(path / "ledger.jsonl").load()
+    shortened = Ledger(ledger.records[:-1])
+    (path / "ledger.jsonl").write_bytes(canonical_ledger_bytes(shortened))
+    _write(path / "reasoning-receipt.json", build_reasoning_receipt(shortened))
+    _rebind(path)
+
+    with pytest.raises(TrialBundleValidationError, match="ledger"):
+        TrialBundleValidator().validate(path, build_exchange_request())
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("case", "case_id", "some-other-case"),
+        ("case", "request_sha256", "0" * 64),
+        ("diagnostician", "model", "a-different/model"),
+        ("diagnostician", "actor_id", "someone-else"),
+    ],
+)
+def test_validator_binds_the_trial_manifest_to_its_request_and_diagnostician(
+    tmp_path: Path,
+    section: str,
+    field: str,
+    value: str,
+) -> None:
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    manifest = _load(path / "trial-manifest.json")
+    cast(JsonObject, manifest[section])[field] = value
+    TrialManifestValidator().validate(manifest)
+    _write(path / "trial-manifest.json", manifest)
+    _rebind(path)
+
+    with pytest.raises(TrialBundleValidationError, match="does not match"):
+        TrialBundleValidator().validate(path, build_exchange_request())
+
+
+def test_validator_rejects_a_non_regular_entry_in_the_bundle(tmp_path: Path) -> None:
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    os.mkfifo(path / "artifacts" / "pipe", 0o600)
+
+    with pytest.raises(TrialBundleValidationError, match="non-regular"):
+        TrialBundleValidator().validate(path, build_exchange_request())
+
+
+def test_validator_does_not_open_a_fifo_in_place_of_its_manifest(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    manifest_path = path / "bundle.json"
+    manifest_path.unlink()
+    os.mkfifo(manifest_path, 0o600)
+    finished = threading.Event()
+
+    def release_a_blocked_reader() -> None:
+        # Opening the pipe would block a reader until a writer arrives; open
+        # and close a writer so a regression fails instead of hanging.
+        while not finished.wait(0.05):
+            try:
+                descriptor = os.open(manifest_path, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            os.close(descriptor)
+
+    releaser = threading.Thread(target=release_a_blocked_reader, daemon=True)
+    releaser.start()
+    try:
+        with pytest.raises(TrialBundleValidationError, match="regular file"):
+            TrialBundleValidator().validate(path, build_exchange_request())
+    finally:
+        finished.set()
+        releaser.join()
+
+
+def test_validator_bounds_the_manifest_it_reads(tmp_path: Path) -> None:
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    manifest_path = path / "bundle.json"
+    padding = b" " * EvidenceBundleLimits().max_manifest_bytes
+    manifest_path.write_bytes(manifest_path.read_bytes() + padding)
+
+    with pytest.raises(TrialBundleValidationError, match="exceeds limit"):
+        TrialBundleValidator().validate(path, build_exchange_request())

@@ -9,9 +9,8 @@ import hashlib
 import json
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import Final, Protocol
 
-from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
 from experiments._contract_values import integer_value as _integer
@@ -22,7 +21,8 @@ from experiments._contract_values import (
 )
 from experiments._contract_values import optional_number_value as _optional_number
 from experiments._contract_values import string_value as _string
-from experiments.diagnostician import DiagnosisRequest
+from experiments._schema_validation import contract_validator
+from experiments.diagnostician import DiagnosisRequest, DiagnosticianIdentity
 from experiments.model_adapters import (
     ADAPTER_ID,
     ADAPTER_VERSION,
@@ -41,6 +41,8 @@ JSON_CANONICALIZATION: Final = "gxp-json-v1"
 _CONTRACT_ROOT: Final = Path(__file__).resolve().parent / "contracts" / "v1"
 _MANIFEST_SCHEMA_PATH: Final = _CONTRACT_ROOT / "trial-manifest.schema.json"
 _SUPPORTED_REQUEST_OPTIONS: Final = frozenset({"seed", "temperature"})
+_PAYLOAD_BASE_URL: Final = "https://payload-rendering.invalid/v1"
+_PAYLOAD_API_KEY_ENV: Final = "PAYLOAD_RENDERING_UNUSED"
 
 
 class _SchemaValidator(Protocol):
@@ -116,20 +118,7 @@ class TrialManifestValidator:
     """Validate manifest shape and bind it to one exact adapter invocation."""
 
     def __init__(self) -> None:
-        schema_value = cast(
-            JsonValue,
-            json.loads(_MANIFEST_SCHEMA_PATH.read_text(encoding="utf-8")),
-        )
-        if not isinstance(schema_value, dict):
-            raise TypeError("trial manifest schema must contain a JSON object")
-        Draft202012Validator.check_schema(schema_value)
-        self._validator = cast(
-            _SchemaValidator,
-            Draft202012Validator(
-                schema_value,
-                format_checker=FormatChecker(),
-            ),
-        )
+        self._validator: _SchemaValidator = contract_validator(_MANIFEST_SCHEMA_PATH)
 
     def errors(self, manifest: JsonValue) -> list[str]:
         """Return stable, human-readable schema errors."""
@@ -245,6 +234,79 @@ class TrialManifestValidator:
 
         if issues:
             raise TrialManifestValidationError("\n".join(issues))
+
+    def validate_recorded(
+        self,
+        manifest: JsonObject,
+        request: DiagnosisRequest,
+        diagnostician: DiagnosticianIdentity,
+    ) -> None:
+        """Require a manifest to match a recorded request and diagnostician.
+
+        A bundle keeps neither the base URL nor the credential, so this binds
+        everything they do not determine: the case, the diagnostician that the
+        diagnosis names, and the prompt payload that the manifest's own model
+        and generation settings render for the request.
+        """
+
+        self.validate(manifest)
+        case = _object(manifest["case"], "case")
+        recorded = _object(manifest["diagnostician"], "diagnostician")
+        generation = _object(manifest["generation"], "generation")
+        expected_pairs: tuple[tuple[str, JsonValue, JsonValue], ...] = (
+            ("case.case_id", case["case_id"], request.case_id),
+            (
+                "case.diagnosis_contract_version",
+                case["diagnosis_contract_version"],
+                request.contract_version,
+            ),
+            (
+                "case.request_sha256",
+                case["request_sha256"],
+                json_sha256(request.to_json_object()),
+            ),
+            (
+                "case.assertion_schema_sha256",
+                case["assertion_schema_sha256"],
+                json_sha256(model_assertion_schema()),
+            ),
+            ("diagnostician.actor_id", recorded["actor_id"], diagnostician.actor_id),
+            ("diagnostician.protocol", recorded["protocol"], PROTOCOL_ID),
+            (
+                "diagnostician.adapter_id",
+                recorded["adapter_id"],
+                diagnostician.adapter_id,
+            ),
+            (
+                "diagnostician.adapter_version",
+                recorded["adapter_version"],
+                diagnostician.adapter_version,
+            ),
+            (
+                "generation.prompt_payload_sha256",
+                generation["prompt_payload_sha256"],
+                json_sha256(
+                    build_chat_completion_payload(_payload_endpoint(manifest), request)
+                ),
+            ),
+        )
+        issues = [
+            f"{field} does not match the recorded diagnosis"
+            for field, observed, expected in expected_pairs
+            if observed != expected
+        ]
+        if issues:
+            raise TrialManifestValidationError("\n".join(issues))
+
+
+def _payload_endpoint(manifest: JsonObject) -> OpenAIChatEndpoint:
+    # The rendered payload depends on neither the base URL nor the credential,
+    # so these placeholders reproduce the payload of the registered endpoint.
+    return endpoint_from_trial_manifest(
+        manifest,
+        base_url=_PAYLOAD_BASE_URL,
+        api_key_env=_PAYLOAD_API_KEY_ENV,
+    )
 
 
 def validate_trial_manifest_against(

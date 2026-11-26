@@ -12,7 +12,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import cast
+from typing import Final, cast
 
 from experiments.comparison_bundles import (
     ComparisonBundleBuilder,
@@ -45,9 +45,26 @@ from .cache_key_comparison import (
 )
 from .cache_key_omission import CaseEnvironment, Mechanism
 
+# Errors in the operator's input or in an existing bundle.  Anything else is
+# also reported with exit 2, prefixed with its type, because exit 1 means only
+# that a valid failed-attempt bundle was published or verified.
+_INPUT_ERRORS: Final = (
+    FileExistsError,
+    ComparisonBundleValidationError,
+    ComparisonManifestValidationError,
+    ValueError,
+)
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _error_line(error: Exception) -> str:
+    message = "; ".join(line for line in str(error).splitlines() if line)
+    if isinstance(error, _INPUT_ERRORS):
+        return f"ERROR: {message}"
+    return f"ERROR: {type(error).__name__}: {message}"
 
 
 def _frozen_request() -> DiagnosisRequest:
@@ -187,13 +204,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _frozen_request(),
             )
             bundle_manifest = verified.bundle_manifest
-    except (
-        FileExistsError,
-        ComparisonBundleValidationError,
-        ComparisonManifestValidationError,
-        ValueError,
-    ) as error:
-        print(f"ERROR: {error}", file=sys.stderr)
+    except Exception as error:
+        print(_error_line(error), file=sys.stderr)
         return 2
 
     print(json.dumps(_summary(bundle_path, bundle_manifest), indent=2, sort_keys=True))

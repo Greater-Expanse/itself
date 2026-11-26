@@ -67,11 +67,23 @@ The adapter and its HTTP transport are replaceable without changing the prompt
 renderer or assertion decoder. Likewise, adding a native provider protocol must
 not add provider branches to the diagnosis contract.
 
-The public implementation lives in `src/itself/inference.py`; the controlled
-diagnosis binding lives in `model_adapters.py`. The default HTTP transport uses
-only the Python standard library. Request construction, transport, raw-response
-storage, schema validation, assertion decoding, and diagnosis-contract
-validation remain separate typed boundaries.
+The public client is `itself.inference`. Its endpoint checks, HTTP transport,
+raw-response capture, and sanitized errors live in private sibling modules
+(`_endpoints.py`, `_http_transport.py`, `_artifact_sinks.py`, and
+`_inference_errors.py` under `src/itself/`) that `itself.inference` re-exports.
+The controlled diagnosis binding lives in `model_adapters.py`. The default HTTP
+transport uses only the Python standard library. Request construction,
+transport, raw-response storage, schema validation, assertion decoding, and
+diagnosis-contract validation remain separate typed boundaries.
+
+Registered manifests and results record the binding's identity,
+`openai-chat-completions` version `0.2.0`, not the shipped client's
+`openai-compatible-chat-completions` version `0.3.1` that sends the requests. A
+test pins that pairing, so a change to the shipped client fails until the
+binding version is deliberately bumped. The binding also sends requests with no
+total deadline: a registered manifest bounds each read with
+`execution.timeout_seconds` and registers no deadline, so the shipped client's
+default deadline would change how a registered request runs.
 
 ## Endpoint configuration
 
@@ -224,12 +236,30 @@ result, and controls promotion. The runner produces one of two outcomes:
 - a failed-attempt bundle containing the manifest, sanitized failure taxonomy,
   and any private raw response captured before failure.
 
+The runner checks the manifest's metrics against the scorecard fields and
+refuses an existing destination, including a dangling symbolic link, before it
+sends a request. After a response is captured, no exception deletes it. A
+failure that is not an adapter failure, such as a reasoning receipt that does
+not recompute, leaves no published bundle; the staging directory is renamed to
+`<destination>.quarantined` and the error names that path. An HTTP status
+outside 100–599, which v1 attempt reports cannot hold, is recorded as a null
+`status_code` under the `http_status` failure kind, and the raw response is
+kept.
+
 Bundle manifests inventory every retained file by path, media type, visibility,
 byte length, and SHA-256 digest. The bundle identifier binds that inventory and
-its execution metadata. Validation also recomputes cross-document semantics,
-including manifest identity, diagnosis references, usage fields, artifact
-digest, ledger integrity, and receipt projection. The destination must be new;
-there is no overwrite or implicit rerun.
+its execution metadata. Validation reads only regular files, without following
+symbolic links and within the shipped evidence-bundle size limits, and rejects
+any symbolic link or non-regular entry in the bundle. It then replays the
+recorded diagnosis through the case: the stored ledger and scorecard must equal
+the replay, the receipt must recompute from the ledger, and the manifest must
+match the request, the recorded diagnostician, and the prompt payload it
+renders. The destination must be new; there is no overwrite or implicit rerun,
+and a quarantined attempt also keeps its slot.
+
+This runner and the paired comparison runner below exit 0 for a completed
+bundle and 1 only for a published or verified failed-attempt bundle. Any other
+failure exits 2 with a one-line `ERROR:` message and no traceback.
 
 On 2026-07-22, one live attempt with Together AI and
 `openai/gpt-oss-20b` returned a conforming assertion. This is evidence that the
@@ -253,7 +283,10 @@ investigation plan containing plausible causes, predictions, and a selected
 check. Each provider/model target has a committed manifest that binds both
 schemas and rendered payloads. Completed bundles prove that the untested and
 evidence-tested paths consume the identical plan and raw-response digest.
-Failure bundles preserve which request stopped execution.
+Failure bundles preserve which request stopped execution. Comparison bundles
+follow the same quarantine, status-code, file-reading, and exit-code rules. Each
+branch's `receipt_recomputes` is measured, and a replicate with a branch whose
+receipt does not recompute from its ledger is quarantined, not published.
 
 The v5 matrix, registered in July 2026, uses GLM 5.2, MiniMax M3, and Qwen 3.7
 Plus through one Fireworks AI endpoint family. Provider is controlled

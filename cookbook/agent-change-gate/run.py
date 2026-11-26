@@ -170,6 +170,9 @@ def _load_assertion(path: Path) -> tuple[ModelAssertion, bytes]:
         )
     except json.JSONDecodeError as error:
         raise AssertionFormatError(f"{path} is not valid JSON: {error}") from error
+    except RecursionError:
+        # Exit 1 is the gate's rejection, so a parser crash must not reach it.
+        raise AssertionFormatError(f"{path} is nested too deeply to parse") from None
     if not isinstance(value, dict):
         raise AssertionFormatError(f"{path} must contain one JSON object")
 

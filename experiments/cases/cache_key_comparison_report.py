@@ -30,6 +30,7 @@ from .cache_key_comparison_study import (
     MAX_OUTPUT_TOKENS,
     REPLICATE_COUNT,
     STUDY_TARGETS_BY_VERSION,
+    STUDY_VERSION,
     TEMPERATURE,
     TIMEOUT_SECONDS,
     TOP_P,
@@ -462,6 +463,79 @@ def _provider_control(
     }
 
 
+def _stream(targets: Sequence[ComparisonStudyTarget]) -> bool:
+    modes = {target.stream for target in targets}
+    if len(modes) != 1:
+        raise ValueError("study targets do not share one streaming mode")
+    return modes.pop()
+
+
+def _design(targets: Sequence[ComparisonStudyTarget]) -> JsonObject:
+    """Return the registered design that one study version's targets share."""
+
+    return {
+        "target_count": len(targets),
+        "replicates_per_target": REPLICATE_COUNT,
+        "temperature": TEMPERATURE,
+        "top_p": TOP_P,
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "timeout_seconds": TIMEOUT_SECONDS,
+        "stream": _stream(targets),
+        "automatic_retry": False,
+        "repair": False,
+        "fallback": False,
+        "provider_control": _provider_control(targets),
+    }
+
+
+def _limitations(
+    targets: Sequence[ComparisonStudyTarget],
+    *,
+    study_version: str,
+    prediction_metrics_valid: bool,
+) -> list[JsonValue]:
+    """Return the report limitations, naming each hosted-only model family."""
+
+    hosted_only_families = dict.fromkeys(
+        target.model_family
+        for target in targets
+        if target.checkpoint_status == "hosted_only"
+    )
+    return [
+        "This report describes one transparent diagnosis problem with a fixed set of possible causes.",
+        "Five runs per model are too few to estimate how that model behaves in general.",
+        "Provider and adapter failures record execution behavior; they are not scored as wrong diagnoses.",
+        "Behavioral counts use only runs in which both requested model outputs satisfied their contracts.",
+        *(
+            []
+            if prediction_metrics_valid
+            else [
+                "Prediction correctness and resulting verdict states are invalidated by a representation mismatch."
+            ]
+        ),
+        *(
+            [
+                "V3 stopped on an attempt-profile receipt defect; no v3 output is reused in v4."
+            ]
+            if study_version == "4"
+            else []
+        ),
+        *(
+            [
+                "V5 fixes one provider as controlled infrastructure; provider identity is provenance only.",
+                "No v4 model output or scorecard is reused in v5.",
+            ]
+            if study_version == "5"
+            else []
+        ),
+        *(
+            f"{family} is a hosted-only comparator, not an open-weight result."
+            for family in hosted_only_families
+        ),
+        "No composite truth, trust, or reasoning score is calculated.",
+    ]
+
+
 def _registered_manifest_time(
     target: ComparisonStudyTarget,
     manifest: JsonObject,
@@ -586,19 +660,7 @@ def build_comparison_report(
         "case_id": request.case_id,
         "registered_at": registered_at,
         "reported_at": _timestamp(reported_at),
-        "design": {
-            "target_count": len(targets),
-            "replicates_per_target": REPLICATE_COUNT,
-            "temperature": TEMPERATURE,
-            "top_p": TOP_P,
-            "max_output_tokens": MAX_OUTPUT_TOKENS,
-            "timeout_seconds": TIMEOUT_SECONDS,
-            "stream": True,
-            "automatic_retry": False,
-            "repair": False,
-            "fallback": False,
-            "provider_control": _provider_control(targets),
-        },
+        "design": _design(targets),
         "totals": _totals(
             observations,
             target_summaries,
@@ -611,36 +673,11 @@ def build_comparison_report(
         "target_summaries": target_summary_values,
         "replicates": observation_values,
         "metadata_anomalies": anomaly_values,
-        "limitations": [
-            "This report describes one transparent diagnosis problem with a fixed set of possible causes.",
-            "Five runs per model are too few to estimate how that model behaves in general.",
-            "Provider and adapter failures record execution behavior; they are not scored as wrong diagnoses.",
-            "Behavioral counts use only runs in which both requested model outputs satisfied their contracts.",
-            *(
-                []
-                if prediction_metrics_valid
-                else [
-                    "Prediction correctness and resulting verdict states are invalidated by a representation mismatch."
-                ]
-            ),
-            *(
-                [
-                    "V3 stopped on an attempt-profile receipt defect; no v3 output is reused in v4."
-                ]
-                if study_version == "4"
-                else []
-            ),
-            *(
-                [
-                    "V5 fixes one provider as controlled infrastructure; provider identity is provenance only.",
-                    "No v4 model output or scorecard is reused in v5.",
-                ]
-                if study_version == "5"
-                else []
-            ),
-            "Qwen 3.7 Plus is a hosted-only comparator, not an open-weight result.",
-            "No composite truth, trust, or reasoning score is calculated.",
-        ],
+        "limitations": _limitations(
+            targets,
+            study_version=study_version,
+            prediction_metrics_valid=prediction_metrics_valid,
+        ),
     }
 
 
@@ -786,7 +823,7 @@ def render_markdown(report: JsonObject) -> str:
         "represented predicted outcomes differently"
     )
     lines = [f"# Case 001 comparison study v{study_version}"]
-    if study_version in {"2", "4"}:
+    if study_version != STUDY_VERSION:
         lines.extend(
             [
                 "",

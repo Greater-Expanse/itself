@@ -19,6 +19,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final, cast
 
+from experiments._schema_validation import contract_schema
 from experiments.diagnostician import (
     CONTRACT_VERSION,
     DiagnosisContractError,
@@ -61,12 +62,22 @@ from itself.inference import (
 
 ADAPTER_ID: Final = "openai-chat-completions"
 ADAPTER_VERSION: Final = "0.2.0"
+# Registered manifests record the binding identity above, but the shipped
+# ``itself.inference`` client sends every request.  This binding version was
+# verified against the shipped adapter named here, and a test pins the pairing,
+# so a change to the shipped client cannot run under the old binding version.
+SHIPPED_ADAPTER_ID: Final = "openai-compatible-chat-completions"
+SHIPPED_ADAPTER_VERSION: Final = "0.3.1"
 PROTOCOL_ID: Final = "openai-chat-completions"
 SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_2_0"
 CONSTRAINED_SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_3_0"
 
 _CONTRACT_ROOT: Final = Path(__file__).resolve().parent / "contracts" / "v1"
 _ASSERTION_SCHEMA_PATH: Final = _CONTRACT_ROOT / "diagnosis-assertion.schema.json"
+# Registered manifests bound each read with ``execution.timeout_seconds`` and
+# register no total deadline, so the shipped client's default deadline would
+# be an unregistered change to how a registered request runs.
+_REGISTERED_DEADLINE_SECONDS: Final = None
 _IDENTIFIER_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_HEADERS: Final = frozenset(
@@ -249,6 +260,7 @@ class OpenAIChatEndpoint:
             stream=self.stream,
             extra_headers=headers,
             extra_body=body,
+            deadline_seconds=_REGISTERED_DEADLINE_SECONDS,
         )
         object.__setattr__(self, "base_url", compatible.base_url)
         object.__setattr__(
@@ -281,14 +293,12 @@ class OpenAIChatEndpoint:
             stream=self.stream,
             extra_headers=self.extra_headers,
             extra_body=self.extra_body,
+            deadline_seconds=_REGISTERED_DEADLINE_SECONDS,
         )
 
 
 def _load_model_schema() -> JsonObject:
-    value = cast(JsonValue, json.loads(_ASSERTION_SCHEMA_PATH.read_text("utf-8")))
-    if not isinstance(value, dict):
-        raise TypeError("diagnosis assertion schema must contain an object")
-    schema = deepcopy(value)
+    schema = contract_schema(_ASSERTION_SCHEMA_PATH)
     for annotation in ("$schema", "$id", "title"):
         schema.pop(annotation, None)
     return schema

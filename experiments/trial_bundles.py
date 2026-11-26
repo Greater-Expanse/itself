@@ -6,20 +6,32 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import shutil
 import stat
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Final, Protocol, cast
+from types import TracebackType
+from typing import Final, Protocol
 
-from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
+from experiments._bundle_validation import (
+    FILE_BYTE_LIMIT,
+    LEDGER_BYTE_LIMIT,
+    RECEIPT_BYTE_LIMIT,
+    close_staging,
+    read_regular_file,
+    receipt_recomputes,
+    recordable_status_code,
+    require_bundle_root,
+    require_unused_destination,
+)
+from experiments._bundle_validation import (
+    AttemptQuarantinedError as AttemptQuarantinedError,
+)
 from experiments._bundle_validation import (
     ValidatedInventory as _ValidatedInventory,
 )
@@ -39,6 +51,8 @@ from experiments._bundle_validation import (
 from experiments._contract_values import object_value as _object
 from experiments._contract_values import string_value as _string
 from experiments._contract_values import string_values as _strings
+from experiments._schema_validation import contract_validator
+from experiments.cases.cache_key_scripted_run import project_scripted_case
 from experiments.diagnostician import (
     DiagnosisRequest,
     DiagnosisResult,
@@ -46,9 +60,9 @@ from experiments.diagnostician import (
 )
 from experiments.model_adapters import DirectoryArtifactSink, ModelAdapterError
 from experiments.trial_manifests import (
+    TrialManifestValidationError,
     TrialManifestValidator,
     canonical_json_bytes,
-    load_trial_manifest,
 )
 from itself import (
     JsonlLedgerStore,
@@ -100,6 +114,13 @@ _SHAREABLE_MEDIA_TYPES: Final = {
     _SCORECARD_NAME: "application/json",
     _RECEIPT_NAME: "application/json",
 }
+# Scorecard fields that the builder adds to the runner's own metrics.
+_BUILDER_METRICS: Final = (
+    "model_input_tokens",
+    "model_output_tokens",
+    "wall_time_ms",
+    "receipt_recomputes",
+)
 
 
 class _SchemaValidator(Protocol):
@@ -133,6 +154,17 @@ class CompletedTrial(Protocol):
     def metrics(self) -> TrialMetrics: ...
 
 
+class TrialProjection(Protocol):
+    """Deterministic replay of one recorded diagnosis through its case."""
+
+    def __call__(
+        self,
+        request: DiagnosisRequest,
+        diagnosis: DiagnosisResult,
+        /,
+    ) -> CompletedTrial: ...
+
+
 class TrialBundleValidationError(ValueError):
     """Raised when a trial bundle is structurally or cryptographically invalid."""
 
@@ -143,6 +175,36 @@ class TrialBundleStateError(RuntimeError):
 
 def _load_json_object(path: Path) -> JsonObject:
     return _shared_load_json_object(path, error_type=TrialBundleValidationError)
+
+
+def _read_artifact(path: Path) -> bytes:
+    return read_regular_file(
+        path,
+        max_bytes=FILE_BYTE_LIMIT,
+        error_type=TrialBundleValidationError,
+    )
+
+
+def _require_scorecard_metrics(
+    trial_manifest: JsonObject,
+    metric_fields: tuple[str, ...],
+) -> None:
+    """Require the manifest to declare exactly the fields the scorecard holds."""
+
+    produced = set(metric_fields)
+    if len(produced) != len(metric_fields) or produced & set(_BUILDER_METRICS):
+        raise TrialBundleValidationError(
+            "runner metric fields must be unique and must not repeat the "
+            f"builder's fields {list(_BUILDER_METRICS)}"
+        )
+    produced.update(_BUILDER_METRICS)
+    declared = set(_strings(trial_manifest["metrics"], "metrics"))
+    if declared != produced:
+        raise TrialBundleValidationError(
+            "trial manifest metrics do not match the scorecard fields; "
+            f"undeclared={sorted(produced - declared)}, "
+            f"unmeasured={sorted(declared - produced)}"
+        )
 
 
 def parse_bundle_relative_path(value: str) -> PurePosixPath:
@@ -208,37 +270,19 @@ class VerifiedFailedTrialBundle:
 
 
 class TrialBundleValidator:
-    """Validate file inventory, digests, and cross-document bundle bindings."""
+    """Validate file inventory, digests, and cross-document bundle bindings.
 
-    def __init__(self) -> None:
-        schema_value = cast(
-            JsonValue,
-            json.loads(_BUNDLE_SCHEMA_PATH.read_text(encoding="utf-8")),
+    A completed bundle is replayed: ``projection`` runs the recorded diagnosis
+    through its case again, and the stored ledger and scorecard must equal
+    what that replay produces.  The default replays case 001.
+    """
+
+    def __init__(self, *, projection: TrialProjection = project_scripted_case) -> None:
+        self._validator: _SchemaValidator = contract_validator(_BUNDLE_SCHEMA_PATH)
+        self._attempt_validator: _SchemaValidator = contract_validator(
+            _ATTEMPT_SCHEMA_PATH
         )
-        if not isinstance(schema_value, dict):
-            raise TypeError("trial bundle schema must contain a JSON object")
-        Draft202012Validator.check_schema(schema_value)
-        self._validator = cast(
-            _SchemaValidator,
-            Draft202012Validator(
-                schema_value,
-                format_checker=FormatChecker(),
-            ),
-        )
-        attempt_schema_value = cast(
-            JsonValue,
-            json.loads(_ATTEMPT_SCHEMA_PATH.read_text(encoding="utf-8")),
-        )
-        if not isinstance(attempt_schema_value, dict):
-            raise TypeError("trial attempt report schema must contain a JSON object")
-        Draft202012Validator.check_schema(attempt_schema_value)
-        self._attempt_validator = cast(
-            _SchemaValidator,
-            Draft202012Validator(
-                attempt_schema_value,
-                format_checker=FormatChecker(),
-            ),
-        )
+        self._projection = projection
 
     def errors(self, bundle_manifest: JsonValue) -> list[str]:
         """Return stable, human-readable bundle-manifest schema errors."""
@@ -281,6 +325,20 @@ class TrialBundleValidator:
             error_type=TrialBundleValidationError,
         )
 
+    @staticmethod
+    def _trial_manifest(root: Path, bundle_manifest: JsonObject) -> JsonObject:
+        trial_manifest = _load_json_object(root / _TRIAL_MANIFEST_NAME)
+        TrialManifestValidator().validate(trial_manifest)
+        if bundle_manifest["trial_series_id"] != trial_manifest["trial_series_id"]:
+            raise TrialBundleValidationError(
+                "bundle trial_series_id does not match its trial manifest"
+            )
+        if bundle_manifest["condition"] != trial_manifest["condition"]:
+            raise TrialBundleValidationError(
+                "bundle condition does not match its trial manifest"
+            )
+        return trial_manifest
+
     def validate_completed(
         self,
         path: StrPath,
@@ -313,24 +371,17 @@ class TrialBundleValidator:
                     f"completed bundle file {required!r} has the wrong media type"
                 )
 
-        trial_manifest = load_trial_manifest(root / _TRIAL_MANIFEST_NAME)
-        TrialManifestValidator().validate(trial_manifest)
-        if bundle_manifest["trial_series_id"] != trial_manifest["trial_series_id"]:
-            raise TrialBundleValidationError(
-                "bundle trial_series_id does not match its trial manifest"
-            )
-        if bundle_manifest["condition"] != trial_manifest["condition"]:
-            raise TrialBundleValidationError(
-                "bundle condition does not match its trial manifest"
-            )
+        trial_manifest = self._trial_manifest(root, bundle_manifest)
         artifact_policy = _object(trial_manifest["artifact_policy"], "artifact_policy")
         if artifact_policy["raw_provider_response"] != "private":
             raise TrialBundleValidationError(
                 "completed private bundle requires private raw-response retention"
             )
 
-        ledger = JsonlLedgerStore(root / _LEDGER_NAME).load()
-        receipt = JsonReceiptStore(root / _RECEIPT_NAME).load()
+        ledger = JsonlLedgerStore(root / _LEDGER_NAME).load(max_bytes=LEDGER_BYTE_LIMIT)
+        receipt = JsonReceiptStore(root / _RECEIPT_NAME).load(
+            max_bytes=RECEIPT_BYTE_LIMIT
+        )
         ReasoningReceiptValidator().validate_against_ledger(receipt, ledger)
 
         diagnosis_value = _load_json_object(root / _DIAGNOSIS_RESULT_NAME)
@@ -338,26 +389,31 @@ class TrialBundleValidator:
             request,
             diagnosis_value,
         )
+        try:
+            TrialManifestValidator().validate_recorded(
+                trial_manifest,
+                request,
+                diagnosis.diagnostician,
+            )
+        except TrialManifestValidationError as error:
+            raise TrialBundleValidationError(f"trial manifest: {error}") from error
+
+        projected = self._projection(request, diagnosis)
+        if ledger.records != projected.ledger.records:
+            raise TrialBundleValidationError(
+                "ledger does not match the deterministic projection of the diagnosis"
+            )
         scorecard = _load_json_object(root / _SCORECARD_NAME)
         declared_metrics = set(_strings(trial_manifest["metrics"], "metrics"))
         if set(scorecard) != declared_metrics:
             raise TrialBundleValidationError(
                 "scorecard fields do not exactly match preregistered metrics"
             )
-        usage = diagnosis.usage
-        expected_usage = {
-            "model_input_tokens": usage.model_input_tokens,
-            "model_output_tokens": usage.model_output_tokens,
-            "wall_time_ms": usage.wall_time_ms,
-        }
-        for field, expected in expected_usage.items():
-            if scorecard[field] != expected:
-                raise TrialBundleValidationError(
-                    f"scorecard {field} does not match diagnosis usage"
-                )
-        if scorecard["receipt_recomputes"] is not True:
+        # The receipt was validated against this ledger above, so a scorecard
+        # from a correct run records receipt_recomputes as true.
+        if scorecard != _scorecard(projected, receipt_recomputes=True):
             raise TrialBundleValidationError(
-                "scorecard receipt_recomputes must be true"
+                "scorecard does not match the deterministic projection of the diagnosis"
             )
 
         artifact_uri = diagnosis.raw_output_artifact.uri
@@ -426,16 +482,7 @@ class TrialBundleValidator:
                     f"failed bundle file {required!r} has the wrong media type"
                 )
 
-        trial_manifest = load_trial_manifest(root / _TRIAL_MANIFEST_NAME)
-        TrialManifestValidator().validate(trial_manifest)
-        if bundle_manifest["trial_series_id"] != trial_manifest["trial_series_id"]:
-            raise TrialBundleValidationError(
-                "bundle trial_series_id does not match its trial manifest"
-            )
-        if bundle_manifest["condition"] != trial_manifest["condition"]:
-            raise TrialBundleValidationError(
-                "bundle condition does not match its trial manifest"
-            )
+        trial_manifest = self._trial_manifest(root, bundle_manifest)
         artifact_policy = _object(trial_manifest["artifact_policy"], "artifact_policy")
         if artifact_policy["raw_provider_response"] != "private":
             raise TrialBundleValidationError(
@@ -503,6 +550,7 @@ class TrialBundleValidator:
         """Validate a completed or failed bundle according to its declared outcome."""
 
         root = Path(path)
+        require_bundle_root(root, error_type=TrialBundleValidationError)
         bundle_manifest = _load_json_object(root / _BUNDLE_MANIFEST_NAME)
         self.validate_manifest(bundle_manifest)
         outcome = bundle_manifest["outcome"]
@@ -514,14 +562,23 @@ class TrialBundleValidator:
 
 
 class TrialBundleBuilder:
-    """Build one immutable bundle in a private sibling directory, then rename."""
+    """Build one immutable bundle in a private sibling directory, then rename.
+
+    ``metric_fields`` names the fields of the runner's metrics.  With the
+    fields the builder adds, they must be exactly the manifest's registered
+    metrics, which is checked before any request.  Once staging holds a
+    captured response, an exception never deletes it: the staging directory
+    is renamed to ``<destination>.quarantined`` and an
+    ``AttemptQuarantinedError`` names that path.
+    """
 
     def __init__(
         self,
         destination: StrPath,
         trial_manifest: JsonObject,
         *,
-        now: datetime,
+        now: Callable[[], datetime],
+        metric_fields: Sequence[str],
     ) -> None:
         self.destination: Path = Path(destination)
         if not self.destination.name:
@@ -532,16 +589,18 @@ class TrialBundleBuilder:
             raise TrialBundleValidationError(
                 "bundle builder requires private raw-response retention"
             )
+        self._metric_fields = tuple(metric_fields)
+        _require_scorecard_metrics(trial_manifest, self._metric_fields)
         self._trial_manifest: JsonObject = deepcopy(trial_manifest)
-        self._created_at = _timestamp(now)
+        self._now = now
+        self._created_at = _timestamp(now())
         self._staging: Path | None = None
         self._published = False
 
     def __enter__(self) -> TrialBundleBuilder:
         if self._staging is not None or self._published:
             raise TrialBundleStateError("bundle builder cannot be entered twice")
-        if self.destination.exists():
-            raise FileExistsError(self.destination)
+        require_unused_destination(self.destination)
         parent = self.destination.parent
         parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
@@ -556,20 +615,30 @@ class TrialBundleBuilder:
 
     def __exit__(
         self,
-        exception_type: object,
-        exception: object,
-        traceback: object,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: TracebackType | None,
     ) -> None:
-        del exception_type, exception, traceback
-        staging = self._staging
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        self._staging = None
+        del exception_type, traceback
+        staging, self._staging = self._staging, None
+        close_staging(staging, self.destination, exception)
 
     def _active_root(self) -> Path:
         if self._staging is None or self._published:
             raise TrialBundleStateError("bundle builder is not active")
         return self._staging
+
+    def _captured_artifact(self, uri: str, sha256: str, *, label: str) -> None:
+        artifact_relative = parse_bundle_relative_path(uri)
+        if not artifact_relative.parts or artifact_relative.parts[0] != "artifacts":
+            raise TrialBundleValidationError(
+                f"{label} artifact must use the bundle artifacts/ namespace"
+            )
+        artifact_path = self._active_root().joinpath(*artifact_relative.parts)
+        if _sha256_bytes(_read_artifact(artifact_path)) != sha256:
+            raise TrialBundleValidationError(
+                f"captured {label} artifact does not match its declared digest"
+            )
 
     @property
     def artifact_sink(self) -> DirectoryArtifactSink:
@@ -585,8 +654,17 @@ class TrialBundleBuilder:
         """Write, verify, and atomically publish one completed trial bundle."""
 
         root = self._active_root()
+        if set(result.metrics.to_json_object()) != set(self._metric_fields):
+            raise TrialBundleValidationError(
+                "runner metrics differ from the metric fields given to the builder"
+            )
         receipt = build_reasoning_receipt(result.ledger)
-        ReasoningReceiptValidator().validate_against_ledger(receipt, result.ledger)
+        # A v1 completed bundle records only a receipt that recomputes, so a
+        # receipt that does not is a failure that keeps its captured response.
+        if not receipt_recomputes(receipt, result.ledger):
+            raise TrialBundleValidationError(
+                "reasoning receipt does not recompute from the trial ledger"
+            )
         scorecard = _scorecard(result, receipt_recomputes=True)
         declared_metrics = set(_strings(self._trial_manifest["metrics"], "metrics"))
         if set(scorecard) != declared_metrics:
@@ -595,24 +673,11 @@ class TrialBundleBuilder:
             )
 
         artifact_uri = result.diagnosis.raw_output_artifact.uri
-        artifact_relative = parse_bundle_relative_path(artifact_uri)
-        if not artifact_relative.parts or artifact_relative.parts[0] != "artifacts":
-            raise TrialBundleValidationError(
-                "diagnosis artifact must use the bundle artifacts/ namespace"
-            )
-        artifact_path = root.joinpath(*artifact_relative.parts)
-        if not artifact_path.is_file() or artifact_path.is_symlink():
-            raise TrialBundleValidationError(
-                "diagnosis artifact was not captured inside the bundle"
-            )
-        artifact_content = artifact_path.read_bytes()
-        if (
-            _sha256_bytes(artifact_content)
-            != result.diagnosis.raw_output_artifact.sha256
-        ):
-            raise TrialBundleValidationError(
-                "captured diagnosis artifact does not match its declared digest"
-            )
+        self._captured_artifact(
+            artifact_uri,
+            result.diagnosis.raw_output_artifact.sha256,
+            label="diagnosis",
+        )
 
         _write_private_bytes(
             root / _TRIAL_MANIFEST_NAME,
@@ -707,26 +772,17 @@ class TrialBundleBuilder:
         failure: JsonObject = {
             "kind": error.failure.value,
             "retryable": error.retryable,
-            "status_code": error.status_code,
+            "status_code": recordable_status_code(error.status_code),
         }
         artifact_uri: str | None = None
         if error.artifact is not None:
             artifact = error.artifact
             artifact_uri = artifact.uri
-            artifact_relative = parse_bundle_relative_path(artifact_uri)
-            if not artifact_relative.parts or artifact_relative.parts[0] != "artifacts":
-                raise TrialBundleValidationError(
-                    "failed response artifact must use the artifacts/ namespace"
-                )
-            artifact_path = root.joinpath(*artifact_relative.parts)
-            if not artifact_path.is_file() or artifact_path.is_symlink():
-                raise TrialBundleValidationError(
-                    "failed response artifact was not captured inside the bundle"
-                )
-            if _sha256_bytes(artifact_path.read_bytes()) != artifact.sha256:
-                raise TrialBundleValidationError(
-                    "failed response artifact does not match its declared digest"
-                )
+            self._captured_artifact(
+                artifact_uri,
+                artifact.sha256,
+                label="failed response",
+            )
             failure["response_artifact"] = artifact.to_json_object()
 
         attempt_report: JsonObject = {
@@ -734,7 +790,7 @@ class TrialBundleBuilder:
             "trial_series_id": self._trial_manifest["trial_series_id"],
             "attempt_index": 1,
             "outcome": "adapter_failed",
-            "completed_at": self._created_at,
+            "completed_at": _timestamp(self._now()),
             "failure": failure,
         }
         validator = TrialBundleValidator()

@@ -102,6 +102,25 @@ def test_sdk_exercise_reports_end_to_end_and_mutation_behavior(
         assert stat.S_IMODE(output.stat().st_mode) == stat.S_IRWXU
 
 
+def test_artifact_digest_mutation_reaches_the_digest_check(tmp_path: Path) -> None:
+    report = run_sdk_exercise(
+        tmp_path / "evaluation",
+        source_revision="abc123",
+        generated_at=GENERATED_AT,
+        environment=ENVIRONMENT,
+        monotonic_ns=StepClock(),
+    )
+
+    (check,) = (
+        check
+        for check in report.checks
+        if check.check_id == "mutation.bundle.artifact-digest"
+    )
+    assert check.status is EvaluationStatus.PASSED
+    assert check.details["mutation"] == "artifact-same-length-byte-change"
+    assert check.details["rejection_stage"] == "inventory_digest"
+
+
 def test_sdk_exercise_report_is_reproducible_under_fixed_observations(
     tmp_path: Path,
 ) -> None:

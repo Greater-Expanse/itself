@@ -5,14 +5,18 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import stat
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+import experiments.cases.cache_key_comparison_report as report_module
 from experiments.cases.cache_key_comparison import ComparisonCondition
 from experiments.cases.cache_key_comparison_report import (
     _metric_validity,
@@ -20,14 +24,25 @@ from experiments.cases.cache_key_comparison_report import (
     _registered_manifest_time,
     _target_summary,
     _totals,
+    build_comparison_report,
     render_markdown,
     write_comparison_report,
 )
+from experiments.cases.cache_key_comparison_run import run_cache_key_comparison
 from experiments.cases.cache_key_comparison_study import (
+    STUDY_TARGETS_BY_VERSION,
+    STUDY_VERSION,
     ComparisonStudyTarget,
     build_study_manifest,
 )
+from experiments.cases.cache_key_diagnostician import (
+    CacheKeyFixtureDiagnostician,
+    CacheKeyNarrativeFixtureDiagnostician,
+)
+from experiments.model_adapters import HttpRequest, HttpResponse
 from itself import JsonObject, JsonValue
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _target() -> ComparisonStudyTarget:
@@ -296,3 +311,130 @@ def test_report_writer_is_private_input_free_and_never_overwrites(
             json_path=json_path,
             markdown_path=markdown_path,
         )
+
+
+def _completion(assertion: JsonObject, *, input_tokens: int) -> HttpResponse:
+    envelope: JsonObject = {
+        "id": "v1-report-completion",
+        "model": "Qwen/Qwen3.7-Max",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": json.dumps(assertion)},
+            }
+        ],
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": 40,
+            "total_tokens": input_tokens + 40,
+        },
+    }
+    return HttpResponse(
+        200, {"Content-Type": "application/json"}, json.dumps(envelope).encode()
+    )
+
+
+@dataclass(slots=True)
+class _Responses:
+    responses: list[HttpResponse]
+
+    def send(self, request: HttpRequest, /) -> HttpResponse:
+        del request
+        return self.responses.pop(0)
+
+
+def test_a_v1_report_derives_its_design_and_limitations_from_its_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One registered v1 target and one replicate keep the bundle set small;
+    # the target, its manifest and its non-streaming responses are v1's own.
+    target = STUDY_TARGETS_BY_VERSION["1"][4]
+    assert target.target_id == "together-qwen3p7-max" and target.stream is False
+    monkeypatch.setattr(report_module, "STUDY_TARGETS_BY_VERSION", {"1": (target,)})
+    monkeypatch.setattr(report_module, "REPLICATE_COUNT", 1)
+    request = report_module._request()
+    narrative = CacheKeyNarrativeFixtureDiagnostician().diagnose(request).assertion
+    structured = CacheKeyFixtureDiagnostician().diagnose(request).assertion
+    root = tmp_path / "bundles"
+    run_cache_key_comparison(
+        ROOT
+        / "experiments/001-cache-key-omission/manifests/v1/together-qwen3p7-max.json",
+        root / target.target_id / "replicate-001",
+        replicate_index=1,
+        base_url=target.base_url,
+        api_key_env=target.api_key_env,
+        transport=_Responses(
+            [
+                _completion(narrative.to_json_object(), input_tokens=90),
+                _completion(structured.to_model_json_object(), input_tokens=150),
+            ]
+        ),
+        environment={target.api_key_env: "v1-report-secret"},
+        now=lambda: datetime(2026, 7, 24, 20, 0, tzinfo=UTC),
+        monotonic_ns=itertools.count(1_000_000, 1_000_000).__next__,
+    )
+
+    report = build_comparison_report(
+        root,
+        study_version="1",
+        reported_at=datetime(2026, 7, 25, tzinfo=UTC),
+    )
+
+    design = cast(JsonObject, report["design"])
+    limitations = cast(list[str], report["limitations"])
+    assert design["stream"] is False
+    assert (
+        "Qwen 3.7 Max is a hosted-only comparator, not an open-weight result."
+        in limitations
+    )
+    assert not any("Qwen 3.7 Plus" in limitation for limitation in limitations)
+    assert "Status: historical study version" in render_markdown(report)
+
+
+@pytest.mark.parametrize("study_version", ["1", "2", "3", "4"])
+def test_every_superseded_study_version_carries_the_historical_banner(
+    study_version: str,
+) -> None:
+    report = deepcopy(_v4_report())
+    report["study_version"] = study_version
+
+    assert "Status: historical study version" in render_markdown(report)
+
+
+def test_the_current_study_version_carries_no_historical_banner() -> None:
+    assert STUDY_VERSION == "5"
+    assert "Status: historical study version" not in render_markdown(_v5_report())
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "archive/2026-07-24-case-001-comparison-v2",
+        "archive/2026-07-24-case-001-comparison-v4",
+        "current/2026-07-24-case-001-comparison-v5",
+    ],
+)
+def test_committed_reports_are_reproduced_from_their_targets(name: str) -> None:
+    # The study record is immutable: what the reporter derives from the
+    # registered targets must match what each committed report says.
+    path = ROOT / "experiments" / "results" / name
+    report = cast(JsonObject, json.loads(path.with_suffix(".json").read_text("utf-8")))
+    study_version = cast(str, report["study_version"])
+    targets = STUDY_TARGETS_BY_VERSION[study_version]
+    validity = cast(JsonObject, report["metric_validity"])
+    prediction_metrics_valid = "predictions_correct" not in cast(
+        JsonObject, validity["invalid"]
+    )
+
+    assert render_markdown(report) == path.with_suffix(".md").read_text("utf-8")
+    assert report_module._design(targets) == report["design"]
+    assert (
+        report_module._limitations(
+            targets,
+            study_version=study_version,
+            prediction_metrics_valid=prediction_metrics_valid,
+        )
+        == report["limitations"]
+    )

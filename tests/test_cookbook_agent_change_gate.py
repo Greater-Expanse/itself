@@ -458,3 +458,22 @@ def test_agent_change_gate_rejects_unknown_assertion_fields_before_running(
     assert completed.returncode == 2
     assert "unknown=['command']" in completed.stderr
     assert not marker.exists()
+
+
+def test_agent_change_gate_reports_a_deeply_nested_assertion_as_input_error(
+    tmp_path: Path,
+) -> None:
+    # Exit 1 is the gate's REJECT, so an assertion it cannot parse must not
+    # crash with that code.
+    assertion = tmp_path / "assertion.json"
+    assertion.write_text("[" * 60_000, encoding="utf-8")
+    output = tmp_path / "output"
+
+    completed = _run_gate(output, 0, assertion=assertion)
+
+    assert completed.returncode == 2
+    assert completed.stderr.startswith("ERROR: ")
+    assert "nested too deeply" in completed.stderr
+    assert completed.stderr.count("\n") == 1
+    assert not completed.stdout
+    assert not output.exists()

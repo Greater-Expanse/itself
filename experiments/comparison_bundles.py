@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import shutil
 import stat
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -15,12 +13,25 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from types import MappingProxyType
-from typing import Final, Protocol, cast
+from types import MappingProxyType, TracebackType
+from typing import Final, Protocol
 
-from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
+from experiments._bundle_validation import (
+    FILE_BYTE_LIMIT,
+    LEDGER_BYTE_LIMIT,
+    RECEIPT_BYTE_LIMIT,
+    close_staging,
+    read_regular_file,
+    receipt_recomputes,
+    recordable_status_code,
+    require_bundle_root,
+    require_unused_destination,
+)
+from experiments._bundle_validation import (
+    AttemptQuarantinedError as AttemptQuarantinedError,
+)
 from experiments._bundle_validation import (
     ValidatedInventory as _ValidatedInventory,
 )
@@ -41,6 +52,7 @@ from experiments._contract_values import integer_value as _integer
 from experiments._contract_values import object_value as _object
 from experiments._contract_values import string_value as _string
 from experiments._contract_values import string_values as _strings
+from experiments._schema_validation import contract_validator
 from experiments.cases.cache_key_comparison import (
     NARRATIVE_ATTEMPT_ID,
     STRUCTURED_ATTEMPT_ID,
@@ -49,10 +61,7 @@ from experiments.cases.cache_key_comparison import (
     ComparisonCondition,
     project_comparative_results,
 )
-from experiments.comparison_manifests import (
-    ComparisonManifestValidator,
-    load_comparison_manifest,
-)
+from experiments.comparison_manifests import ComparisonManifestValidator
 from experiments.diagnostician import (
     DiagnosisRequest,
     DiagnosisResult,
@@ -118,6 +127,16 @@ def _load_json_object(path: Path) -> JsonObject:
     return _shared_load_json_object(
         path,
         error_type=ComparisonBundleValidationError,
+    )
+
+
+def _artifact_sha256(path: Path) -> str:
+    return _sha256_bytes(
+        read_regular_file(
+            path,
+            max_bytes=FILE_BYTE_LIMIT,
+            error_type=ComparisonBundleValidationError,
+        )
     )
 
 
@@ -223,31 +242,11 @@ class ComparisonBundleValidator:
     """Validate inventory, bindings, projections, scorecards, and receipts."""
 
     def __init__(self) -> None:
-        bundle_schema = cast(
-            JsonValue,
-            json.loads(_BUNDLE_SCHEMA_PATH.read_text(encoding="utf-8")),
+        self._bundle_validator: _SchemaValidator = contract_validator(
+            _BUNDLE_SCHEMA_PATH
         )
-        attempt_schema = cast(
-            JsonValue,
-            json.loads(_ATTEMPT_SCHEMA_PATH.read_text(encoding="utf-8")),
-        )
-        if not isinstance(bundle_schema, dict) or not isinstance(attempt_schema, dict):
-            raise TypeError("comparison bundle contracts must contain JSON objects")
-        Draft202012Validator.check_schema(bundle_schema)
-        Draft202012Validator.check_schema(attempt_schema)
-        self._bundle_validator = cast(
-            _SchemaValidator,
-            Draft202012Validator(
-                bundle_schema,
-                format_checker=FormatChecker(),
-            ),
-        )
-        self._attempt_validator = cast(
-            _SchemaValidator,
-            Draft202012Validator(
-                attempt_schema,
-                format_checker=FormatChecker(),
-            ),
+        self._attempt_validator: _SchemaValidator = contract_validator(
+            _ATTEMPT_SCHEMA_PATH
         )
 
     @staticmethod
@@ -334,7 +333,7 @@ class ComparisonBundleValidator:
             media_type="application/json",
             visibility="shareable",
         )
-        manifest = load_comparison_manifest(root / _COMPARISON_MANIFEST_NAME)
+        manifest = _load_json_object(root / _COMPARISON_MANIFEST_NAME)
         ComparisonManifestValidator().validate(manifest)
         bundle = inventory.bundle_manifest
         if bundle["comparison_series_id"] != manifest["comparison_series_id"]:
@@ -377,9 +376,7 @@ class ComparisonBundleValidator:
             raise ComparisonBundleValidationError(
                 "provider artifact digest does not match the result binding"
             )
-        if _sha256_bytes((root / _normalized_relative_path(uri)).read_bytes()) != (
-            artifact.sha256
-        ):
+        if _artifact_sha256(root / _normalized_relative_path(uri)) != artifact.sha256:
             raise ComparisonBundleValidationError(
                 "provider artifact bytes do not match the result binding"
             )
@@ -414,10 +411,12 @@ class ComparisonBundleValidator:
             visibility="shareable",
         )
 
-        ledger = JsonlLedgerStore(root / _normalized_relative_path(ledger_path)).load()
-        receipt = JsonReceiptStore(
-            root / _normalized_relative_path(receipt_path)
-        ).load()
+        ledger = JsonlLedgerStore(root / _normalized_relative_path(ledger_path)).load(
+            max_bytes=LEDGER_BYTE_LIMIT
+        )
+        receipt = JsonReceiptStore(root / _normalized_relative_path(receipt_path)).load(
+            max_bytes=RECEIPT_BYTE_LIMIT
+        )
         ReasoningReceiptValidator().validate_against_ledger(receipt, ledger)
         scorecard = _load_json_object(root / _normalized_relative_path(scorecard_path))
         if frozenset(scorecard) != declared_metrics:
@@ -679,6 +678,7 @@ class ComparisonBundleValidator:
         """Validate a completed or stopped comparison bundle."""
 
         root = Path(path)
+        require_bundle_root(root, error_type=ComparisonBundleValidationError)
         bundle_manifest = _load_json_object(root / _BUNDLE_MANIFEST_NAME)
         self.validate_manifest(bundle_manifest)
         if bundle_manifest["outcome"] == "completed":
@@ -687,7 +687,12 @@ class ComparisonBundleValidator:
 
 
 class ComparisonBundleBuilder:
-    """Build one immutable comparison bundle, verify it, then publish atomically."""
+    """Build one immutable comparison bundle, verify it, then publish atomically.
+
+    Once staging holds a captured response, an exception never deletes it:
+    the staging directory is renamed to ``<destination>.quarantined`` and an
+    ``AttemptQuarantinedError`` names that path.
+    """
 
     def __init__(
         self,
@@ -724,8 +729,7 @@ class ComparisonBundleBuilder:
             raise ComparisonBundleStateError(
                 "comparison bundle builder cannot be entered twice"
             )
-        if self.destination.exists() or self.destination.is_symlink():
-            raise FileExistsError(self.destination)
+        require_unused_destination(self.destination)
         self.destination.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
             tempfile.mkdtemp(
@@ -739,15 +743,13 @@ class ComparisonBundleBuilder:
 
     def __exit__(
         self,
-        exception_type: object,
-        exception: object,
-        traceback: object,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: TracebackType | None,
     ) -> None:
-        del exception_type, exception, traceback
-        staging = self._staging
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        self._staging = None
+        del exception_type, traceback
+        staging, self._staging = self._staging, None
+        close_staging(staging, self.destination, exception)
 
     def _active_root(self) -> Path:
         if self._staging is None or self._published:
@@ -783,11 +785,7 @@ class ComparisonBundleBuilder:
                 "captured provider artifact uses the wrong attempt namespace"
             )
         path = self._active_root() / _normalized_relative_path(artifact.uri)
-        if not path.is_file() or path.is_symlink():
-            raise ComparisonBundleValidationError(
-                "provider artifact was not captured inside the comparison bundle"
-            )
-        if _sha256_bytes(path.read_bytes()) != artifact.sha256:
+        if _artifact_sha256(path) != artifact.sha256:
             raise ComparisonBundleValidationError(
                 "captured provider artifact does not match its result digest"
             )
@@ -797,10 +795,15 @@ class ComparisonBundleBuilder:
         ledger_path = _branch_path(branch.condition, "ledger.jsonl")
         scorecard_path = _branch_path(branch.condition, "scorecard.json")
         receipt_path = _branch_path(branch.condition, "reasoning-receipt.json")
-        ReasoningReceiptValidator().validate_against_ledger(
-            branch.receipt,
-            branch.ledger,
-        )
+        # A v1 bundle records only receipts that recompute, so a branch whose
+        # receipt does not is a failure that keeps its captured responses.
+        if not (
+            branch.scorecard.receipt_recomputes
+            and receipt_recomputes(branch.receipt, branch.ledger)
+        ):
+            raise ComparisonBundleValidationError(
+                f"{branch.condition.value} receipt does not recompute from its ledger"
+            )
         scorecard = branch.scorecard.to_json_object()
         declared_metrics = set(_strings(self._manifest["metrics"], "metrics"))
         if set(scorecard) != declared_metrics:
@@ -1072,7 +1075,7 @@ class ComparisonBundleBuilder:
         failure: JsonObject = {
             "kind": error.failure.value,
             "retryable": error.retryable,
-            "status_code": error.status_code,
+            "status_code": recordable_status_code(error.status_code),
         }
         if error.artifact is not None:
             expected_prefix = (

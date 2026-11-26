@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Final
 
+from experiments._bundle_validation import receipt_recomputes
 from experiments.diagnostician import (
     DiagnosisRequest,
     DiagnosisResult,
@@ -29,7 +30,6 @@ from itself import (
     Ledger,
     build_reasoning_receipt,
 )
-from itself.receipts import ReasoningReceiptValidator
 
 from .cache_key_diagnostician import (
     CASE_ID,
@@ -298,10 +298,11 @@ def _narrative_ledger(
     return Ledger(records)
 
 
-def _receipt(ledger: Ledger) -> JsonObject:
+def _receipt(ledger: Ledger) -> tuple[JsonObject, bool]:
+    """Return a branch receipt and whether it recomputes from its ledger."""
+
     receipt = build_reasoning_receipt(ledger)
-    ReasoningReceiptValidator().validate_against_ledger(receipt, ledger)
-    return receipt
+    return receipt, receipt_recomputes(receipt, ledger)
 
 
 def _ground_truth_status(ledger: Ledger, ground_truth: Mechanism) -> str:
@@ -314,6 +315,7 @@ def _narrative_scorecard(
     ledger: Ledger,
     *,
     ground_truth: Mechanism,
+    receipt_recomputes: bool,
 ) -> ComparisonScorecard:
     selected = Mechanism(result.assertion.selected_hypothesis_id)
     usage = result.usage
@@ -339,7 +341,7 @@ def _narrative_scorecard(
         model_input_tokens=usage.model_input_tokens,
         model_output_tokens=usage.model_output_tokens,
         wall_time_ms=usage.wall_time_ms,
-        receipt_recomputes=True,
+        receipt_recomputes=receipt_recomputes,
     )
 
 
@@ -363,6 +365,7 @@ def _structured_scorecard(
     condition: ComparisonCondition,
     completed: ScriptedRunResult | None,
     ground_truth: Mechanism,
+    receipt_recomputes: bool,
 ) -> ComparisonScorecard:
     if condition is ComparisonCondition.NARRATIVE:
         raise ValueError("structured scorecard cannot use the narrative condition")
@@ -410,7 +413,7 @@ def _structured_scorecard(
         model_input_tokens=usage.model_input_tokens,
         model_output_tokens=usage.model_output_tokens,
         wall_time_ms=usage.wall_time_ms,
-        receipt_recomputes=True,
+        receipt_recomputes=receipt_recomputes,
     )
 
 
@@ -461,9 +464,9 @@ def project_comparative_results(
     structured_ledger = Ledger(prepared.ledger.records)
     completed = complete_evidence_enforced_case(prepared, ground_truth=ground_truth)
 
-    narrative_receipt = _receipt(narrative_ledger)
-    structured_receipt = _receipt(structured_ledger)
-    evidence_receipt = _receipt(completed.ledger)
+    narrative_receipt, narrative_recomputes = _receipt(narrative_ledger)
+    structured_receipt, structured_recomputes = _receipt(structured_ledger)
+    evidence_receipt, evidence_recomputes = _receipt(completed.ledger)
     narrative_branch = ComparisonBranchResult(
         condition=ComparisonCondition.NARRATIVE,
         ledger=narrative_ledger,
@@ -471,6 +474,7 @@ def project_comparative_results(
             narrative_result,
             narrative_ledger,
             ground_truth=ground_truth,
+            receipt_recomputes=narrative_recomputes,
         ),
         receipt=narrative_receipt,
     )
@@ -483,6 +487,7 @@ def project_comparative_results(
             condition=ComparisonCondition.STRUCTURED_WITHOUT_TESTING,
             completed=None,
             ground_truth=ground_truth,
+            receipt_recomputes=structured_recomputes,
         ),
         receipt=structured_receipt,
     )
@@ -495,6 +500,7 @@ def project_comparative_results(
             condition=ComparisonCondition.EVIDENCE_ENFORCED,
             completed=completed,
             ground_truth=ground_truth,
+            receipt_recomputes=evidence_recomputes,
         ),
         receipt=evidence_receipt,
     )

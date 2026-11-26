@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Protocol, cast
 
-from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
 from experiments._contract_values import integer_value as _integer
@@ -23,6 +22,7 @@ from experiments._contract_values import (
 from experiments._contract_values import optional_number_value as _optional_number
 from experiments._contract_values import string_value as _string
 from experiments._contract_values import string_values as _strings
+from experiments._schema_validation import contract_validator
 from experiments.cases.cache_key_comparison import (
     COMPARISON_METRICS,
     NARRATIVE_ATTEMPT_ID,
@@ -257,20 +257,7 @@ class ComparisonManifestValidator:
     """Validate shape and bind a comparison to two exact model payloads."""
 
     def __init__(self) -> None:
-        schema_value = cast(
-            JsonValue,
-            json.loads(_MANIFEST_SCHEMA_PATH.read_text(encoding="utf-8")),
-        )
-        if not isinstance(schema_value, dict):
-            raise TypeError("comparison manifest schema must contain an object")
-        Draft202012Validator.check_schema(schema_value)
-        self._validator = cast(
-            _SchemaValidator,
-            Draft202012Validator(
-                schema_value,
-                format_checker=FormatChecker(),
-            ),
-        )
+        self._validator: _SchemaValidator = contract_validator(_MANIFEST_SCHEMA_PATH)
 
     def errors(self, manifest: JsonValue) -> list[str]:
         """Return stable schema and exact-metric errors."""

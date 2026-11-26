@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -12,9 +13,12 @@ from typing import cast
 
 import pytest
 
+import experiments.cases.cache_key_comparison as comparison_case
+import experiments.cases.cache_key_comparison_run as comparison_run
 from experiments.cases.cache_key_comparison import (
     NARRATIVE_ATTEMPT_ID,
     STRUCTURED_ATTEMPT_ID,
+    ComparativeRunResult,
     build_comparison_request,
 )
 from experiments.cases.cache_key_comparison_run import (
@@ -30,7 +34,7 @@ from experiments.comparison_bundles import ComparisonBundleValidator
 from experiments.comparison_manifests import build_comparison_manifest
 from experiments.diagnostician import DiagnosisRequest
 from experiments.model_adapters import HttpRequest, HttpResponse, OpenAIChatEndpoint
-from itself import JsonObject
+from itself import JsonObject, Ledger, build_reasoning_receipt
 
 SECRET = "runner-secret-that-must-not-leak"
 NOW = datetime(2026, 7, 24, 19, 0, tzinfo=UTC)
@@ -364,3 +368,136 @@ def test_validate_cli_recomputes_existing_bundle(
     summary = cast(JsonObject, json.loads(capsys.readouterr().out))
     assert summary["outcome"] == "completed"
     assert summary["replicate_index"] == 1
+
+
+def _run(
+    tmp_path: Path,
+    bundle_path: Path,
+    transport: SequenceTransport,
+) -> JsonObject:
+    return run_cache_key_comparison(
+        _manifest_path(tmp_path),
+        bundle_path,
+        replicate_index=1,
+        base_url=_endpoint().base_url,
+        api_key_env="TOGETHER_API_KEY",
+        transport=transport,
+        environment={"TOGETHER_API_KEY": SECRET},
+        now=lambda: NOW,
+        monotonic_ns=itertools.count(1_000_000, 1_000_000).__next__,
+    )
+
+
+def test_a_structured_status_outside_the_contract_range_is_retained(
+    tmp_path: Path,
+) -> None:
+    bundle_path = tmp_path / "replicate-001"
+    body = b"<html>an unregistered status</html>"
+    transport = SequenceTransport(
+        [
+            HttpResponse(200, {"Content-Type": "application/json"}, _narrative_body()),
+            HttpResponse(999, {"Content-Type": "text/html"}, body),
+        ]
+    )
+
+    bundle_manifest = _run(tmp_path, bundle_path, transport)
+
+    verified = ComparisonBundleValidator().validate_failure(bundle_path, _request())
+    failure = cast(JsonObject, verified.attempt_report["failure"])
+    artifact = cast(JsonObject, failure["response_artifact"])
+    assert bundle_manifest["attempt_outcomes"] == {
+        NARRATIVE_ATTEMPT_ID: "completed",
+        STRUCTURED_ATTEMPT_ID: "adapter_failed",
+    }
+    assert failure["kind"] == "http_status"
+    assert failure["status_code"] is None
+    assert (bundle_path / cast(str, artifact["uri"])).read_bytes() == body
+    assert verified.narrative_result is not None
+
+
+def test_a_failure_after_the_requests_quarantines_both_responses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_after_the_requests(*args: object) -> ComparativeRunResult:
+        raise RuntimeError("a defect after both providers responded")
+
+    monkeypatch.setattr(
+        comparison_run, "project_comparative_results", fail_after_the_requests
+    )
+    bundle_path = tmp_path / "replicate-001"
+    quarantine = tmp_path / "replicate-001.quarantined"
+
+    with pytest.raises(RuntimeError, match="quarantined") as raised:
+        _run(tmp_path, bundle_path, _success_transport())
+
+    assert str(quarantine) in str(raised.value)
+    assert not bundle_path.exists()
+    captured = sorted(
+        path.read_bytes() for path in quarantine.rglob("*") if path.is_file()
+    )
+    assert captured == sorted([_narrative_body(), _structured_body()])
+
+    second = _success_transport()
+    with pytest.raises(FileExistsError, match="quarantined"):
+        _run(tmp_path, bundle_path, second)
+    assert not second.requests
+
+
+def test_a_branch_receipt_that_does_not_recompute_quarantines_the_replicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def drifted_receipt(ledger: Ledger) -> JsonObject:
+        return build_reasoning_receipt(Ledger(ledger.records[:-1]))
+
+    monkeypatch.setattr(comparison_case, "build_reasoning_receipt", drifted_receipt)
+
+    with pytest.raises(RuntimeError, match="does not recompute"):
+        _run(tmp_path, tmp_path / "replicate-001", _success_transport())
+
+    assert (tmp_path / "replicate-001.quarantined").is_dir()
+
+
+def test_validate_cli_reports_a_missing_bundle_with_exit_two(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["validate", "--bundle", str(tmp_path / "missing")])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert not captured.out
+    assert captured.err.startswith("ERROR: ")
+    assert captured.err.count("\n") == 1
+
+
+def test_run_cli_reports_an_unexpected_failure_with_exit_two(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Exit 1 means a valid failed-attempt bundle, so nothing else may use it.
+    def crash(*args: object, **kwargs: object) -> JsonObject:
+        raise RuntimeError("an unexpected defect")
+
+    monkeypatch.setattr(comparison_run, "run_cache_key_comparison", crash)
+
+    exit_code = main(
+        [
+            "run",
+            "--manifest",
+            "manifest.json",
+            "--bundle",
+            "bundle",
+            "--replicate-index",
+            "1",
+            "--base-url",
+            "https://api.together.xyz/v1",
+            "--api-key-env",
+            "TOGETHER_API_KEY",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.err == "ERROR: RuntimeError: an unexpected defect\n"

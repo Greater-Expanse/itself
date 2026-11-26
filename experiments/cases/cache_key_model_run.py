@@ -12,7 +12,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import cast
+from typing import Final, cast
 
 from experiments._contract_values import integer_value as _integer
 from experiments._contract_values import object_value as _object
@@ -36,11 +36,28 @@ from experiments.trial_manifests import (
 from itself import JsonObject, StrPath
 
 from .cache_key_exchange import build_exchange_request
-from .cache_key_scripted_run import run_scripted_case
+from .cache_key_scripted_run import SCRIPTED_RUN_METRICS, run_scripted_case
+
+# Errors in the operator's input or in an existing bundle.  Anything else is
+# also reported with exit 2, prefixed with its type, because exit 1 means only
+# that a valid failed-attempt bundle was published or verified.
+_INPUT_ERRORS: Final = (
+    FileExistsError,
+    TrialBundleValidationError,
+    TrialManifestValidationError,
+    ValueError,
+)
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _error_line(error: Exception) -> str:
+    message = "; ".join(line for line in str(error).splitlines() if line)
+    if isinstance(error, _INPUT_ERRORS):
+        return f"ERROR: {message}"
+    return f"ERROR: {type(error).__name__}: {message}"
 
 
 def run_cache_key_model_case(
@@ -77,7 +94,12 @@ def run_cache_key_model_case(
     frozen_request = build_exchange_request()
     manifest_validator.validate_against(manifest, endpoint, frozen_request)
 
-    with TrialBundleBuilder(bundle_path, manifest, now=now()) as builder:
+    with TrialBundleBuilder(
+        bundle_path,
+        manifest,
+        now=now,
+        metric_fields=SCRIPTED_RUN_METRICS,
+    ) as builder:
         adapter = OpenAIChatDiagnostician(
             endpoint=endpoint,
             artifact_sink=builder.artifact_sink,
@@ -142,13 +164,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 build_exchange_request(),
             )
             bundle_manifest = verified.bundle_manifest
-    except (
-        FileExistsError,
-        TrialBundleValidationError,
-        TrialManifestValidationError,
-        ValueError,
-    ) as error:
-        print(f"ERROR: {error}", file=sys.stderr)
+    except Exception as error:
+        print(_error_line(error), file=sys.stderr)
         return 2
 
     print(json.dumps(_summary(bundle_path, bundle_manifest), indent=2, sort_keys=True))
