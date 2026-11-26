@@ -8,8 +8,9 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from types import ModuleType
 from typing import Final, cast
 
 import pytest
@@ -31,17 +32,22 @@ RUNNER_POLICY: Final = ValidationPolicy(
 )
 
 
-def test_runner_validates_with_its_trust_list_and_supported_reliance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # The runner's own records always satisfy the policy, so only its constant
-    # shows which checks it applies.
+def _runner_module(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     spec = importlib.util.spec_from_file_location("agent_change_gate_run", RUNNER)
     assert spec is not None and spec.loader is not None
     runner = importlib.util.module_from_spec(spec)
     # Its dataclasses look their module up while the module executes.
     monkeypatch.setitem(sys.modules, spec.name, runner)
     spec.loader.exec_module(runner)
+    return runner
+
+
+def test_runner_validates_with_its_trust_list_and_supported_reliance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The runner's own records always satisfy the policy, so only its constant
+    # shows which checks it applies.
+    runner = _runner_module(monkeypatch)
 
     assert cast(object, runner.VALIDATION_POLICY) == RUNNER_POLICY
 
@@ -464,7 +470,10 @@ def test_agent_change_gate_reports_a_deeply_nested_assertion_as_input_error(
     tmp_path: Path,
 ) -> None:
     # Exit 1 is the gate's REJECT, so an assertion it cannot parse must not
-    # crash with that code.
+    # crash with that code.  Whether nesting this deep exhausts the parser
+    # depends on the interpreter and its stack; where it does not, the
+    # unclosed document is invalid JSON.  Both are input errors, and the next
+    # test pins the exhausted parser.
     assertion = tmp_path / "assertion.json"
     assertion.write_text("[" * 60_000, encoding="utf-8")
     output = tmp_path / "output"
@@ -473,7 +482,29 @@ def test_agent_change_gate_reports_a_deeply_nested_assertion_as_input_error(
 
     assert completed.returncode == 2
     assert completed.stderr.startswith("ERROR: ")
-    assert "nested too deeply" in completed.stderr
+    assert (
+        "nested too deeply" in completed.stderr
+        or "is not valid JSON" in completed.stderr
+    )
     assert completed.stderr.count("\n") == 1
     assert not completed.stdout
     assert not output.exists()
+
+
+def test_runner_reports_an_exhausted_parser_as_an_assertion_format_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner_module(monkeypatch)
+    load_assertion = cast(Callable[[Path], object], runner._load_assertion)
+    format_error = cast(type[Exception], runner.AssertionFormatError)
+    assertion = tmp_path / "assertion.json"
+    assertion.write_text("{}", encoding="utf-8")
+
+    def exhausted(*_arguments: object, **_options: object) -> object:
+        raise RecursionError
+
+    monkeypatch.setattr(json, "loads", exhausted)
+
+    with pytest.raises(format_error, match="is nested too deeply to parse"):
+        load_assertion(assertion)
