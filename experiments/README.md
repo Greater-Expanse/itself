@@ -122,14 +122,20 @@ The [comparative methodology](001-cache-key-omission/COMPARATIVE_STUDY.md)
 defines the treatments, controls, measurements, and limitations. The exact v5
 model and generation configurations are retained under
 [`001-cache-key-omission/manifests/v5/`](001-cache-key-omission/manifests/v5/).
+V6, registered under study contract v2 and not yet run, is retained under
+[`001-cache-key-omission/manifests/v6/`](001-cache-key-omission/manifests/v6/).
 
-The registered manifest set can be checked without a network call:
+Each registered manifest set can be checked without a network call:
 
 ```bash
 uv run --frozen python \
   -m experiments.cases.cache_key_comparison_study check \
   --study-version 5 \
   --directory experiments/001-cache-key-omission/manifests/v5
+uv run --frozen python \
+  -m experiments.cases.cache_key_comparison_study check \
+  --study-version 6 \
+  --directory experiments/001-cache-key-omission/manifests/v6
 ```
 
 Re-executing the hosted study requires access to the registered endpoint and

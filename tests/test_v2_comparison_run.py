@@ -216,7 +216,7 @@ def _fail_narrative_after_its_response(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(comparison_run, "ModelNarrativeDiagnostician", Failing)
 
 
-# Items 2, 3 and 5: a completed v2 replicate.
+# A completed v2 replicate: its deadline, shipped client, and stream usage.
 
 
 def test_a_v2_replicate_streams_asks_for_usage_and_records_its_client(
@@ -324,7 +324,7 @@ def test_a_comparison_failure_before_any_request_is_not_a_runner_failure(
     assert list(bundles.iterdir()) == []
 
 
-# Item 1: the observed status.
+# The observed HTTP status.
 
 
 def test_a_v2_structured_failure_keeps_an_unclamped_status(tmp_path: Path) -> None:
@@ -342,7 +342,7 @@ def test_a_v2_structured_failure_keeps_an_unclamped_status(tmp_path: Path) -> No
     assert _failure(verified)["status_code"] == 999
 
 
-# Item 4: a runner failure is attributed to the attempt it interrupted.
+# A runner failure is attributed to the attempt it interrupted.
 
 
 def test_a_runner_failure_during_the_narrative_attempt_stops_the_replicate(
@@ -460,7 +460,7 @@ def test_an_interrupted_replicate_is_published_and_the_interrupt_propagates(
     assert failure["kind"] == "interrupted"
 
 
-# Item 4: the report counts runner failures apart from adapter failures.
+# The report counts runner failures apart from adapter failures.
 
 
 def _v2_report(

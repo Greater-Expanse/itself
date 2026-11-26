@@ -118,11 +118,12 @@ v2 holds only the six study-record schemas that change:
 - [`v2/examples/`](v2/examples/) contains valid v2 manifests, made by the
   harness builders, and one attempt report of each kind.
 
-v1 remains valid and verifiable. All five registered study versions use it:
-their manifests still validate and bind, their reports re-render byte for
-byte, and a v1 manifest still runs with no deadline, a status recorded only
+v1 remains valid and verifiable. Case 001 comparison study versions 1 to 5
+use it: their manifests still validate and bind, their reports re-render byte
+for byte, and a v1 manifest still runs with no deadline, a status recorded only
 for an HTTP-status failure and clamped to 100–599, quarantine for a runner
-failure, and no usage request.
+failure, and no usage request. Study version 6 is the first registered under
+v2.
 
 The contract version is separate from the Claim and Evidence Protocol version.
 Changing the provider boundary does not necessarily change the ledger protocol,

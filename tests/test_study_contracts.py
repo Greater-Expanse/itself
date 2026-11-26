@@ -231,7 +231,7 @@ def test_v2_manifest_examples_are_what_the_builders_produce() -> None:
     assert canonical_json_bytes(rebuilt) == canonical_json_bytes(comparison)
 
 
-# Item 5 and the payload rule: the same settings send the same bytes.
+# Stream usage and the payload rule: the same settings send the same bytes.
 
 
 def test_v1_and_v2_trials_render_the_same_payload_for_the_same_settings() -> None:
@@ -395,7 +395,7 @@ def test_only_a_streamed_manifest_may_ask_for_stream_usage(
     assert validator.errors(manifest) == []
 
 
-# Item 2: the request deadline.
+# The request deadline.
 
 
 def test_the_deadline_is_declared_bound_and_checked() -> None:
@@ -486,7 +486,7 @@ def test_a_v1_binding_refuses_any_deadline() -> None:
         )
 
 
-# Item 3: the shipped adapter pin.
+# The shipped adapter pin.
 
 
 @pytest.mark.parametrize("load", [_trial_example, _comparison_example])
@@ -566,7 +566,7 @@ def test_study_targets_keep_v1_settings_out_of_v1_and_pin_v2() -> None:
     assert v2.endpoint().extra_body["stream_options"] == {"include_usage": True}
 
 
-# Items 1 and 4: what an attempt report records.
+# What an attempt report records: the status and a runner failure.
 
 
 def _trial_report() -> JsonObject:
@@ -670,7 +670,7 @@ def test_a_report_must_declare_its_manifest_version() -> None:
         )
 
 
-# Item 4: sanitizing and publishing a runner failure.
+# Sanitizing and publishing a runner failure.
 
 
 def test_a_runner_error_message_is_redacted_and_one_line() -> None:

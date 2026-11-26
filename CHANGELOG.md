@@ -158,9 +158,27 @@ their requests run differently. This release implements:
   `runner_failed` bundle, with the captured response and a sanitized one-line
   error, instead of a quarantine. An interrupt is published as `interrupted`
   and still propagates. The comparison report counts runner failures apart
-  from adapter failures. `build_trial_manifest` and `build_comparison_manifest` build v2
-  manifests. No study is registered under v2, and v1 documents and runs are
+  from adapter failures. `build_trial_manifest` and
+  `build_comparison_manifest` build v2 manifests. Case 001 comparison study v6
+  is the first study registered under v2, and v1 documents and runs are
   unchanged.
+- Case 001 comparison study v6, registered under study contract v2 and not yet
+  run: GLM 5.2, MiniMax M3.1 Flash, and Qwen 3.7 Plus, five replicates each,
+  run round-robin by replicate index through one Together AI endpoint. They are
+  v5's model versions where that provider serves them; it did not serve
+  MiniMax M3 at registration, so its successor in the same line takes that
+  cell. V6 keeps v5's case request, output profiles, expected observations,
+  sampling, token ceiling, timeout, streaming, strict JSON Schema, and single
+  attempt. It adds
+  a stream usage request and a 600-second request deadline, the shipped
+  client's default, and pins the shipped client
+  `openai-compatible-chat-completions` `0.4.0` as a literal, so the
+  registration stays checkable after the client's version moves on. Because
+  v6 differs from v5 in provider, in one model, and in study contract, the two
+  are not pooled or compared. `cache_key_comparison_study register` registers
+  v6 by default, and the comparison report renders v6, labels `response_usage`
+  and `transport` failures, and marks every version other than v5 and v6 as
+  historical.
 - `docs/INFERENCE.md` says that a provider may report token usage on a stream
   only when asked, and how to ask.
 
@@ -274,10 +292,11 @@ their requests run differently. This release implements:
 - Both harness runner CLIs print every error on one line and exit with status
   2, so status 1 means only a valid failed-attempt bundle. The comparison
   report derives its streaming mode, hosted-only limitations, and historical
-  banner from the study targets. The binding sends no request deadline,
-  because the registered manifests record none, and a test pins the shipped
-  adapter it was re-verified against. The registered study manifests, results,
-  and v1 contracts are byte-identical, and every manifest still validates.
+  banner from the study targets. Under study contract v1 the binding sends no
+  request deadline, because v1 manifests record none, and a test pins the
+  shipped adapter it was re-verified against. The study manifests registered
+  under v1, their results, and the v1 contracts are byte-identical, and every
+  manifest still validates.
 - The harness loaders and validators choose a study record's schemas from the
   version it declares. A record that declares neither `0.2.0` nor `0.3.0` is
   refused with `unsupported version` instead of a schema `const` error.

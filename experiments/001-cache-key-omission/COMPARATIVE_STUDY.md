@@ -29,6 +29,11 @@ reconstructability for this incident. It is not evidence that the workflow
 improves model accuracy or transfers to other tasks. Earlier registrations and
 superseded results are explained under [Study history](#study-history).
 
+V6 is registered and has not yet run. It measures v5's model versions where
+Together AI serves them, under study contract v2. It differs from v5 in
+provider, in one model, and in the study contract, so its result will not be
+pooled with or compared to v5's.
+
 ## Question
 
 For the same visible failure history and candidate explanations, what changes
@@ -196,6 +201,32 @@ MiniMax M3, then Qwen 3.7 Plus—to distribute time-dependent serving variation
 across model families. All three manifests were frozen under
 [`manifests/v5`](manifests/v5) before execution.
 
+V6 keeps v5's model versions where Together AI serves them, with Together AI
+fixed as controlled infrastructure across the cohort. Together AI did not
+serve MiniMax M3 at registration, so MiniMax M3.1 Flash, its successor in the
+same line, takes that cell.
+
+| Family | Checkpoint status | Registered model identifier |
+| --- | --- | --- |
+| [GLM 5.2](https://huggingface.co/zai-org/GLM-5.2) | Public weights, MIT | `zai-org/GLM-5.2` |
+| [MiniMax M3.1 Flash](https://huggingface.co/MiniMaxAI/MiniMax-M3.1-Flash) | Public weights, MiniMax Community License | `MiniMaxAI/MiniMax-M3.1-Flash` |
+| Qwen 3.7 Plus | Hosted only; no public checkpoint verified at registration | `Qwen/Qwen3.7-Plus` |
+
+Qwen 3.7 Plus remains the hosted comparator and must not be counted as an
+open-weight result. The v6 open-weight subset is GLM 5.2 and MiniMax M3.1
+Flash. MiniMax M3.1 Flash is a different model from v5's MiniMax M3, which is
+one reason the two studies are not pooled or compared.
+
+V3 and v4 excluded Together AI GLM 5.2 after v2 recorded four provider
+rate-limit failures for it. V6 includes it. A rate-limit failure stays in the
+record as a failed replicate; it is not retried or replaced.
+
+Every v6 target has five registered replicates: 15 paired replicates, 30 model
+attempts, and 45 projected condition branches in total. Execution is
+round-robin by replicate index in the registered target order—GLM 5.2,
+MiniMax M3.1 Flash, then Qwen 3.7 Plus. All three manifests are frozen under
+[`manifests/v6`](manifests/v6).
+
 ## Registered generation profile
 
 All served targets use the same harness-level controls:
@@ -230,6 +261,25 @@ preregistered revision codes `A` and `B`. Explanatory language remains
 available in `falsified_when` and `public_explanation`. This makes the
 prediction representation identical to the deterministic environment's
 observation vocabulary and removes any need for post-hoc text interpretation.
+
+V6 keeps every control above and registers it under study contract v2, which
+adds three settings:
+
+- each stream asks the provider to report its token usage, through the
+  request's `stream_options` field; a response that still reports none stops
+  as a `response_usage` failure;
+- each request has a 600-second deadline, the shipped client's default,
+  covering the whole exchange; a response still arriving when it passes stops
+  as a transport failure;
+- each manifest pins the shipped client, `openai-compatible-chat-completions`
+  `0.4.0`. The pin is a literal, not the running client, so the registration
+  stays checkable after the client's version moves on; a run under any other
+  client version is refused before its first request.
+
+A v6 prompt payload therefore differs from the matching v5 payload only in its
+model identifier and its `stream_options` field. A failure of the harness after
+a request was sent is recorded as its own outcome, with any captured response,
+and counted apart from provider and model-output failures.
 
 ## Execution binding
 
@@ -286,7 +336,8 @@ prompt payload, and digest before execution. Prediction correctness, evidence
 relations, and final epistemic states are therefore defined for conforming v5
 bundles. This correction does not retroactively validate the corresponding v2
 fields. V3 bundles are not analyzed because that study stopped on an
-instrumentation-integrity defect. V5 also does not reuse v4 outputs.
+instrumentation-integrity defect. V5 also does not reuse v4 outputs. V6
+preserves the same treatment and reuses no earlier output.
 
 Most importantly, repeatedly sampling this one transparent case measures
 within-prompt behavior, not cross-task causal-reasoning ability. A later study
@@ -313,6 +364,10 @@ part of the research record:
   historical observation set, not a provider comparison.
 - V5 used a fresh, provider-controlled three-model matrix. It did not filter or
   reuse v4 model outputs or scorecards.
+- V6 registers v5's model versions where Together AI serves them, with
+  MiniMax M3.1 Flash in place of MiniMax M3, as the first study under study
+  contract v2. It is a fresh run that reuses no earlier output, and it is not
+  pooled with or compared to v5. It is registered and has not yet run.
 
 The immutable registrations are retained under [`manifests/`](manifests/).
 
@@ -324,8 +379,9 @@ The immutable registrations are retained under [`manifests/`](manifests/).
   scoring.
 - The structured schema itself may scaffold a better assertion; that is part of
   the A-to-B treatment, not proof of internal reasoning.
-- The v5 categorical observation vocabulary is an additional harness treatment
-  and may improve formatting compliance independently of causal diagnosis.
+- The v5 and v6 categorical observation vocabulary is an additional harness
+  treatment and may improve formatting compliance independently of causal
+  diagnosis.
 - B and C are deliberately dependent branches and must never be counted as two
   independent model samples.
 - The case-specific deterministic oracle is custom verification infrastructure;
@@ -334,6 +390,15 @@ The immutable registrations are retained under [`manifests/`](manifests/).
 - A single provider controls between-provider variation but cannot guarantee
   identical model-specific quantization, templates, or serving configuration.
 - A provider may change the model behind an unchanged identifier.
+- V6 differs from v5 in provider, in one model, and in study contract, so the
+  two results cannot be pooled or compared; a difference between them has no
+  single cause.
+- V6's MiniMax M3.1 Flash is a different model from v5's MiniMax M3.
+- V6 includes Together AI GLM 5.2 although v2 recorded four rate-limit
+  failures for it; each such failure stays in the record as a failed
+  replicate.
+- V6's 600-second deadline can stop a slow response that v5's profile, which
+  had no deadline, would have let finish.
 - One case, a small provider/model cohort, and five replicates per cell cannot
   support a general claim.
 

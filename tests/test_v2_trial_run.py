@@ -236,7 +236,7 @@ def _other_client(value: JsonObject, field: str = "shipped_adapter") -> None:
     recorded["adapter_version"] = "9.9.9"
 
 
-# Items 2, 3 and 5: a completed v2 trial.
+# A completed v2 trial: its deadline, shipped client, and stream usage.
 
 
 def test_a_v2_trial_streams_asks_for_usage_and_records_its_client(
@@ -404,7 +404,7 @@ def test_an_attempt_report_must_have_its_bundle_outcome(
         _failed(tmp_path / "b")
 
 
-# Item 1: the observed status.
+# The observed HTTP status.
 
 
 @pytest.mark.parametrize(
@@ -478,7 +478,7 @@ def test_only_a_v2_builder_observes_its_transport(tmp_path: Path) -> None:
         assert builder.records_runner_failure is False
 
 
-# Item 4: a runner failure after the request.
+# A runner failure after the request.
 
 
 def test_a_runner_failure_publishes_a_valid_bundle_with_its_response(

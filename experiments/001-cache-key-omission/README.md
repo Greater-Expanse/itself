@@ -56,5 +56,7 @@ for the complete observations and limitations.
   treatments, controls, measurements, and limitations.
 - [`manifests/v5/`](manifests/v5/) contains the exact preregistered July 2026
   model and generation configurations.
+- [`manifests/v6/`](manifests/v6/) contains the v6 configurations, registered
+  under study contract v2 and not yet run.
 - [`../cases/`](../cases/) contains the executable environment, runners, and
   report generator.

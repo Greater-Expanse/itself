@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final, cast
 
 from experiments._study_contracts import V2_CONTRACT, StudyContract
@@ -28,10 +29,10 @@ from itself._filesystem import write_file_exclusive
 
 from .cache_key_comparison import ComparisonCondition, build_comparison_request
 from .cache_key_comparison_study import (
+    CURRENT_STUDY_VERSIONS,
     MAX_OUTPUT_TOKENS,
     REPLICATE_COUNT,
     STUDY_TARGETS_BY_VERSION,
-    STUDY_VERSION,
     TEMPERATURE,
     TIMEOUT_SECONDS,
     TOP_P,
@@ -614,6 +615,26 @@ def _limitations(
             else []
         ),
         *(
+            [
+                (
+                    "V6 fixes one provider as controlled infrastructure; provider "
+                    "identity is provenance only."
+                ),
+                (
+                    "V6 differs from v5 in provider, in one model, and in study "
+                    "contract; the two are not pooled or compared."
+                ),
+                "No model output or scorecard from an earlier version is reused in v6.",
+                (
+                    "Harness failures after a request was sent are counted apart "
+                    "from provider and model-output failures; they are not scored "
+                    "as wrong diagnoses."
+                ),
+            ]
+            if study_version == "6"
+            else []
+        ),
+        *(
             f"{family} is a hosted-only comparator, not an open-weight result."
             for family in hosted_only_families
         ),
@@ -811,6 +832,14 @@ def _failure_description(failure: JsonObject) -> str:
             "response did not match the required JSON shape",
             "responses did not match the required JSON shape",
         ),
+        "response_usage": (
+            "response did not report valid token usage",
+            "responses did not report valid token usage",
+        ),
+        "transport": (
+            "request failed in transport, timed out, or passed its deadline",
+            "requests failed in transport, timed out, or passed their deadline",
+        ),
         "runner_error": (
             "harness failed after the request was sent",
             "harness failed after the requests were sent",
@@ -836,6 +865,63 @@ def _status_counts_label(value: JsonValue) -> str:
     return ", ".join(
         f"{_integer(count, f'ground_truth_final_statuses.{status}')} {status}"
         for status, count in sorted(statuses.items())
+    )
+
+
+# How each provider-controlled study version was controlled, in its report.
+_CONTROLLED_STUDY_TEXT: Final = MappingProxyType(
+    {
+        "5": (
+            "V5 fixes one provider and one compatible base endpoint across "
+            "all three model targets. Calls are executed round-robin by "
+            "replicate index to distribute temporal serving variation. "
+            "Provider identity is not a behavioral metric, and no v4 "
+            "model output or scorecard is reused."
+        ),
+        "6": (
+            "V6 fixes one provider and one compatible base endpoint across all three "
+            "model targets. Calls are executed round-robin by replicate index to "
+            "distribute temporal serving variation. Provider identity is not a "
+            "behavioral metric, and no model output or scorecard from an earlier "
+            "version is reused. V6 differs from v5 in provider, in one model, and in "
+            "study contract, so the two results are not pooled or compared."
+        ),
+    }
+)
+
+
+def _seconds_label(value: JsonValue) -> str:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("deadline_seconds must be a number or null")
+    return f"{value:g}"
+
+
+def _v2_design_text(study_version: str, design: JsonObject) -> str:
+    """State the study contract v2 settings that a report's design carries."""
+
+    deadline = design["deadline_seconds"]
+    deadline_clause = (
+        "no request had a deadline"
+        if deadline is None
+        else f"every request had a {_seconds_label(deadline)}-second deadline"
+    )
+    usage_clause = (
+        "every stream asked the provider to report its token usage"
+        if _boolean(design["stream_include_usage"], "stream_include_usage")
+        else "no stream asked the provider to report its token usage"
+    )
+    shipped = _object(design["shipped_adapter"], "shipped_adapter")
+    adapter_id = _string(shipped["adapter_id"], "shipped_adapter.adapter_id")
+    adapter_version = _string(
+        shipped["adapter_version"],
+        "shipped_adapter.adapter_version",
+    )
+    return (
+        f"V{study_version} ran under study contract v2: {deadline_clause}, "
+        f"{usage_clause}, and every manifest pinned Itself's shipped client, "
+        f"`{adapter_id}` `{adapter_version}`. A failure of the harness after a "
+        "request was sent is counted apart from provider and model-output "
+        "failures and is not scored as a wrong diagnosis."
     )
 
 
@@ -944,7 +1030,7 @@ def render_markdown(report: JsonObject) -> str:
         "represented predicted outcomes differently"
     )
     lines = [f"# Case 001 comparison study v{study_version}"]
-    if study_version != STUDY_VERSION:
+    if study_version not in CURRENT_STUDY_VERSIONS:
         lines.extend(
             [
                 "",
@@ -1199,7 +1285,7 @@ def render_markdown(report: JsonObject) -> str:
                 "",
                 (
                     "## How the experiment was controlled"
-                    if study_version == "5"
+                    if study_version in _CONTROLLED_STUDY_TEXT
                     else "## How the measurement was corrected"
                 ),
                 "",
@@ -1211,23 +1297,20 @@ def render_markdown(report: JsonObject) -> str:
                     "parser or post-hoc reinterpretation."
                 ),
                 "",
-                (
-                    "V5 fixes one provider and one compatible base endpoint across "
-                    "all three model targets. Calls are executed round-robin by "
-                    "replicate index to distribute temporal serving variation. "
-                    "Provider identity is not a behavioral metric, and no v4 "
-                    "model output or scorecard is reused."
-                    if study_version == "5"
-                    else (
+                _CONTROLLED_STUDY_TEXT.get(
+                    study_version,
+                    (
                         "V3 stopped after ten registered replicates when "
                         "failed-attempt receipts were found not to bind the "
                         "manifest's structured profile. The binding validator was "
                         "corrected before v4 registration, and no v3 output was "
                         "reused."
-                    )
+                    ),
                 ),
             ]
         )
+        if isinstance(design_value, dict) and "shipped_adapter" in design_value:
+            lines.extend(["", _v2_design_text(study_version, design_value)])
     else:
         lines.extend(
             [

@@ -76,9 +76,9 @@ transport uses only the Python standard library. Request construction,
 transport, raw-response storage, schema validation, assertion decoding, and
 diagnosis-contract validation remain separate typed boundaries.
 
-Registered manifests and results record the binding's identity,
-`openai-chat-completions` version `0.2.0`, not the shipped
-`openai-compatible-chat-completions` client that sends the requests, and no
+Manifests and results registered under study contract v1 record the binding's
+identity, `openai-chat-completions` version `0.2.0`, not the shipped
+`openai-compatible-chat-completions` client that sends the requests, and no v1
 result names the shipped client's version. Binding `0.2.0` has been
 re-verified offline against shipped adapter `0.4.0`: every registered study
 manifest still validates and reproduces its prompt-payload digests, the
@@ -321,12 +321,16 @@ records five things that v1 cannot. Each manifest, bundle manifest, and attempt
 report declares its version, and loaders and validators use the schemas of that
 version and refuse any other. Builders and runners follow the manifest they are
 given, so a v1 manifest still binds, runs, and validates exactly as before, and
-no registered study changes. The binding identity is `openai-chat-completions`
-`0.2.0` under both versions, because the same case and settings render the same
-payload bytes; the one difference is `stream_options` when a v2 manifest asks
-for usage on a stream. `build_trial_manifest`, and `build_comparison_manifest`
-with `contract=V2_CONTRACT`, produce v2 manifests, and a `ComparisonStudyTarget`
-with `contract=V2_CONTRACT` carries the v2 settings for a future study.
+no study registered under v1 changes. The binding identity is
+`openai-chat-completions` `0.2.0` under both versions, because the same case
+and settings render the same payload bytes; the one difference is
+`stream_options` when a v2 manifest asks for usage on a stream.
+`build_trial_manifest`, and `build_comparison_manifest` with
+`contract=V2_CONTRACT`, produce v2 manifests, and a `ComparisonStudyTarget`
+with `contract=V2_CONTRACT` carries the v2 settings. Case 001 comparison study
+v6 is the first study registered under v2: its manifests pin the shipped client
+`openai-compatible-chat-completions` `0.4.0` as a literal, ask every stream for
+usage, and give every request a 600-second deadline.
 
 1. **Observed HTTP status.** A v2 attempt report keeps the status the
    transport returned, unclamped, including one outside 100–599, and `null`
