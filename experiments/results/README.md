@@ -33,6 +33,22 @@ stopped there and are retained as failed runs.
 V6 differs from v5 in provider, in one model, and in the study contract. The
 two results are not pooled or compared.
 
+### Case 001 comparison study v7 — November 2026
+
+V7 repeated v6 with one change: its test-plan schema omits the `uniqueItems`
+keyword, which the provider refused for two of v6's three models, and its
+system prompt states that requirement instead. It scheduled five runs per
+model. Fourteen of 15 runs completed: five for GLM 5.2, four for MiniMax M3.1
+Flash, and five for Qwen 3.7 Plus. One MiniMax M3.1 Flash run stopped on a test
+plan that broke the diagnosis contract and is retained as a failed run.
+
+- [Human-readable report](current/2026-11-26-case-001-comparison-v7.md)
+- [Machine-readable report](current/2026-11-26-case-001-comparison-v7.json)
+
+Like the v5 report, it is evidence about Itself's enforcement behavior, not a
+model leaderboard. V7 differs from v6 in its test-plan output profile, so v5,
+v6, and v7 are not pooled or compared.
+
 ## What is publicly verifiable
 
 Each checked-in JSON report contains the validated scorecards, run identifiers,
@@ -63,5 +79,5 @@ defects are part of the research record:
 - [first adapter-conformance observation](archive/2026-07-22-together-case-001.md)
   — one early endpoint integration smoke test.
 
-Archived results are not pooled into the v5 or v6 measurements or presented as
-current product guidance.
+Archived results are not pooled into the v5, v6, or v7 measurements or
+presented as current product guidance.

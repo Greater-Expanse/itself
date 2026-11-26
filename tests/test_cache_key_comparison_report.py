@@ -425,6 +425,21 @@ def test_a_refused_request_is_labelled_in_words(count: int, label: str) -> None:
     assert description == f"{label} with an HTTP error status (`http_status`)"
 
 
+def test_one_stopped_run_is_reported_in_the_singular() -> None:
+    path = ROOT / "experiments/results/current/2026-11-26-case-001-comparison-v7.json"
+    report = cast(JsonObject, json.loads(path.read_text("utf-8")))
+
+    markdown = render_markdown(report)
+
+    assert cast(JsonObject, report["totals"])["failed_replicates"] == 1
+    assert (
+        "- 1 run stopped on a provider or model-output failure. That failure "
+        "remains visible and is not counted as a wrong diagnosis or replaced "
+        "with a new sample."
+    ) in markdown
+    assert "1 runs" not in markdown
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -432,6 +447,7 @@ def test_a_refused_request_is_labelled_in_words(count: int, label: str) -> None:
         "archive/2026-07-24-case-001-comparison-v4",
         "current/2026-07-24-case-001-comparison-v5",
         "current/2026-11-26-case-001-comparison-v6",
+        "current/2026-11-26-case-001-comparison-v7",
     ],
 )
 def test_committed_reports_are_reproduced_from_their_targets(name: str) -> None:

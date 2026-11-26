@@ -46,12 +46,26 @@ response says the provider's structured-output grammar does not implement the
 gives no specific reason. V6 differs from v5 in provider, in one model, and in
 the study contract, so the two results are not pooled or compared.
 
-V7 is registered and has not yet run. It repeats v6 with one change: the
-test-plan schema sent to the provider omits the `uniqueItems` keyword, which
-the provider's structured output refused for two of v6's three models, and the
-system prompt states that requirement instead. Because its test-plan output
-profile differs, its result will not be pooled with or compared to v5's or
-v6's.
+V7 completed on 2026-11-26. It repeated v6 with one change: the test-plan
+schema sent to the provider omits the `uniqueItems` keyword, which the
+provider's structured output refused for two of v6's three models, and the
+system prompt states that requirement instead. The provider accepted every
+request. Fourteen of 15 runs completed both model requests and all three
+application paths: five for GLM 5.2, four for MiniMax M3.1 Flash, and five for
+Qwen 3.7 Plus. The other run stopped at the test-plan request as an
+`assertion_contract` failure. The MiniMax M3.1 Flash plan in that run gave no
+prediction for the check it selected, which the diagnosis contract requires; it
+did not repeat an identifier. No run was retried or replaced, and every
+registered slot produced an immutable bundle that passed Itself's validators.
+
+In every completed run of the
+[v7 report](../results/current/2026-11-26-case-001-comparison-v7.md), the
+ordinary answer and the test plan both named the known cause, the application
+accepted no unsupported answer as confirmed, and every reasoning receipt
+recomputed from its ledger. As with v5, this shows enforcement, failure
+preservation, and reconstructability for this incident, not an improvement in
+model accuracy. Because v7's test-plan output profile differs from v6's, its
+result is not pooled with or compared to v5's or v6's.
 
 ## Question
 
@@ -415,9 +429,12 @@ part of the research record:
   compared to v5.
 - V7 repeats v6's design with a test-plan schema that omits the `uniqueItems`
   keyword, which the provider's structured output refused for two of v6's
-  three models; the system prompt states the requirement instead. It is a
-  fresh run that will reuse no earlier output and will not be pooled with or
-  compared to v5 or v6. It is registered and has not yet run.
+  three models; the system prompt states the requirement instead. Fourteen of
+  15 runs completed; one MiniMax M3.1 Flash run stopped on a test plan that
+  broke the diagnosis contract and is retained as a failed run. Its
+  [report](../results/current/2026-11-26-case-001-comparison-v7.md) is a
+  fresh result that reuses no earlier output and is not pooled with or
+  compared to v5 or v6.
 
 The immutable registrations are retained under [`manifests/`](manifests/).
 

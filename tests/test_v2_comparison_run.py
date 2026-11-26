@@ -542,7 +542,7 @@ def test_the_markdown_labels_runner_failures_apart(
         "harness: 1 test-plan request: harness failed after the request was "
         "sent (`runner_error`)"
     ) in markdown
-    assert "1 runs stopped on provider or model-output failures and 1 on" in (markdown)
+    assert "1 run stopped on provider or model-output failures and 1 on" in (markdown)
 
 
 def _with_no_runner_failures(report: JsonObject) -> JsonObject:

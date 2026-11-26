@@ -1234,12 +1234,19 @@ def render_markdown(report: JsonObject) -> str:
         )
     failure_observation = (
         (
-            f"- {adapter_failed} runs stopped on provider or model-output "
+            f"- {adapter_failed} {'run' if adapter_failed == 1 else 'runs'} "
+            "stopped on provider or model-output "
             f"failures and {runner_failed} on harness failures after a request "
             "was sent. Those failures remain visible, are counted separately, "
             "and are not counted as wrong diagnoses or replaced with new samples."
         )
         if runner_failed
+        else (
+            "- 1 run stopped on a provider or model-output failure. That "
+            "failure remains visible and is not counted as a wrong diagnosis or "
+            "replaced with a new sample."
+        )
+        if failed == 1
         else (
             f"- {failed} runs stopped on provider or model-output failures. Those "
             "failures remain visible and are not counted as wrong diagnoses or "

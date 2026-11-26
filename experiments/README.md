@@ -70,6 +70,15 @@ test-plan request for the other two models, and those ten runs are retained as
 failed runs. See the [v6 report](results/current/2026-11-26-case-001-comparison-v6.md).
 It is not pooled with or compared to v5.
 
+V7, also in November 2026, repeated v6 with a test-plan schema the provider
+accepts for all three models. Fourteen of 15 runs completed; one MiniMax M3.1
+Flash run stopped on a test plan that broke the diagnosis contract and is
+retained as a failed run. In every completed run the application kept the
+model answer provisional until the external check ran and accepted no
+unsupported answer as confirmed. See the
+[v7 report](results/current/2026-11-26-case-001-comparison-v7.md). It is not
+pooled with or compared to v5 or v6.
+
 ## Exercise the evidence path without a model provider
 
 The deterministic reference workflow executes the case, applies the external
@@ -130,7 +139,8 @@ model and generation configurations are retained under
 [`001-cache-key-omission/manifests/v5/`](001-cache-key-omission/manifests/v5/).
 The v6 configurations, registered under study contract v2, are retained under
 [`001-cache-key-omission/manifests/v6/`](001-cache-key-omission/manifests/v6/).
-V7, registered under study contract v2 and not yet run, is retained under
+The v7 configurations, also registered under study contract v2, are retained
+under
 [`001-cache-key-omission/manifests/v7/`](001-cache-key-omission/manifests/v7/).
 
 Each registered manifest set can be checked without a network call:
