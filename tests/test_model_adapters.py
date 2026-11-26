@@ -19,7 +19,7 @@ from urllib.request import Request
 
 import pytest
 
-import itself.inference as inference
+import itself._http_transport as http_transport_module
 from experiments.cases.cache_key_diagnostician import (
     CacheKeyFixtureDiagnostician,
     build_cache_key_request,
@@ -643,7 +643,7 @@ def _install_fake_url_opener(
         assert handlers
         return FakeUrlOpener(callback)
 
-    monkeypatch.setattr(inference, "build_opener", fake_build_opener)
+    monkeypatch.setattr(http_transport_module, "build_opener", fake_build_opener)
 
 
 def test_urllib_transport_sends_one_bounded_post(

@@ -8,7 +8,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import stat
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from copy import deepcopy
 from pathlib import Path
@@ -16,7 +15,12 @@ from typing import BinaryIO
 
 import rfc8785
 
-from ._filesystem import FileIdentity, replace_file_atomically
+from ._filesystem import (
+    FileIdentity,
+    open_observed_regular_file,
+    replace_file_atomically,
+    require_regular_file,
+)
 from ._json import strict_json_loads
 from .bundle import BundleSnapshot, BundleValidator
 from .types import JsonObject, StrPath
@@ -297,31 +301,22 @@ class JsonlLedgerStore:
             metadata = self.path.lstat()
         except FileNotFoundError:
             return [], None
-        if stat.S_ISLNK(metadata.st_mode):
-            raise OSError(f"ledger path must not be a symbolic link: {self.path}")
-        if not stat.S_ISREG(metadata.st_mode):
-            raise OSError(f"ledger path must be a regular file: {self.path}")
-
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(self.path, flags)
-        try:
-            opened_metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(opened_metadata.st_mode) or (
-                opened_metadata.st_dev,
-                opened_metadata.st_ino,
-            ) != (metadata.st_dev, metadata.st_ino):
-                raise OSError(f"ledger path changed while opening: {self.path}")
-            if max_bytes is not None and opened_metadata.st_size > max_bytes:
-                raise LedgerFormatError(
-                    self.path,
-                    1,
-                    f"ledger size exceeds limit {max_bytes} bytes",
-                )
-        except BaseException:
+        require_regular_file(metadata, self.path, "ledger")
+        descriptor, opened_metadata = open_observed_regular_file(
+            self.path,
+            metadata,
+            changed=lambda: OSError(f"ledger path changed while opening: {self.path}"),
+        )
+        if max_bytes is not None and opened_metadata.st_size > max_bytes:
             os.close(descriptor)
-            raise
+            raise LedgerFormatError(
+                self.path,
+                1,
+                f"ledger size exceeds limit {max_bytes} bytes",
+            )
 
+        # The records are decoded as they stream, so the shared bounded read
+        # does not apply here.
         with os.fdopen(descriptor, "rb") as handle:
             records, observed_bytes = _decode_record_stream(
                 handle,

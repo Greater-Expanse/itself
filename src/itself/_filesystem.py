@@ -11,7 +11,7 @@ import os
 import stat
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +47,9 @@ class FileIdentity:
         )
 
 
-def _require_regular_file(metadata: os.stat_result, path: Path, label: str) -> None:
+def require_regular_file(metadata: os.stat_result, path: Path, label: str) -> None:
+    """Refuse ``lstat`` metadata that describes a symlink or a non-regular file."""
+
     if stat.S_ISLNK(metadata.st_mode):
         raise OSError(f"{label} path must not be a symbolic link: {path}")
     if not stat.S_ISREG(metadata.st_mode):
@@ -67,8 +69,63 @@ def regular_file_identity(path: Path, *, label: str) -> FileIdentity | None:
     metadata = _metadata_if_present(path)
     if metadata is None:
         return None
-    _require_regular_file(metadata, path, label)
+    require_regular_file(metadata, path, label)
     return FileIdentity.of(metadata)
+
+
+def open_observed_regular_file(
+    path: Path,
+    observed: os.stat_result,
+    *,
+    changed: Callable[[], Exception],
+    open_failed: Callable[[OSError], Exception] | None = None,
+) -> tuple[int, os.stat_result]:
+    """Open the regular file that ``observed`` describes, without following links.
+
+    ``observed`` is the caller's ``lstat`` of ``path``, already checked to be a
+    regular file.  The path is opened read-only with ``O_NOFOLLOW``, and with
+    ``O_CLOEXEC`` and ``O_BINARY`` where the platform has them.  If what opened
+    is not a regular file with the observed device and inode, the descriptor
+    is closed and the exception from ``changed`` is raised.  An OSError from
+    opening propagates, or is raised as the exception from ``open_failed``
+    with the OSError as its cause.  The caller owns the returned descriptor
+    and its ``fstat`` metadata.
+    """
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        if open_failed is None:
+            raise
+        raise open_failed(error) from error
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            observed.st_dev,
+            observed.st_ino,
+        ):
+            raise changed()
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor, opened
+
+
+def read_and_close(descriptor: int, *, limit: int | None) -> tuple[bytes, int]:
+    """Read ``descriptor`` and close it, returning the bytes and the final size.
+
+    With ``limit``, at most ``limit + 1`` bytes are read, so a caller can tell a
+    file that grew past the limit.  The final size is the descriptor's
+    ``fstat`` size after the read, which a caller compares with the size it
+    opened to detect a file that changed while it was read.
+    """
+
+    with os.fdopen(descriptor, "rb") as handle:
+        content = handle.read(-1 if limit is None else limit + 1)
+        final_size = os.fstat(handle.fileno()).st_size
+    return content, final_size
 
 
 def replace_file_atomically(
@@ -120,7 +177,7 @@ def replace_file_atomically(
                     f"{label} path was removed concurrently and was not replaced: "
                     f"{path}"
                 )
-            _require_regular_file(current, path, label)
+            require_regular_file(current, path, label)
             if FileIdentity.of(current) != expected:
                 raise OSError(
                     f"{label} path was changed concurrently and was not replaced: "

@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import stat
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from functools import cache
@@ -20,10 +19,17 @@ import rfc8785
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from ._filesystem import regular_file_identity, replace_file_atomically
+from ._filesystem import (
+    open_observed_regular_file,
+    read_and_close,
+    regular_file_identity,
+    replace_file_atomically,
+    require_regular_file,
+)
 from ._formats import schema_format_checker
 from ._json import format_json_path as _format_path
 from ._json import strict_json_loads
+from ._json import validated_string as _string
 from ._schema_references import offline_validator, require_local_references
 from .ledger import Ledger
 from .reporting import summarize_ledger
@@ -49,13 +55,6 @@ class _ReceiptSchemaValidator(Protocol):
     """Typed surface used from the partially typed jsonschema dependency."""
 
     def iter_errors(self, instance: JsonValue) -> Iterator[ValidationError]: ...
-
-
-def _string(record: JsonObject, field: str) -> str:
-    value = record[field]
-    if not isinstance(value, str):
-        raise TypeError(f"validated field {field!r} was not a string")
-    return value
 
 
 def _optional_string(record: JsonObject, field: str) -> str | None:
@@ -451,33 +450,20 @@ class JsonReceiptStore:
         if max_bytes is not None and max_bytes < 0:
             raise ValueError("max_bytes must not be negative")
         metadata = self.path.lstat()
-        if stat.S_ISLNK(metadata.st_mode):
-            raise OSError(f"receipt path must not be a symbolic link: {self.path}")
-        if not stat.S_ISREG(metadata.st_mode):
-            raise OSError(f"receipt path must be a regular file: {self.path}")
-
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(self.path, flags)
-        try:
-            opened_metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(opened_metadata.st_mode) or (
-                opened_metadata.st_dev,
-                opened_metadata.st_ino,
-            ) != (metadata.st_dev, metadata.st_ino):
-                raise OSError(f"receipt path changed while opening: {self.path}")
-            if max_bytes is not None and opened_metadata.st_size > max_bytes:
-                raise ReasoningReceiptFormatError(
-                    self.path,
-                    f"receipt size exceeds limit {max_bytes} bytes",
-                )
-        except BaseException:
+        require_regular_file(metadata, self.path, "receipt")
+        descriptor, opened_metadata = open_observed_regular_file(
+            self.path,
+            metadata,
+            changed=lambda: OSError(f"receipt path changed while opening: {self.path}"),
+        )
+        if max_bytes is not None and opened_metadata.st_size > max_bytes:
             os.close(descriptor)
-            raise
+            raise ReasoningReceiptFormatError(
+                self.path,
+                f"receipt size exceeds limit {max_bytes} bytes",
+            )
 
-        with os.fdopen(descriptor, "rb") as handle:
-            source_bytes = handle.read(-1 if max_bytes is None else max_bytes + 1)
-            final_size = os.fstat(handle.fileno()).st_size
+        source_bytes, final_size = read_and_close(descriptor, limit=max_bytes)
         if max_bytes is not None and len(source_bytes) > max_bytes:
             raise ReasoningReceiptFormatError(
                 self.path,

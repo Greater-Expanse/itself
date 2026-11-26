@@ -39,6 +39,7 @@ from ._endpoints import (
     validate_deadline,
     validate_timeout,
 )
+from ._inference_errors import http_failure as _http_failure
 from ._json import ensure_i_json, strict_json_loads
 from .inference import (
     ArtifactReference,
@@ -1009,20 +1010,6 @@ def _estimate(
         order_gap=gap,
         order_flip=len({answer.most_likely for answer in answers}) > 1,
     )
-
-
-def _http_failure(status_code: int) -> InferenceFailure:
-    """Classify an HTTP status exactly as the Chat Completions client does."""
-
-    if status_code == 401:
-        return InferenceFailure.HTTP_AUTHENTICATION
-    if status_code == 403:
-        return InferenceFailure.HTTP_AUTHORIZATION
-    if status_code == 429:
-        return InferenceFailure.HTTP_RATE_LIMIT
-    if 500 <= status_code <= 599:
-        return InferenceFailure.HTTP_SERVER
-    return InferenceFailure.HTTP_STATUS
 
 
 def _utc_now() -> datetime:

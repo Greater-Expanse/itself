@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 
+from ._json import validated_string as _string
 from .ledger import Ledger
 from .state import ClaimStatus
 from .types import JsonObject
@@ -72,13 +73,6 @@ class LedgerSummary:
             },
             "subjects": [subject.to_json_object() for subject in self.subjects],
         }
-
-
-def _string(record: JsonObject, field: str) -> str:
-    value = record[field]
-    if not isinstance(value, str):
-        raise TypeError(f"validated field {field!r} was not a string")
-    return value
 
 
 def replay_subjects(ledger: Ledger) -> tuple[SubjectReplay, ...]:

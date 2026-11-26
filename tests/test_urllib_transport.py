@@ -25,11 +25,11 @@ from itself import (
     InferenceFailure,
     UrllibHttpTransport,
 )
-from itself.inference import (
+from itself._http_transport import (
     _NoRedirectHandler,  # pyright: ignore[reportPrivateUsage]
     _SocketTracker,  # pyright: ignore[reportPrivateUsage]
 )
-from itself.inference import (
+from itself._http_transport import (
     _opener as _transport_opener,  # pyright: ignore[reportPrivateUsage]
 )
 

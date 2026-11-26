@@ -25,6 +25,15 @@ class IJsonError(ValueError):
     """Raised when a value cannot be represented unambiguously as I-JSON."""
 
 
+def validated_string(record: JsonObject, field: str) -> str:
+    """Return a string field that validation has already required."""
+
+    value = record[field]
+    if not isinstance(value, str):
+        raise TypeError(f"validated field {field!r} was not a string")
+    return value
+
+
 def format_json_path(path: Iterable[object]) -> str:
     """Render one jsonschema-style absolute path for a diagnostic."""
 

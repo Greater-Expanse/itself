@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import importlib
 import json
 import os
 import pickle
@@ -14,10 +15,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import Final, NoReturn, cast
 
 import pytest
 
+import itself._artifact_sinks as artifact_sinks_module
 import itself._filesystem as filesystem_module
 import itself.inference as inference_module
 from itself import (
@@ -447,7 +449,7 @@ def test_artifact_sink_accepts_identical_concurrent_publication(
         publish_path_no_replace(source, destination)
 
     monkeypatch.setattr(
-        inference_module,
+        artifact_sinks_module,
         "publish_path_no_replace",
         publish_after_competitor,
     )
@@ -490,7 +492,7 @@ def test_artifact_sink_refuses_different_bytes_at_the_digest_path(
             publish_path_no_replace(source, destination)
 
         monkeypatch.setattr(
-            inference_module, "publish_path_no_replace", publish_after_impostor
+            artifact_sinks_module, "publish_path_no_replace", publish_after_impostor
         )
 
     with pytest.raises(OSError, match="content-addressed artifact digest collision"):
@@ -561,7 +563,7 @@ def test_artifact_sink_does_not_require_fchmod_outside_posix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(inference_module, "os", NonPosixOs())
+    monkeypatch.setattr(artifact_sinks_module, "os", NonPosixOs())
 
     reference = DirectoryArtifactSink(tmp_path / "artifacts").capture(
         b"{}",
@@ -1326,3 +1328,68 @@ def test_endpoint_deadline_reaches_the_request(tmp_path: Path) -> None:
 
     assert transport.requests[0].deadline_seconds == 12.5
     assert _endpoint().deadline_seconds is None
+
+
+INFERENCE_PUBLIC_NAMES: Final = frozenset(
+    {
+        "ADAPTER_ID",
+        "ADAPTER_VERSION",
+        "ArtifactReference",
+        "ArtifactSink",
+        "DirectoryArtifactSink",
+        "EnvironmentCredential",
+        "HttpRequest",
+        "HttpResponse",
+        "HttpTransport",
+        "InferenceError",
+        "InferenceFailure",
+        "InferenceIdentity",
+        "InferenceUsage",
+        "OpenAICompatibleEndpoint",
+        "StructuredInferenceAdapter",
+        "StructuredInferenceClient",
+        "StructuredInferenceResult",
+        "StructuredOutputMode",
+        "StructuredOutputProfile",
+        "UrllibHttpTransport",
+        "build_chat_completions_payload",
+    }
+)
+MOVED_INFERENCE_NAMES: Final = (
+    ("itself._artifact_sinks", "ArtifactReference"),
+    ("itself._artifact_sinks", "ArtifactSink"),
+    ("itself._artifact_sinks", "DirectoryArtifactSink"),
+    ("itself._http_transport", "HttpRequest"),
+    ("itself._http_transport", "HttpResponse"),
+    ("itself._http_transport", "HttpTransport"),
+    ("itself._http_transport", "UrllibHttpTransport"),
+    ("itself._inference_errors", "InferenceError"),
+    ("itself._inference_errors", "InferenceFailure"),
+)
+
+
+def test_inference_module_keeps_its_public_names() -> None:
+    public = {
+        name
+        for name, value in vars(inference_module).items()
+        if not name.startswith("_")
+        and (
+            isinstance(value, str)
+            or getattr(value, "__module__", None) == inference_module.__name__
+        )
+    }
+
+    assert public == INFERENCE_PUBLIC_NAMES
+
+
+@pytest.mark.parametrize(("module_name", "name"), MOVED_INFERENCE_NAMES)
+def test_moved_inference_names_are_the_objects_their_modules_define(
+    module_name: str,
+    name: str,
+) -> None:
+    value: object = getattr(inference_module, name)
+
+    assert value is getattr(importlib.import_module(module_name), name)
+    # Pickles, tracebacks, and reprs still name the public module.
+    assert getattr(value, "__module__", None) == "itself.inference"
+    assert pickle.loads(pickle.dumps(value)) is value

@@ -26,7 +26,9 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from ._filesystem import (
+    open_observed_regular_file,
     publish_path_no_replace,
+    read_and_close,
     sync_directory_after_rename,
     write_file_exclusive,
 )
@@ -219,26 +221,16 @@ def _open_regular_file(path: Path) -> tuple[int, os.stat_result]:
         raise EvidenceBundleValidationError(
             f"{path}: expected a regular non-symlink file"
         )
-
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as error:
-        raise EvidenceBundleValidationError(
+    return open_observed_regular_file(
+        path,
+        metadata,
+        changed=lambda: EvidenceBundleValidationError(
+            f"{path}: file changed while opening"
+        ),
+        open_failed=lambda error: EvidenceBundleValidationError(
             f"{path}: cannot open regular file: {error}"
-        ) from error
-    try:
-        opened_metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(opened_metadata.st_mode) or (
-            opened_metadata.st_dev,
-            opened_metadata.st_ino,
-        ) != (metadata.st_dev, metadata.st_ino):
-            raise EvidenceBundleValidationError(f"{path}: file changed while opening")
-    except BaseException:
-        os.close(descriptor)
-        raise
-    return descriptor, opened_metadata
+        ),
+    )
 
 
 def _read_bounded_regular_file(path: Path, *, max_bytes: int) -> bytes:
@@ -248,9 +240,7 @@ def _read_bounded_regular_file(path: Path, *, max_bytes: int) -> bytes:
         raise EvidenceBundleValidationError(
             f"{path}: file size {metadata.st_size} exceeds limit {max_bytes}"
         )
-    with os.fdopen(descriptor, "rb") as handle:
-        content = handle.read(max_bytes + 1)
-        final_size = os.fstat(handle.fileno()).st_size
+    content, final_size = read_and_close(descriptor, limit=max_bytes)
     if len(content) > max_bytes:
         raise EvidenceBundleValidationError(
             f"{path}: file exceeds limit {max_bytes} while reading"
