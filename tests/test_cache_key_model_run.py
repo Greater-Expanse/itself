@@ -325,6 +325,29 @@ def test_a_failure_after_the_request_quarantines_the_captured_response(
     assert not second.requests
 
 
+def test_an_interrupt_after_the_request_propagates_and_quarantines_the_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def interrupted_after_the_request(adapter: Diagnostician) -> ScriptedRunResult:
+        run_scripted_case(adapter)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(model_run, "run_scripted_case", interrupted_after_the_request)
+    bundle_path = tmp_path / "bundle"
+    quarantine = tmp_path / "bundle.quarantined"
+
+    # The interrupt is not converted into an error a caller might handle.
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _run(bundle_path, _completed_transport())
+
+    assert type(raised.value) is KeyboardInterrupt
+    assert not bundle_path.exists()
+    captured = [path.read_bytes() for path in quarantine.rglob("*") if path.is_file()]
+    assert captured == [_completion_body()]
+    assert stat.S_IMODE(quarantine.stat().st_mode) == stat.S_IRWXU
+
+
 def test_a_receipt_that_does_not_recompute_quarantines_the_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -473,3 +496,51 @@ def test_run_cli_reports_an_unexpected_failure_with_exit_two(
     captured = capsys.readouterr()
     assert exit_code == 2
     assert captured.err == "ERROR: RuntimeError: an unexpected defect\n"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            TrialManifestValidationError(
+                "case.case_id does not match the registered case\n"
+                "case.request_sha256 does not match the registered case"
+            ),
+            "ERROR: case.case_id does not match the registered case; "
+            "case.request_sha256 does not match the registered case\n",
+        ),
+        (
+            RuntimeError("an unexpected defect\n\nwith a detail line"),
+            "ERROR: RuntimeError: an unexpected defect; with a detail line\n",
+        ),
+    ],
+)
+def test_run_cli_reports_a_multi_line_error_on_one_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+    expected: str,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> JsonObject:
+        raise error
+
+    monkeypatch.setattr(model_run, "run_cache_key_model_case", fail)
+
+    exit_code = main(
+        [
+            "run",
+            "--manifest",
+            "manifest.json",
+            "--bundle",
+            "bundle",
+            "--base-url",
+            "https://api.together.ai/v1",
+            "--api-key-env",
+            "TOGETHER_API_KEY",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert not captured.out
+    assert captured.err == expected

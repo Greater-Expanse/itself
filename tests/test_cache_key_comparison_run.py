@@ -31,7 +31,10 @@ from experiments.cases.cache_key_diagnostician import (
 )
 from experiments.cases.cache_key_omission import CaseEnvironment, Mechanism
 from experiments.comparison_bundles import ComparisonBundleValidator
-from experiments.comparison_manifests import build_comparison_manifest
+from experiments.comparison_manifests import (
+    ComparisonManifestValidationError,
+    build_comparison_manifest,
+)
 from experiments.diagnostician import DiagnosisRequest
 from experiments.model_adapters import HttpRequest, HttpResponse, OpenAIChatEndpoint
 from itself import JsonObject, Ledger, build_reasoning_receipt
@@ -501,3 +504,53 @@ def test_run_cli_reports_an_unexpected_failure_with_exit_two(
     captured = capsys.readouterr()
     assert exit_code == 2
     assert captured.err == "ERROR: RuntimeError: an unexpected defect\n"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            ComparisonManifestValidationError(
+                "replicate_index is outside the registered series\n"
+                "conditions do not match the registered conditions"
+            ),
+            "ERROR: replicate_index is outside the registered series; "
+            "conditions do not match the registered conditions\n",
+        ),
+        (
+            RuntimeError("an unexpected defect\n\nwith a detail line"),
+            "ERROR: RuntimeError: an unexpected defect; with a detail line\n",
+        ),
+    ],
+)
+def test_run_cli_reports_a_multi_line_error_on_one_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+    expected: str,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> JsonObject:
+        raise error
+
+    monkeypatch.setattr(comparison_run, "run_cache_key_comparison", fail)
+
+    exit_code = main(
+        [
+            "run",
+            "--manifest",
+            "manifest.json",
+            "--bundle",
+            "bundle",
+            "--replicate-index",
+            "1",
+            "--base-url",
+            "https://api.together.xyz/v1",
+            "--api-key-env",
+            "TOGETHER_API_KEY",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert not captured.out
+    assert captured.err == expected

@@ -229,6 +229,28 @@ def test_completed_bundle_is_atomic_private_and_recomputable(
     assert stat.S_IMODE((path / "bundle.json").stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("entry_point", ["validate", "validate_completed"])
+def test_validator_refuses_a_symbolic_link_as_the_bundle_root(
+    tmp_path: Path,
+    entry_point: str,
+) -> None:
+    path = tmp_path / "replicate-002"
+    _build_completed_bundle(path)
+    link = tmp_path / "linked-replicate"
+    link.symlink_to(path, target_is_directory=True)
+    validator = ComparisonBundleValidator()
+    validate = (
+        validator.validate
+        if entry_point == "validate"
+        else validator.validate_completed
+    )
+
+    with pytest.raises(
+        ComparisonBundleValidationError, match="root is not a directory"
+    ):
+        validate(link, _request())
+
+
 def test_completed_bundle_binds_structured_branches_to_identical_source(
     tmp_path: Path,
 ) -> None:

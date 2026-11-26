@@ -8,7 +8,7 @@ import json
 import os
 import stat
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -19,16 +19,20 @@ from experiments.cases.cache_key_diagnostician import CacheKeyFixtureDiagnostici
 from experiments.cases.cache_key_exchange import build_exchange_request
 from experiments.cases.cache_key_scripted_run import (
     SCRIPTED_RUN_METRICS,
+    ScriptedRunResult,
     run_scripted_case,
 )
+from experiments.diagnostician import DiagnosisRequest, DiagnosisResult
 from experiments.model_adapters import (
     HttpRequest,
     HttpResponse,
     ModelAdapterError,
     OpenAIChatDiagnostician,
     OpenAIChatEndpoint,
+    build_chat_completion_payload,
 )
 from experiments.trial_bundles import (
+    AttemptQuarantinedError,
     TrialBundleBuilder,
     TrialBundleValidationError,
     TrialBundleValidator,
@@ -37,6 +41,8 @@ from experiments.trial_bundles import (
 from experiments.trial_manifests import (
     TrialManifestValidator,
     canonical_json_bytes,
+    endpoint_from_trial_manifest,
+    json_sha256,
     load_trial_manifest,
 )
 from itself import (
@@ -102,28 +108,32 @@ class StaticTransport:
         return self.response
 
 
+def _scripted_result(builder: TrialBundleBuilder) -> ScriptedRunResult:
+    """Run the case once against a fake provider that writes into ``builder``."""
+
+    adapter = OpenAIChatDiagnostician(
+        endpoint=_endpoint(),
+        artifact_sink=builder.artifact_sink,
+        transport=StaticTransport(
+            HttpResponse(200, {"Content-Type": "application/json"}, _completion_body())
+        ),
+        environment={"TOGETHER_API_KEY": SECRET},
+        now=lambda: NOW,
+        monotonic_ns=iter([1_000_000, 6_000_000]).__next__,
+    )
+    return run_scripted_case(adapter)
+
+
 def _build_bundle(path: Path) -> tuple[JsonObject, bytes]:
-    endpoint = _endpoint()
     manifest = load_trial_manifest(MANIFEST_PATH)
-    request = build_exchange_request()
-    TrialManifestValidator().validate_against(manifest, endpoint, request)
-    raw_response = _completion_body()
+    TrialManifestValidator().validate_against(
+        manifest, _endpoint(), build_exchange_request()
+    )
     with TrialBundleBuilder(
         path, manifest, now=lambda: NOW, metric_fields=SCRIPTED_RUN_METRICS
     ) as builder:
-        adapter = OpenAIChatDiagnostician(
-            endpoint=endpoint,
-            artifact_sink=builder.artifact_sink,
-            transport=StaticTransport(
-                HttpResponse(200, {"Content-Type": "application/json"}, raw_response)
-            ),
-            environment={"TOGETHER_API_KEY": SECRET},
-            now=lambda: NOW,
-            monotonic_ns=iter([1_000_000, 6_000_000]).__next__,
-        )
-        result = run_scripted_case(adapter)
-        bundle_manifest = builder.complete(result)
-    return bundle_manifest, raw_response
+        bundle_manifest = builder.complete(_scripted_result(builder))
+    return bundle_manifest, _completion_body()
 
 
 def test_completed_bundle_is_atomic_private_and_recomputable(tmp_path: Path) -> None:
@@ -473,3 +483,109 @@ def test_validator_bounds_the_manifest_it_reads(tmp_path: Path) -> None:
 
     with pytest.raises(TrialBundleValidationError, match="exceeds limit"):
         TrialBundleValidator().validate(path, build_exchange_request())
+
+
+@pytest.mark.parametrize("entry_point", ["validate", "validate_completed"])
+def test_validator_refuses_a_symbolic_link_as_the_bundle_root(
+    tmp_path: Path,
+    entry_point: str,
+) -> None:
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    link = tmp_path / "linked-trial"
+    link.symlink_to(path, target_is_directory=True)
+    validator = TrialBundleValidator()
+    validate = (
+        validator.validate
+        if entry_point == "validate"
+        else validator.validate_completed
+    )
+
+    with pytest.raises(TrialBundleValidationError, match="root is not a directory"):
+        validate(link, build_exchange_request())
+
+
+def test_validator_bounds_the_directory_entries_it_walks(tmp_path: Path) -> None:
+    # Directories are allowed, so without the entry limit these empty ones
+    # would leave the bundle valid.
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    limit = EvidenceBundleLimits().max_directory_entries
+    for index in range(limit):
+        (path / f"empty-{index:04d}").mkdir(mode=0o700)
+
+    with pytest.raises(TrialBundleValidationError, match=f"exceeds limit {limit}"):
+        TrialBundleValidator().validate(path, build_exchange_request())
+
+
+@dataclass(frozen=True, slots=True)
+class _ReshapedMetrics:
+    value: JsonObject
+
+    def to_json_object(self) -> JsonObject:
+        return dict(self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReshapedTrial:
+    request: DiagnosisRequest
+    diagnosis: DiagnosisResult
+    ledger: Ledger
+    metrics: _ReshapedMetrics
+
+
+def test_builder_refuses_metrics_other_than_the_declared_fields(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "trial-001"
+    manifest = load_trial_manifest(MANIFEST_PATH)
+
+    with (
+        pytest.raises(
+            AttemptQuarantinedError,
+            match="runner metrics differ from the metric fields given to the builder",
+        ),
+        TrialBundleBuilder(
+            path, manifest, now=lambda: NOW, metric_fields=SCRIPTED_RUN_METRICS
+        ) as builder,
+    ):
+        result = _scripted_result(builder)
+        metrics = result.metrics.to_json_object()
+        metrics["ledger_records"] = metrics.pop("ledger_record_count")
+        builder.complete(
+            _ReshapedTrial(
+                request=result.request,
+                diagnosis=result.diagnosis,
+                ledger=result.ledger,
+                metrics=_ReshapedMetrics(metrics),
+            )
+        )
+
+    assert not path.exists()
+
+
+def test_validator_refuses_a_request_that_is_not_the_case_input(
+    tmp_path: Path,
+) -> None:
+    # The manifest is rebound to the other request, so only the replay can
+    # tell that this request is not case 001's input.
+    path = tmp_path / "trial-001"
+    _build_bundle(path)
+    request = replace(build_exchange_request(), task="Explain a different failure.")
+    manifest = _load(path / "trial-manifest.json")
+    endpoint = endpoint_from_trial_manifest(
+        manifest,
+        base_url="https://api.together.ai/v1",
+        api_key_env="TOGETHER_API_KEY",
+    )
+    cast(JsonObject, manifest["case"])["request_sha256"] = json_sha256(
+        request.to_json_object()
+    )
+    cast(JsonObject, manifest["generation"])["prompt_payload_sha256"] = json_sha256(
+        build_chat_completion_payload(endpoint, request)
+    )
+    _write(path / "trial-manifest.json", manifest)
+    _rebind(path)
+
+    with pytest.raises(TrialBundleValidationError, match="frozen case-001 input"):
+        TrialBundleValidator().validate(path, request)

@@ -12,6 +12,7 @@ from typing import Any, cast
 import pytest
 
 import itself
+import itself.ledger as ledger_module
 from evaluations import (
     EvaluationEnvironment,
     EvaluationOutcome,
@@ -179,6 +180,14 @@ def test_capacity_timings_exclude_validator_and_builder_construction(
             charge_construction(getattr(itself, name)),
             raising=True,
         )
+    # A ledger or store given no validator builds its own through this name,
+    # so a default constructed inside a timed region is charged too.
+    monkeypatch.setattr(
+        ledger_module,
+        "BundleValidator",
+        charge_construction(itself.BundleValidator),
+        raising=True,
+    )
 
     report = run_capacity_curve(
         tmp_path / "capacity",

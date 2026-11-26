@@ -398,7 +398,14 @@ class TrialBundleValidator:
         except TrialManifestValidationError as error:
             raise TrialBundleValidationError(f"trial manifest: {error}") from error
 
-        projected = self._projection(request, diagnosis)
+        try:
+            projected = self._projection(request, diagnosis)
+        except ValueError as error:
+            # For example, a request that is not the case's input cannot be
+            # replayed, even when the bundle's manifest is consistent with it.
+            raise TrialBundleValidationError(
+                f"diagnosis cannot be replayed through its case: {error}"
+            ) from error
         if ledger.records != projected.ledger.records:
             raise TrialBundleValidationError(
                 "ledger does not match the deterministic projection of the diagnosis"
