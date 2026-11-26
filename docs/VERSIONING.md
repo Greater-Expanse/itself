@@ -92,7 +92,10 @@ A release must:
 3. pass tests, strict type checks, lint, formatting, and package-build checks;
 4. include the schemas, `py.typed` marker, and license in built artifacts;
 5. verify that any published schema line matches the packaged bytes;
-6. use the Git tag `v` followed by the normalized distribution version, such
+6. check the decision-model adapter against the latest hosted Jev, with the
+   model `jev-latest` and its default settings, and name the version it
+   resolved to in the [decision-model guide](DECISION_MODELS.md);
+7. use the Git tag `v` followed by the normalized distribution version, such
    as `v0.2.0`.
 
 Publishing a GitHub release for that tag runs the release workflow. It refuses
