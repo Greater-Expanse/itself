@@ -1,0 +1,737 @@
+{
+  "case_id": "001-cache-key-omission",
+  "design": {
+    "automatic_retry": false,
+    "deadline_seconds": 600.0,
+    "fallback": false,
+    "max_output_tokens": 32768,
+    "provider_control": {
+      "provider_aggregates_reported": false,
+      "provider_count": 1,
+      "provider_is_behavioral_metric": false,
+      "providers": [
+        "Together AI"
+      ],
+      "role": "controlled_infrastructure"
+    },
+    "repair": false,
+    "replicates_per_target": 5,
+    "shipped_adapter": {
+      "adapter_id": "openai-compatible-chat-completions",
+      "adapter_version": "0.4.0"
+    },
+    "stream": true,
+    "stream_include_usage": true,
+    "target_count": 3,
+    "temperature": 1.0,
+    "timeout_seconds": 300.0,
+    "top_p": 0.95
+  },
+  "limitations": [
+    "This report describes one transparent diagnosis problem with a fixed set of possible causes.",
+    "Five runs per model are too few to estimate how that model behaves in general.",
+    "Provider and adapter failures record execution behavior; they are not scored as wrong diagnoses.",
+    "Behavioral counts use only runs in which both requested model outputs satisfied their contracts.",
+    "V6 fixes one provider as controlled infrastructure; provider identity is provenance only.",
+    "V6 differs from v5 in provider, in one model, and in study contract; the two are not pooled or compared.",
+    "No model output or scorecard from an earlier version is reused in v6.",
+    "Harness failures after a request was sent are counted apart from provider and model-output failures; they are not scored as wrong diagnoses.",
+    "Qwen 3.7 Plus is a hosted-only comparator, not an open-weight result.",
+    "No composite truth, trust, or reasoning score is calculated."
+  ],
+  "metadata_anomalies": [],
+  "metric_validity": {
+    "invalid": {},
+    "valid": [
+      "model_primary_is_ground_truth",
+      "model_retained_ground_truth",
+      "selected_test_discriminates",
+      "external_evidence_identifies_ground_truth",
+      "behavioral_recovery",
+      "false_promotion_attempts",
+      "false_promotions_accepted",
+      "receipt_recomputes",
+      "predictions_correct",
+      "ground_truth_final_status"
+    ]
+  },
+  "registered_at": "2026-11-26T17:17:34Z",
+  "replicates": [
+    {
+      "bundle_id": "urn:sha256:8c8439c142872aa8d956950dd63eb95896e8c9b254f464fe1fc571e38ed8c033",
+      "outcome": "completed",
+      "raw_response_sha256": {
+        "narrative": "b46f8e6b73d24092b34ef22af092237794e93370db692a609ea6337117182435",
+        "structured": "d4791cd2dab0693bde452659175ce1abdd84e76c4804e52e7daad57f9b5d8d14"
+      },
+      "replicate_index": 1,
+      "scorecards": {
+        "evidence_enforced": {
+          "behavioral_recovery": true,
+          "condition": "evidence_enforced",
+          "expressed_confidence": 0.65,
+          "external_evidence_identifies_ground_truth": true,
+          "external_tests_executed": 1,
+          "false_promotion_attempts": 1,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "supported",
+          "ledger_record_count": 23,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 4223,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 10785
+        },
+        "narrative_diagnosis": {
+          "behavioral_recovery": null,
+          "condition": "narrative_diagnosis",
+          "expressed_confidence": 0.9,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "proposed",
+          "ledger_record_count": 3,
+          "model_input_tokens": 1191,
+          "model_output_tokens": 428,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": null,
+          "predictions_declared": null,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 1,
+          "selected_test_discriminates": null,
+          "selected_test_id": null,
+          "source_attempt_id": "narrative-attempt-1",
+          "test_selected": false,
+          "wall_time_ms": 2024
+        },
+        "structured_without_testing": {
+          "behavioral_recovery": null,
+          "condition": "structured_without_testing",
+          "expressed_confidence": 0.65,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "testable",
+          "ledger_record_count": 12,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 4223,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 10785
+        }
+      },
+      "target_id": "together-glm-5p2"
+    },
+    {
+      "bundle_id": "urn:sha256:b2c7a8fb736683964598161be63d47840e3fb826e29fc506c4af07c894004705",
+      "outcome": "completed",
+      "raw_response_sha256": {
+        "narrative": "06c94a1e6f0ad57fac54cf8c0a157e3315bc1d165c95fdcef08c82017cbc7b32",
+        "structured": "355442b2b6e58ba772f4cab85eec5fa60228104c902f9862ed25990e293dd2c1"
+      },
+      "replicate_index": 2,
+      "scorecards": {
+        "evidence_enforced": {
+          "behavioral_recovery": true,
+          "condition": "evidence_enforced",
+          "expressed_confidence": 0.7,
+          "external_evidence_identifies_ground_truth": true,
+          "external_tests_executed": 1,
+          "false_promotion_attempts": 1,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "supported",
+          "ledger_record_count": 23,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 2048,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 5174
+        },
+        "narrative_diagnosis": {
+          "behavioral_recovery": null,
+          "condition": "narrative_diagnosis",
+          "expressed_confidence": 0.85,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "proposed",
+          "ledger_record_count": 3,
+          "model_input_tokens": 1191,
+          "model_output_tokens": 548,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": null,
+          "predictions_declared": null,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 1,
+          "selected_test_discriminates": null,
+          "selected_test_id": null,
+          "source_attempt_id": "narrative-attempt-1",
+          "test_selected": false,
+          "wall_time_ms": 2216
+        },
+        "structured_without_testing": {
+          "behavioral_recovery": null,
+          "condition": "structured_without_testing",
+          "expressed_confidence": 0.7,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "testable",
+          "ledger_record_count": 12,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 2048,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 5174
+        }
+      },
+      "target_id": "together-glm-5p2"
+    },
+    {
+      "bundle_id": "urn:sha256:109c4b065a93ae4e35fbd2284b07ed060ff3964c73ed65ef0c31b53e89d8d6f7",
+      "outcome": "completed",
+      "raw_response_sha256": {
+        "narrative": "1c4eb1f52a4f51e4a5eede42d06ff03de7d239493bb7303f31d2b965a9b7867e",
+        "structured": "726cebb63e5cb47e7b698a82c51559194ac3487b773e71d5a896fd0530a49bc8"
+      },
+      "replicate_index": 3,
+      "scorecards": {
+        "evidence_enforced": {
+          "behavioral_recovery": true,
+          "condition": "evidence_enforced",
+          "expressed_confidence": 0.55,
+          "external_evidence_identifies_ground_truth": true,
+          "external_tests_executed": 1,
+          "false_promotion_attempts": 1,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "supported",
+          "ledger_record_count": 23,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 1477,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 3770
+        },
+        "narrative_diagnosis": {
+          "behavioral_recovery": null,
+          "condition": "narrative_diagnosis",
+          "expressed_confidence": 0.8,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "proposed",
+          "ledger_record_count": 3,
+          "model_input_tokens": 1191,
+          "model_output_tokens": 541,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": null,
+          "predictions_declared": null,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 1,
+          "selected_test_discriminates": null,
+          "selected_test_id": null,
+          "source_attempt_id": "narrative-attempt-1",
+          "test_selected": false,
+          "wall_time_ms": 2324
+        },
+        "structured_without_testing": {
+          "behavioral_recovery": null,
+          "condition": "structured_without_testing",
+          "expressed_confidence": 0.55,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "testable",
+          "ledger_record_count": 12,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 1477,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 3770
+        }
+      },
+      "target_id": "together-glm-5p2"
+    },
+    {
+      "bundle_id": "urn:sha256:becb3f17e4939d5a048a6af087af94472d8164ca36016c0d20ff43343fa5e998",
+      "outcome": "completed",
+      "raw_response_sha256": {
+        "narrative": "c14008f753e155c56822b6d5d7bdb75eda4f249018f1089079d4119403b58f58",
+        "structured": "924a60df08f402ce59bb263f0f7cde475d10e0f0b9f912d2130753de738f73e5"
+      },
+      "replicate_index": 4,
+      "scorecards": {
+        "evidence_enforced": {
+          "behavioral_recovery": true,
+          "condition": "evidence_enforced",
+          "expressed_confidence": 0.5,
+          "external_evidence_identifies_ground_truth": true,
+          "external_tests_executed": 1,
+          "false_promotion_attempts": 1,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "supported",
+          "ledger_record_count": 23,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 2796,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 11154
+        },
+        "narrative_diagnosis": {
+          "behavioral_recovery": null,
+          "condition": "narrative_diagnosis",
+          "expressed_confidence": 0.85,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "proposed",
+          "ledger_record_count": 3,
+          "model_input_tokens": 1191,
+          "model_output_tokens": 529,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": null,
+          "predictions_declared": null,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 1,
+          "selected_test_discriminates": null,
+          "selected_test_id": null,
+          "source_attempt_id": "narrative-attempt-1",
+          "test_selected": false,
+          "wall_time_ms": 2058
+        },
+        "structured_without_testing": {
+          "behavioral_recovery": null,
+          "condition": "structured_without_testing",
+          "expressed_confidence": 0.5,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "testable",
+          "ledger_record_count": 12,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 2796,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 11154
+        }
+      },
+      "target_id": "together-glm-5p2"
+    },
+    {
+      "bundle_id": "urn:sha256:9818a4fa41dd815c585e0642059c8910dbe5f021f406687ac8c090c6b5d7f9de",
+      "outcome": "completed",
+      "raw_response_sha256": {
+        "narrative": "3d3ba7610bb61411d337be8d6452a24741d7b2e5bde738035cced046223ff4ad",
+        "structured": "0f701cbd3b6f4ccaea50bb0a8735d414a307b306b4c2314fd9ff4fa5219a5016"
+      },
+      "replicate_index": 5,
+      "scorecards": {
+        "evidence_enforced": {
+          "behavioral_recovery": true,
+          "condition": "evidence_enforced",
+          "expressed_confidence": 0.4,
+          "external_evidence_identifies_ground_truth": true,
+          "external_tests_executed": 1,
+          "false_promotion_attempts": 1,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "supported",
+          "ledger_record_count": 23,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 3561,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 9106
+        },
+        "narrative_diagnosis": {
+          "behavioral_recovery": null,
+          "condition": "narrative_diagnosis",
+          "expressed_confidence": 0.85,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "proposed",
+          "ledger_record_count": 3,
+          "model_input_tokens": 1191,
+          "model_output_tokens": 545,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": null,
+          "predictions_declared": null,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 1,
+          "selected_test_discriminates": null,
+          "selected_test_id": null,
+          "source_attempt_id": "narrative-attempt-1",
+          "test_selected": false,
+          "wall_time_ms": 2209
+        },
+        "structured_without_testing": {
+          "behavioral_recovery": null,
+          "condition": "structured_without_testing",
+          "expressed_confidence": 0.4,
+          "external_evidence_identifies_ground_truth": null,
+          "external_tests_executed": 0,
+          "false_promotion_attempts": 0,
+          "false_promotions_accepted": 0,
+          "ground_truth_final_status": "testable",
+          "ledger_record_count": 12,
+          "model_input_tokens": 1549,
+          "model_output_tokens": 3561,
+          "model_primary_is_ground_truth": true,
+          "model_retained_ground_truth": true,
+          "predictions_correct": 3,
+          "predictions_declared": 3,
+          "receipt_recomputes": true,
+          "retained_hypothesis_count": 3,
+          "selected_test_discriminates": true,
+          "selected_test_id": "bypass_caching_proxy",
+          "source_attempt_id": "structured-attempt-1",
+          "test_selected": true,
+          "wall_time_ms": 9106
+        }
+      },
+      "target_id": "together-glm-5p2"
+    },
+    {
+      "bundle_id": "urn:sha256:762c33d91a0048c7c111a03b6b9c43c771b1b7a42b2ffb65890344a70276e3e2",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "39bf248571ec9fd5e9087ea763169bb784f57bb1ebb4b1163b4a36e1200541d3",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 1,
+      "target_id": "together-minimax-m3p1-flash"
+    },
+    {
+      "bundle_id": "urn:sha256:9ba1bc6c7cde53fb01f589f8bd34ccdab15582a47b64aab211ff62d26ddfc447",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "39bf248571ec9fd5e9087ea763169bb784f57bb1ebb4b1163b4a36e1200541d3",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 2,
+      "target_id": "together-minimax-m3p1-flash"
+    },
+    {
+      "bundle_id": "urn:sha256:4bd1f2514f562a1c1539a7157001b1b2b3c05a8e20570f99d2f50c1a355ccfc1",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "39bf248571ec9fd5e9087ea763169bb784f57bb1ebb4b1163b4a36e1200541d3",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 3,
+      "target_id": "together-minimax-m3p1-flash"
+    },
+    {
+      "bundle_id": "urn:sha256:9e08b7b01e2f8e568a71887fb44454f47c7a3bc1e695bb466f9418f56546ddbd",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "39bf248571ec9fd5e9087ea763169bb784f57bb1ebb4b1163b4a36e1200541d3",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 4,
+      "target_id": "together-minimax-m3p1-flash"
+    },
+    {
+      "bundle_id": "urn:sha256:2e47cb7270b3ed447992f77376892d55938cde04b8bc969cdda19355625cabb5",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "39bf248571ec9fd5e9087ea763169bb784f57bb1ebb4b1163b4a36e1200541d3",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 5,
+      "target_id": "together-minimax-m3p1-flash"
+    },
+    {
+      "bundle_id": "urn:sha256:1364e8cdc90e951a0b7556ae1552b0bfeca80ce96647b4928f76794a4db07ea7",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "0f2907177cfeab00a4dab3031f655c7b6447fd74979229cc3f45a1a3c5e1cc2d",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 1,
+      "target_id": "together-qwen3p7-plus"
+    },
+    {
+      "bundle_id": "urn:sha256:1c386f4654fefdafa298544cd07311e39613815f25b26f539d4f16ceddc20eb1",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "d6c7a4d5c249f1e4a04dd95df53fdcaf553b31ad1f925cb34050d6598900f543",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 2,
+      "target_id": "together-qwen3p7-plus"
+    },
+    {
+      "bundle_id": "urn:sha256:d85683601e8d18e238bbb18354d5c738288ec62c656a7d3fb807807b67baeda1",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "eaf42fdb3e1c95c694bfc30a14036b0e173c36af5989c58fd33d903202f61f15",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 3,
+      "target_id": "together-qwen3p7-plus"
+    },
+    {
+      "bundle_id": "urn:sha256:9ed77b82db83d294b4a3f3e276e1c3f52e916cfdc3f73d9eef983433ac0c21e8",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "1690834b1ac87e7d21a56c7149283d9896d66ebcc23a7328e9d4ec9fc611a3a5",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 4,
+      "target_id": "together-qwen3p7-plus"
+    },
+    {
+      "bundle_id": "urn:sha256:ef2e046df5d8a3b05a74bc21f2beb6fbb3ae90ccd24098b80f6b882322cb22a4",
+      "failed_attempt_id": "structured-attempt-1",
+      "failure": {
+        "kind": "http_status",
+        "raw_response_sha256": "979e38652b5f6d83204f5db038fb6dee329ee6057cf2fe1b2891f47d4a592e0e",
+        "retryable": false,
+        "status_code": 400
+      },
+      "outcome": "adapter_failed",
+      "replicate_index": 5,
+      "target_id": "together-qwen3p7-plus"
+    }
+  ],
+  "report_version": "0.4.0",
+  "reported_at": "2026-11-26T17:23:49Z",
+  "study_version": "6",
+  "target_summaries": [
+    {
+      "checkpoint_status": "public_weights",
+      "completed_metrics": {
+        "behavioral_recovery": 5,
+        "denominator": 5,
+        "evidence_identified_ground_truth": 5,
+        "false_promotions_accepted": 0,
+        "ground_truth_final_statuses": {
+          "supported": 5
+        },
+        "narrative_primary_is_ground_truth": 5,
+        "receipt_recomputes": 15,
+        "structured_predictions_correct": 15,
+        "structured_predictions_declared": 15,
+        "structured_primary_is_ground_truth": 5,
+        "structured_retained_ground_truth": 5,
+        "structured_selected_discriminating_test": 5
+      },
+      "completed_replicates": 5,
+      "failed_replicates": 0,
+      "failures": [],
+      "model_family": "GLM 5.2",
+      "model_id": "zai-org/GLM-5.2",
+      "provider": "Together AI",
+      "registered_replicates": 5,
+      "runner_failed_replicates": 0,
+      "runner_failures": [],
+      "target_id": "together-glm-5p2"
+    },
+    {
+      "checkpoint_status": "public_weights",
+      "completed_metrics": {
+        "behavioral_recovery": 0,
+        "denominator": 0,
+        "evidence_identified_ground_truth": 0,
+        "false_promotions_accepted": 0,
+        "ground_truth_final_statuses": {},
+        "narrative_primary_is_ground_truth": 0,
+        "receipt_recomputes": 0,
+        "structured_predictions_correct": 0,
+        "structured_predictions_declared": 0,
+        "structured_primary_is_ground_truth": 0,
+        "structured_retained_ground_truth": 0,
+        "structured_selected_discriminating_test": 0
+      },
+      "completed_replicates": 0,
+      "failed_replicates": 5,
+      "failures": [
+        {
+          "attempt_id": "structured-attempt-1",
+          "count": 5,
+          "kind": "http_status"
+        }
+      ],
+      "model_family": "MiniMax M3.1 Flash",
+      "model_id": "MiniMaxAI/MiniMax-M3.1-Flash",
+      "provider": "Together AI",
+      "registered_replicates": 5,
+      "runner_failed_replicates": 0,
+      "runner_failures": [],
+      "target_id": "together-minimax-m3p1-flash"
+    },
+    {
+      "checkpoint_status": "hosted_only",
+      "completed_metrics": {
+        "behavioral_recovery": 0,
+        "denominator": 0,
+        "evidence_identified_ground_truth": 0,
+        "false_promotions_accepted": 0,
+        "ground_truth_final_statuses": {},
+        "narrative_primary_is_ground_truth": 0,
+        "receipt_recomputes": 0,
+        "structured_predictions_correct": 0,
+        "structured_predictions_declared": 0,
+        "structured_primary_is_ground_truth": 0,
+        "structured_retained_ground_truth": 0,
+        "structured_selected_discriminating_test": 0
+      },
+      "completed_replicates": 0,
+      "failed_replicates": 5,
+      "failures": [
+        {
+          "attempt_id": "structured-attempt-1",
+          "count": 5,
+          "kind": "http_status"
+        }
+      ],
+      "model_family": "Qwen 3.7 Plus",
+      "model_id": "Qwen/Qwen3.7-Plus",
+      "provider": "Together AI",
+      "registered_replicates": 5,
+      "runner_failed_replicates": 0,
+      "runner_failures": [],
+      "target_id": "together-qwen3p7-plus"
+    }
+  ],
+  "totals": {
+    "behavioral_recovery": 5,
+    "completed_condition_branches": 15,
+    "completed_replicates": 5,
+    "evidence_identified_ground_truth": 5,
+    "failed_replicates": 10,
+    "failures": [
+      {
+        "attempt_id": "structured-attempt-1",
+        "count": 10,
+        "kind": "http_status"
+      }
+    ],
+    "false_promotions_accepted": 0,
+    "ground_truth_final_statuses": {
+      "supported": 5
+    },
+    "narrative_primary_is_ground_truth": 5,
+    "registered_replicates": 15,
+    "runner_failed_replicates": 0,
+    "runner_failures": [],
+    "structured_predictions_correct": 15,
+    "structured_predictions_declared": 15,
+    "structured_primary_is_ground_truth": 5,
+    "structured_selected_discriminating_test": 5
+  }
+}

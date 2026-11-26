@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:trials:v2:trial-bundle",
+  "title": "Controlled Trial Bundle v0.3.0",
+  "description": "A digest-bound inventory for one completed or failed evidence-enforced model trial, naming the shipped client that executed it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_version",
+    "bundle_id",
+    "trial_series_id",
+    "attempt_index",
+    "condition",
+    "outcome",
+    "created_at",
+    "shipped_adapter",
+    "contains_private_artifacts",
+    "files"
+  ],
+  "properties": {
+    "bundle_version": { "const": "0.3.0" },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^urn:sha256:[0-9a-f]{64}$"
+    },
+    "trial_series_id": { "$ref": "#/$defs/identifier" },
+    "attempt_index": { "const": 1 },
+    "condition": { "const": "evidence_enforced" },
+    "outcome": { "enum": ["completed", "adapter_failed", "runner_failed"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "shipped_adapter": { "$ref": "#/$defs/shippedAdapter" },
+    "contains_private_artifacts": { "type": "boolean" },
+    "files": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/file" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "outcome": { "const": "completed" } },
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": {
+          "contains_private_artifacts": { "const": true },
+          "files": { "minItems": 6 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "shippedAdapter": {
+      "description": "The shipped itself.inference client that executed the trial, read at run time.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "adapter_version"],
+      "properties": {
+        "adapter_id": { "const": "openai-compatible-chat-completions" },
+        "adapter_version": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "media_type",
+        "visibility",
+        "size_bytes",
+        "digest"
+      ],
+      "properties": {
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "media_type": { "$ref": "#/$defs/nonEmptyString" },
+        "visibility": { "enum": ["shareable", "private"] },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

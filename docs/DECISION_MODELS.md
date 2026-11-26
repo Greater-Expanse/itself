@@ -67,11 +67,13 @@ it never appears in request bodies, artifacts, results, or the SDK's error
 messages; the [inference guide](INFERENCE.md) describes what a custom
 transport's exceptions and traceback-recording tools can still expose. Extra
 headers and request fields cannot override adapter-owned values: the `model`,
-`state`, and `questions` fields, the content type, the `Host`,
-`Content-Length`, and `Transfer-Encoding` headers, and authentication. The
-default resource path is `systemone`, so a base URL ending in `/v1` reaches
-`/v1/systemone`. `timeout_seconds` bounds each read, and the optional
-`deadline_seconds` bounds each request as a whole.
+`state`, and `questions` fields, the `Accept`, `Content-Type`, `User-Agent`,
+`Host`, `Content-Length`, and `Transfer-Encoding` headers, and
+authentication. The default resource path is `systemone`, so a base URL ending
+in `/v1` reaches `/v1/systemone`. `timeout_seconds` bounds each connection
+attempt and each read, and `deadline_seconds`
+bounds each request as a whole: 600 seconds unless set, and no bound with
+`deadline_seconds=None`.
 
 ## Use Jev
 
@@ -89,11 +91,14 @@ endpoint = DecisionModelEndpoint(
 )
 ```
 
-Itself 0.2.0 was checked on 2026-09-30 against TypeSafe's hosted `jev-1.13.0`
-and a local [Jeff](https://github.com/firelex/jeff) server (Jeff-Qwen3.5-2B
-v1.1), and every answer passed the adapter's validation with its default
-settings. Jev accepts at most 10 levels in a score question. Itself is an
-independent project and is not affiliated with TypeSafe.
+Itself 0.3.0 was checked on 2026-11-26 against TypeSafe's hosted `jev-1.14.0`,
+and every answer passed the adapter's validation with its default settings.
+Jev reports scores and probabilities to two decimal places, which the
+[rounding allowance](#validation-and-failures) covers, and it accepts at most
+10 levels in a score question. A local
+[Jeff](https://github.com/firelex/jeff) server (Jeff-Qwen3.5-2B v1.1) was last
+checked with Itself 0.2.0, on 2026-09-30. Itself is an independent project and
+is not affiliated with TypeSafe.
 
 ## Questions
 
@@ -187,14 +192,36 @@ Each answer is checked against the question that was asked:
   (default `1e-6`, at most `0.01`);
 - a choice answer's `choice` is its most probable option, within the
   tolerance;
-- a score answer's `score` lies within the tolerance times the number of
-  levels minus one of its distribution's expected level, because the expected
-  level weights each probability by an index up to that number;
+- a score answer's `score` lies within an allowance of its distribution's
+  expected level: the tolerance times the number of levels minus one, because
+  the expected level weights each probability by an index up to that number,
+  plus the rounding allowance described below;
 - a score answer's `legend`, when it maps every level index to text, matches
   the levels the request showed;
 - a reported confidence, for any question type, lies between 0 and 1;
 - a reported `model` is a string, and every request in one decision reports
   the same model.
+
+An endpoint that rounds the numbers it reports computes its score before
+rounding, so the score can sit further from the expected level of the rounded
+distribution than the tolerance allows. The adapter therefore checks a score
+to the precision its answer reports. It reads each number as the shortest
+decimal that gives it back and counts that decimal's places, at least one. It
+takes each probability to lie within one unit of the finest place the
+distribution shows from the value the endpoint used, and the score to lie
+within one unit of its own last place. Both distributions sum to 1, so the
+expected level can move by at most that probability unit times the number of
+levels squared over four, rounded down. The allowance is the tolerance term
+plus those two terms: ten levels reported to two places allow
+0.000009 + 25 × 0.01 + 0.01 = 0.260009 at the default tolerance. The check is
+exact on those decimals, so binary rounding cannot refuse an answer at the
+edge of the allowance. A full-precision answer is held to essentially the
+tolerance alone. An answer whose numbers end in zeros shows fewer places, so
+it is checked more loosely.
+
+The reported `score` is used only for this check. A `DecisionModelAnswer`
+keeps the distribution, its `expected_level` is computed from that
+distribution, and the reported `score` remains in the captured response.
 
 Fields the adapter does not interpret, such as a legend of any other shape,
 remain in the captured response. `reported_confidence` is the endpoint's own figure, and
@@ -210,6 +237,13 @@ that completed, so every captured artifact of the decision stays reachable.
 Only transport, rate-limit, and server failures are marked retryable. A server
 that answers "busy" with a 5xx status is therefore retryable, and the client
 still leaves any retry to the caller.
+
+A failure's `status_code` holds the response's HTTP status when one is known,
+under the same rule as the Chat Completions client: every HTTP-status failure
+has one, and so does a response the transport rejected after its headers
+arrived, such as a body over the byte limit, even when that status is 2xx. A
+failure before any status arrived has `None`. Classify a failure by `failure`,
+not by whether it has a status.
 
 ## Recording a decision in a ledger
 

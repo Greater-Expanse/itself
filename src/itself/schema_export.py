@@ -14,7 +14,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Final, cast
 
-from ._filesystem import publish_path_no_replace
+from ._filesystem import publish_path_no_replace, sync_directory_after_rename
 from .types import JsonObject, JsonValue, StrPath
 
 SCHEMA_CATALOG_VERSION: Final = "1"
@@ -120,7 +120,9 @@ def export_schemas(destination: StrPath) -> SchemaExport:
     """Export canonical packaged schemas, catalogs, and checksums.
 
     The destination must not already exist. It becomes available only after the
-    complete export has been written.
+    complete export has been written. The parent directory is then synchronized
+    where the filesystem supports it; an OSError from that sync, such as EIO,
+    propagates with the export already published.
     """
 
     destination_path = Path(destination)
@@ -174,5 +176,6 @@ def export_schemas(destination: StrPath) -> SchemaExport:
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    sync_directory_after_rename(destination_path.parent)
 
     return SchemaExport(destination=destination_path, schemas=tuple(published))

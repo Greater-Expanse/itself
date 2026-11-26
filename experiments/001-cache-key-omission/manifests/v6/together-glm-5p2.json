@@ -1,0 +1,131 @@
+{
+  "artifact_policy": {
+    "credential": "environment_only",
+    "private_reasoning": "not_requested",
+    "published_representation": "metadata_and_digest",
+    "raw_provider_response": "private"
+  },
+  "case": {
+    "case_id": "001-cache-key-omission",
+    "case_version": "1",
+    "diagnosis_contract_version": "0.2.0",
+    "narrative_contract_version": "0.2.0",
+    "request_sha256": "cb5fab698db5de399c32c0fce6909680d61df4f085b49a626bc50934db3c58f1"
+  },
+  "comparison_series_id": "case-001-together-glm-5p2-comparison-v6",
+  "design": {
+    "branches": {
+      "evidence_enforced": {
+        "executes_external_test": true,
+        "source_attempt_id": "structured-attempt-1"
+      },
+      "narrative_diagnosis": {
+        "executes_external_test": false,
+        "source_attempt_id": "narrative-attempt-1"
+      },
+      "structured_without_testing": {
+        "executes_external_test": false,
+        "source_attempt_id": "structured-attempt-1"
+      }
+    },
+    "call_order": [
+      "narrative-attempt-1",
+      "structured-attempt-1"
+    ],
+    "condition_branch_count": 3,
+    "model_attempt_count": 2,
+    "replicate_count": 5
+  },
+  "diagnostician": {
+    "actor_id": "together-glm-5p2-case-001",
+    "adapter_id": "openai-chat-completions",
+    "adapter_version": "0.2.0",
+    "base_url_sha256": "44a5705b763c30bf92e279e5b75c96c4f268787a9b0d08e015d2aa29c0d94cbc",
+    "model": "zai-org/GLM-5.2",
+    "protocol": "openai-chat-completions",
+    "shipped_adapter": {
+      "adapter_id": "openai-compatible-chat-completions",
+      "adapter_version": "0.4.0"
+    }
+  },
+  "execution": {
+    "automatic_retry": false,
+    "deadline_seconds": 600.0,
+    "failure_mode": "stop_after_failed_attempt",
+    "fallback": false,
+    "json_repair": false,
+    "max_attempts_per_model_attempt": 1,
+    "timeout_seconds": 300.0
+  },
+  "generation": {
+    "max_output_tokens": 32768,
+    "reasoning_effort": null,
+    "seed": null,
+    "stream": true,
+    "stream_include_usage": true,
+    "structured_output_mode": "json_schema_strict",
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "limitations": [
+    "This transparent closed-set case does not establish cross-task transfer.",
+    "Five repeated samples characterize behavior on one prompt, not a population of causal-diagnosis tasks.",
+    "Strict JSON Schema output is part of the treatment and may alter or suppress provider-exposed reasoning.",
+    "A provider model identifier does not bind an independently verifiable checkpoint revision, quantization, chat template, or serving configuration.",
+    "Expected observations are constrained to the preregistered revision codes A and B; this is a harness treatment.",
+    "All primary behavioral targets use Together AI through one base endpoint. Provider is controlled infrastructure retained only as provenance, not a study factor or behavioral metric.",
+    "Cross-provider portability and conformance belong to a separate engineering study and are not pooled into this behavioral baseline.",
+    "Execution is round-robin by replicate index in the registered target order: together-glm-5p2, together-minimax-m3p1-flash, together-qwen3p7-plus.",
+    "V6 differs from v5 in provider, in one model, and in study contract, so v5 and v6 results are not pooled or compared.",
+    "MiniMax M3.1 Flash takes the MiniMax cell because Together AI did not serve MiniMax M3 at registration; it is a different model from the one v5 measured.",
+    "Together AI GLM 5.2 was excluded from v3 and v4 after v2 produced four provider rate-limit failures; v6 includes it, and a rate-limit failure stays in the record as a failed replicate, not retried or replaced.",
+    "Each stream asks the provider to report token usage; a response that still reports none stops as a response_usage failure.",
+    "Each request has a 600-second deadline; a response still arriving when it passes stops as a transport failure.",
+    "V6 is a fresh run; no model output or scorecard from an earlier version is reused."
+  ],
+  "manifest_version": "0.3.0",
+  "metrics": [
+    "condition",
+    "source_attempt_id",
+    "model_primary_is_ground_truth",
+    "model_retained_ground_truth",
+    "retained_hypothesis_count",
+    "expressed_confidence",
+    "test_selected",
+    "selected_test_id",
+    "selected_test_discriminates",
+    "predictions_declared",
+    "predictions_correct",
+    "external_tests_executed",
+    "external_evidence_identifies_ground_truth",
+    "behavioral_recovery",
+    "ground_truth_final_status",
+    "false_promotion_attempts",
+    "false_promotions_accepted",
+    "ledger_record_count",
+    "model_input_tokens",
+    "model_output_tokens",
+    "wall_time_ms",
+    "receipt_recomputes"
+  ],
+  "profiles": {
+    "narrative": {
+      "assertion_schema_sha256": "10e1c4d9da62584fb8a15b0642a8703a53510fdf66befdef23fb90a658a36e58",
+      "attempt_id": "narrative-attempt-1",
+      "profile_id": "narrative-assertion-v0.2.0",
+      "prompt_payload_sha256": "4f031753ccba38074b651400a2ee3d37e1754a8f4ca1689511e8029be405bd95"
+    },
+    "structured": {
+      "assertion_schema_sha256": "11740717b06f94e6ffd99a8ebe4eff0014026c19c26668e7a18410c5018de7a2",
+      "attempt_id": "structured-attempt-1",
+      "expected_observation_values": [
+        "A",
+        "B"
+      ],
+      "profile_id": "diagnosis-assertion-v0.3.0",
+      "prompt_payload_sha256": "1fd6e6cac17f9887a2eb5af37121db14dffc13e764d3323bfb15910c2d619e09"
+    }
+  },
+  "registered_at": "2026-11-26T17:17:34Z",
+  "study_phase": "preregistered_study"
+}

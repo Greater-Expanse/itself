@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:itself:experiments:comparisons:v2:comparison-attempt-report",
+  "title": "Failed Comparative Attempt Report v0.3.0",
+  "description": "A sanitized record of one failed model attempt, or of a runner failure after a request was sent, in a paired comparison replicate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attempt_report_version",
+    "comparison_series_id",
+    "attempt_id",
+    "profile_id",
+    "outcome",
+    "completed_at",
+    "shipped_adapter",
+    "failure"
+  ],
+  "properties": {
+    "attempt_report_version": { "const": "0.3.0" },
+    "comparison_series_id": { "$ref": "#/$defs/identifier" },
+    "attempt_id": {
+      "enum": ["narrative-attempt-1", "structured-attempt-1"]
+    },
+    "profile_id": {
+      "enum": [
+        "narrative-assertion-v0.2.0",
+        "diagnosis-assertion-v0.2.0",
+        "diagnosis-assertion-v0.3.0",
+        "diagnosis-assertion-v0.4.0"
+      ]
+    },
+    "outcome": { "enum": ["adapter_failed", "runner_failed"] },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "shipped_adapter": { "$ref": "#/$defs/shippedAdapter" },
+    "failure": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "outcome": { "const": "adapter_failed" } },
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": { "failure": { "$ref": "#/$defs/adapterFailure" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "outcome": { "const": "runner_failed" } },
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": { "failure": { "$ref": "#/$defs/runnerFailure" } }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "media_type", "digest", "captured_at"],
+      "properties": {
+        "uri": { "type": "string", "format": "uri-reference" },
+        "media_type": { "$ref": "#/$defs/nonEmptyString" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "captured_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "shippedAdapter": {
+      "description": "The shipped itself.inference client that executed the attempt, read at run time.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "adapter_version"],
+      "properties": {
+        "adapter_id": { "const": "openai-compatible-chat-completions" },
+        "adapter_version": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "observedStatus": {
+      "description": "The HTTP status the transport observed, unclamped, or null when no response arrived.",
+      "type": ["integer", "null"]
+    },
+    "adapterFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "retryable", "status_code"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "configuration",
+            "transport",
+            "response_too_large",
+            "http_authentication",
+            "http_authorization",
+            "http_rate_limit",
+            "http_server",
+            "http_status",
+            "refusal",
+            "incomplete",
+            "response_envelope",
+            "response_json",
+            "response_schema",
+            "response_usage",
+            "assertion_contract",
+            "artifact"
+          ]
+        },
+        "retryable": { "type": "boolean" },
+        "status_code": { "$ref": "#/$defs/observedStatus" },
+        "response_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "runnerFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "retryable", "status_code", "error"],
+      "properties": {
+        "kind": { "enum": ["runner_error", "interrupted"] },
+        "retryable": { "const": false },
+        "status_code": { "$ref": "#/$defs/observedStatus" },
+        "error": { "$ref": "#/$defs/runnerError" },
+        "response_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "runnerError": {
+      "description": "The exception type and a sanitized one-line message; a credential is never recorded.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        }
+      }
+    }
+  }
+}

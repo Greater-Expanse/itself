@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,6 +19,8 @@ from urllib.request import Request
 
 import pytest
 
+import experiments.model_adapters as model_adapters
+import itself._http_transport as http_transport_module
 import itself.inference as inference
 from experiments.cases.cache_key_diagnostician import (
     CacheKeyFixtureDiagnostician,
@@ -308,6 +311,115 @@ def test_categorical_observation_profile_rejects_ambiguous_vocabularies(
         diagnosis_output_profile(values)
 
 
+def _retained_ids_schema(profile: StructuredOutputProfile) -> JsonObject:
+    properties = cast(JsonObject, profile.schema_json()["properties"])
+    return cast(JsonObject, properties["retained_hypothesis_ids"])
+
+
+def test_prompted_uniqueness_profile_moves_unique_items_into_the_prompt() -> None:
+    constrained = diagnosis_output_profile(("A", "B"))
+    profile = diagnosis_output_profile(
+        ("A", "B"),
+        profile_id="diagnosis-assertion-v0.4.0",
+    )
+    expected_schema = constrained.schema_json()
+    expected_properties = cast(JsonObject, expected_schema["properties"])
+    del cast(JsonObject, expected_properties["retained_hypothesis_ids"])["uniqueItems"]
+
+    assert profile.profile_id == "diagnosis-assertion-v0.4.0"
+    assert profile.schema_name == "itself_diagnosis_assertion_v0_4_0"
+    assert profile.system_prompt == (
+        constrained.system_prompt
+        + "\n\nList each identifier in retained_hypothesis_ids once."
+    )
+    assert profile.schema_json() == expected_schema
+    assert "uniqueItems" not in _retained_ids_schema(profile)
+    assert _retained_ids_schema(constrained)["uniqueItems"] is True
+    assert profile.user_instruction == constrained.user_instruction
+    assert profile.input_label == constrained.input_label
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "values"),
+    [
+        (None, ()),
+        ("diagnosis-assertion-v0.2.0", ()),
+        (None, ("A", "B")),
+        ("diagnosis-assertion-v0.3.0", ("A", "B")),
+    ],
+)
+def test_earlier_diagnosis_profiles_keep_their_schema_and_prompt(
+    profile_id: str | None,
+    values: tuple[str, ...],
+) -> None:
+    profile = diagnosis_output_profile(values, profile_id=profile_id)
+
+    assert profile.schema_json() == model_assertion_schema(values)
+    assert _retained_ids_schema(profile)["uniqueItems"] is True
+    assert "retained_hypothesis_ids once" not in profile.system_prompt
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "values", "message"),
+    [
+        ("diagnosis-assertion-v9.9.9", ("A", "B"), "unknown diagnosis output"),
+        ("diagnosis-assertion-v0.4.0", (), "requires registered expected"),
+        ("diagnosis-assertion-v0.3.0", (), "requires registered expected"),
+        ("diagnosis-assertion-v0.2.0", ("A", "B"), "does not register expected"),
+    ],
+)
+def test_diagnosis_profile_refuses_an_id_its_values_cannot_bind(
+    profile_id: str,
+    values: tuple[str, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        diagnosis_output_profile(values, profile_id=profile_id)
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "failure"),
+    [
+        ("diagnosis-assertion-v0.3.0", ModelAdapterFailure.RESPONSE_SCHEMA),
+        ("diagnosis-assertion-v0.4.0", ModelAdapterFailure.ASSERTION_CONTRACT),
+    ],
+)
+def test_a_repeated_retained_identifier_is_refused_under_each_constrained_profile(
+    tmp_path: Path,
+    profile_id: str,
+    failure: ModelAdapterFailure,
+) -> None:
+    assertion = _assertion_value()
+    retained = cast(list[JsonValue], assertion["retained_hypothesis_ids"])
+    retained.append(retained[0])
+    transport = RecordingTransport(
+        HttpResponse(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+            body=_completion_body(assertion),
+        )
+    )
+    profile = diagnosis_output_profile(("A", "B"), profile_id=profile_id)
+    adapter = OpenAIChatDiagnostician(
+        endpoint=_endpoint(),
+        artifact_sink=DirectoryArtifactSink(tmp_path / "artifacts"),
+        profile=profile,
+        transport=transport,
+        environment={"TEST_MODEL_API_KEY": SECRET},
+        now=lambda: CAPTURED_AT,
+        monotonic_ns=SequenceClock([1_000_000_000, 1_125_000_000]),
+    )
+
+    with pytest.raises(ModelAdapterError) as captured:
+        adapter.diagnose(_request())
+
+    payload = cast(JsonObject, json.loads(transport.requests[0].body))
+    response_format = cast(JsonObject, payload["response_format"])
+    sent_schema = cast(JsonObject, response_format["json_schema"])["schema"]
+    assert sent_schema == profile.schema_json()
+    assert captured.value.failure is failure
+
+
 def test_legacy_endpoint_preserves_generic_streaming_capability() -> None:
     endpoint = _endpoint(stream=True)
 
@@ -425,13 +537,46 @@ def test_endpoint_rejects_ambiguous_or_unsafe_configuration(
         factory()
 
 
+def _frame_locals_holding(error: BaseException, secret: str) -> list[str]:
+    """Name each frame local outside this file, across the chain, holding a secret."""
+
+    found: list[str] = []
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        entry = current.__traceback__
+        while entry is not None:
+            frame = entry.tb_frame
+            if Path(frame.f_code.co_filename).resolve() != Path(__file__).resolve():
+                for name, value in frame.f_locals.items():
+                    texts: list[object] = (
+                        list(cast(Mapping[object, object], value).values())
+                        if isinstance(value, Mapping)
+                        else [value]
+                    )
+                    if any(isinstance(text, str) and secret in text for text in texts):
+                        found.append(f"{frame.f_code.co_name}:{name}")
+            entry = entry.tb_next
+        pending.extend(
+            linked
+            for linked in (current.__cause__, current.__context__)
+            if linked is not None
+        )
+    return found
+
+
 def test_missing_credential_fails_before_transport(tmp_path: Path) -> None:
     adapter, transport = _adapter(tmp_path)
+    # The secret sits under another name, so a leak of the environment shows.
     adapter = OpenAIChatDiagnostician(
         endpoint=adapter.endpoint,
         artifact_sink=adapter.artifact_sink,
         transport=transport,
-        environment={},
+        environment={"UNRELATED_KEY": SECRET},
     )
 
     with pytest.raises(ModelAdapterError) as captured:
@@ -440,7 +585,8 @@ def test_missing_credential_fails_before_transport(tmp_path: Path) -> None:
     assert captured.value.failure is ModelAdapterFailure.CONFIGURATION
     assert captured.value.artifact is None
     assert not transport.requests
-    assert SECRET not in str(captured.value)
+    assert SECRET not in "".join(traceback.format_exception(captured.value))
+    assert _frame_locals_holding(captured.value, SECRET) == []
 
 
 @pytest.mark.parametrize(
@@ -608,7 +754,7 @@ def _install_fake_url_opener(
         assert handlers
         return FakeUrlOpener(callback)
 
-    monkeypatch.setattr(inference, "build_opener", fake_build_opener)
+    monkeypatch.setattr(http_transport_module, "build_opener", fake_build_opener)
 
 
 def test_urllib_transport_sends_one_bounded_post(
@@ -678,3 +824,33 @@ def test_urllib_transport_sanitizes_network_failures(
     assert captured.value.failure is InferenceFailure.TRANSPORT
     assert captured.value.retryable is True
     assert "private network detail" not in str(captured.value)
+
+
+def test_the_binding_version_pins_the_shipped_adapter_that_executes_requests() -> None:
+    # Registered manifests record the binding identity, and the shipped client
+    # sends the requests.  A change to the shipped adapter fails here until the
+    # pairing is re-verified and the binding version kept or deliberately
+    # bumped.  Binding 0.2.0 was re-verified against shipped 0.4.0.
+    assert (model_adapters.ADAPTER_ID, model_adapters.ADAPTER_VERSION) == (
+        "openai-chat-completions",
+        "0.2.0",
+    )
+    assert (
+        model_adapters.SHIPPED_ADAPTER_ID,
+        model_adapters.SHIPPED_ADAPTER_VERSION,
+    ) == ("openai-compatible-chat-completions", "0.4.0")
+    assert (inference.ADAPTER_ID, inference.ADAPTER_VERSION) == (
+        model_adapters.SHIPPED_ADAPTER_ID,
+        model_adapters.SHIPPED_ADAPTER_VERSION,
+    )
+
+
+def test_the_binding_sends_requests_without_a_deadline(tmp_path: Path) -> None:
+    # Registered manifests record a per-read timeout and no total deadline, so
+    # the shipped client's default deadline would be an unregistered change.
+    adapter, transport = _adapter(tmp_path)
+
+    adapter.diagnose(_request())
+
+    assert _endpoint().as_compatible_endpoint().deadline_seconds is None
+    assert [request.deadline_seconds for request in transport.requests] == [None]

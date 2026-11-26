@@ -11,7 +11,9 @@ from typing import cast
 import pytest
 from jsonschema import Draft202012Validator
 
+from experiments import trial_manifests
 from experiments.cases.cache_key_exchange import build_exchange_request
+from experiments.diagnostician import DiagnosticianIdentity
 from experiments.model_adapters import OpenAIChatEndpoint
 from experiments.trial_manifests import (
     TrialManifestFormatError,
@@ -21,7 +23,7 @@ from experiments.trial_manifests import (
     json_sha256,
     load_trial_manifest,
 )
-from itself import JsonObject, JsonValue
+from itself import ActorType, JsonObject, JsonValue
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_ROOT = ROOT / "experiments" / "contracts" / "v1"
@@ -165,3 +167,90 @@ def test_manifest_contains_no_endpoint_url_or_credential_reference() -> None:
     assert "api.together.ai" not in serialized
     assert "TOGETHER_API_KEY" not in serialized
     assert "Authorization" not in serialized
+
+
+def _recorded_identity(
+    *,
+    adapter_id: str = "openai-chat-completions",
+    adapter_version: str = "0.2.0",
+) -> DiagnosticianIdentity:
+    return DiagnosticianIdentity(
+        actor_id="together-gpt-oss-20b-case-001",
+        actor_type=ActorType.MODEL,
+        adapter_id=adapter_id,
+        adapter_version=adapter_version,
+    )
+
+
+def test_frozen_manifest_matches_the_recorded_request_and_identity() -> None:
+    TrialManifestValidator().validate_recorded(
+        _manifest(), build_exchange_request(), _recorded_identity()
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("case", "case_id", "some-other-case"),
+        ("case", "diagnosis_contract_version", "0.1.0"),
+        ("case", "request_sha256", "0" * 64),
+        ("case", "assertion_schema_sha256", "0" * 64),
+        ("diagnostician", "actor_id", "someone-else"),
+        ("generation", "prompt_payload_sha256", "0" * 64),
+    ],
+)
+def test_validate_recorded_binds_each_manifest_field(
+    section: str,
+    field: str,
+    value: str,
+) -> None:
+    manifest = deepcopy(_manifest())
+    cast(JsonObject, manifest[section])[field] = value
+    TrialManifestValidator().validate(manifest)
+
+    with pytest.raises(TrialManifestValidationError) as raised:
+        TrialManifestValidator().validate_recorded(
+            manifest, build_exchange_request(), _recorded_identity()
+        )
+
+    assert (
+        str(raised.value) == f"{section}.{field} does not match the recorded diagnosis"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "identity"),
+    [
+        ("adapter_id", _recorded_identity(adapter_id="some-other-adapter")),
+        ("adapter_version", _recorded_identity(adapter_version="0.2.1")),
+    ],
+)
+def test_validate_recorded_binds_each_identity_field(
+    field: str,
+    identity: DiagnosticianIdentity,
+) -> None:
+    with pytest.raises(TrialManifestValidationError) as raised:
+        TrialManifestValidator().validate_recorded(
+            _manifest(), build_exchange_request(), identity
+        )
+
+    assert str(raised.value) == (
+        f"diagnostician.{field} does not match the recorded diagnosis"
+    )
+
+
+def test_validate_recorded_binds_the_protocol_to_the_harness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The schema fixes the manifest's protocol, so only a harness speaking a
+    # different protocol can disagree with it.
+    monkeypatch.setattr(trial_manifests, "PROTOCOL_ID", "some-other-protocol")
+
+    with pytest.raises(TrialManifestValidationError) as raised:
+        TrialManifestValidator().validate_recorded(
+            _manifest(), build_exchange_request(), _recorded_identity()
+        )
+
+    assert str(raised.value) == (
+        "diagnostician.protocol does not match the recorded diagnosis"
+    )

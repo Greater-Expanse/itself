@@ -8,10 +8,16 @@ Itself is an open-source, provider-neutral assurance SDK for AI agents and
 AI-driven workflows. It makes model assertions independently testable before
 an application acts on them.
 
-> **New in 0.2: decision models.** Itself sends typed questions to decision
-> models, also called System One models, including TypeSafe's Jev. It records
-> each decision as a testable prediction and measures whether option order
-> changed it. See [Connect a decision model](#connect-a-decision-model).
+> **New in 0.3: validation policies.** A `ValidationPolicy` states the rules a
+> deployment adds to protocol conformance: which actors may settle a claim,
+> whether an approved decision may rely on a claim the history does not
+> support, and whether that support has expired. The protocol and its schemas
+> are unchanged. See
+> [Enforce a validation policy](#enforce-a-validation-policy), and read the
+> [changelog](CHANGELOG.md) before upgrading from 0.2.
+>
+> Decision models, added in 0.2, are covered in
+> [Connect a decision model](#connect-a-decision-model).
 
 Use Itself when an agent reviews code, diagnoses a failed build, opens a pull or
 merge request, recommends a remediation, or participates in an automated
@@ -145,9 +151,10 @@ structurally valid but violates its declared evidence or authority policy.
    minimized reasoning receipt.
 
 The protocol is independent of any model provider or agent framework. The SDK
-includes one configurable OpenAI-compatible input adapter, but that wire format
-is not the architecture and a model does not become a verifier merely because
-it returns structured JSON.
+includes two input adapters, one for OpenAI-compatible Chat Completions
+endpoints and one for decision models, but neither wire format is the
+architecture, and a model does not become a verifier merely because it returns
+structured JSON or a probability.
 
 ## Install
 
@@ -202,9 +209,9 @@ catalog, and checksum inventory. Validation loads the packaged copies and never
 requires network access. The conformance fixtures are language-neutral. Python
 is the reference implementation, not a requirement for other implementations.
 An [independent JavaScript conformance check](conformance/javascript/README.md)
-compiles the same schema, exercises all 27 record and bundle fixtures, and
-reimplements reference resolution, authorization, and deterministic replay
-without importing or executing the Python package.
+compiles the same schema, exercises all 62 record, bundle, and JSON-reader
+fixtures, and reimplements reference resolution, authorization, and
+deterministic replay without importing or executing the Python package.
 The [reference bundle](examples/cache-key-diagnosis/README.md) is a closed,
 digest-inventoried example containing the original input, a model assertion
 artifact, the complete evidence ledger, and its deterministic reasoning
@@ -295,6 +302,46 @@ the canonical schema before it reaches a ledger. See
 [the protocol-record guide](docs/PROTOCOL_RECORDS.md) for the complete
 lifecycle API and its deliberate boundaries.
 
+### Enforce a validation policy
+
+Protocol conformance establishes that a history is well formed. A deployment
+usually needs more before it acts: only named actors may settle a claim, an
+approved decision may rely only on claims the history supports, and that
+support must not have expired. A `ValidationPolicy` states those rules once,
+and every validator that accepts one applies them:
+
+```python
+from datetime import UTC, datetime
+from pathlib import Path
+
+from itself import EvidenceBundleValidator, ValidationPolicy
+
+policy = ValidationPolicy(
+    trusted_authorizers={"case-001-promotion-policy"},
+    require_supported_reliance=True,
+    as_of=datetime(2026, 12, 1, tzinfo=UTC),
+)
+bundle = EvidenceBundleValidator(policy=policy).validate(
+    Path("examples/cache-key-diagnosis/bundle")
+)
+```
+
+The `ledger`, `receipt`, and `bundle` commands take the same three checks:
+
+```bash
+uv run --frozen itself bundle validate examples/cache-key-diagnosis/bundle \
+  --trusted-authorizer case-001-promotion-policy \
+  --require-supported-reliance \
+  --as-of 2026-12-01T00:00:00Z
+```
+
+Each check is opt-in. Without a policy, the validators accept exactly what the
+`v0alpha2` protocol accepts. A trust list compares the actor ids that records
+declare and does not establish identity, so it protects a ledger only when the
+write path controls who may append under those ids. See
+[the protocol-record guide](docs/PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions)
+for each rule and its limits.
+
 ## Connect a model endpoint
 
 The installable adapter accepts any endpoint implementing the relevant
@@ -349,8 +396,9 @@ for models that require streaming; their exact bytes are captured before local
 assembly. Strict JSON Schema, JSON-object, and prompted-JSON capabilities are
 explicit modes; every response is still strictly parsed and locally
 schema-validated. Authenticated endpoints require HTTPS, and the built-in
-transport does not follow redirects. There is no implicit retry, repair, or
-capability fallback.
+transport does not follow redirects. Each request has an overall deadline, ten
+minutes unless the endpoint sets another. There is no implicit retry, repair,
+or capability fallback.
 
 See the [inference guide](docs/INFERENCE.md) for configuration patterns,
 guarantees, and the boundary for native provider protocols.
@@ -416,6 +464,8 @@ endpoint = DecisionModelEndpoint(
 )
 ```
 
+## Controlled study with live models
+
 The repository also contains a transparent controlled incident investigation.
 A report-generation system advances from source revision `A` to `B`, but keeps
 returning stale revision `A`. An AI assistant sees the repeated failures, three
@@ -429,13 +479,14 @@ answer provisional, records the resulting evidence, prevents unsupported
 answers from being treated as confirmed, and leaves enough history for another
 developer to reconstruct the decision.
 
-The current live-model report shows that completed workflows crossed that
-evidence boundary and that invalid model outputs stopped at an explicit
-contract boundary instead of being silently repaired. It does not show that
-Itself improved diagnosis accuracy: every completed attempt in this first
-transparent case already named the known cause. See the
-[current comparison report](experiments/results/current/2026-07-24-case-001-comparison-v5.md)
-for the observations and their limits.
+The current live-model reports show that completed runs crossed that evidence
+boundary, and that refused requests and invalid model outputs stopped at an
+explicit boundary instead of being silently repaired or retried. They do not
+show that Itself improved diagnosis accuracy: every completed run in this
+first transparent case already named the known cause. Three study versions are
+current: v5 from July 2026, and v6 and v7 from November 2026, which ran through
+a different provider. Their results are not pooled or compared. See the
+[results index](experiments/results/README.md) for each report and its limits.
 
 ## Documentation
 
@@ -482,7 +533,7 @@ affected.
 
 ## Development
 
-Run the complete local quality gates with:
+Run the local quality gates with:
 
 ```bash
 uv sync --locked --extra test --extra lint --extra typecheck --extra release
@@ -496,6 +547,12 @@ uv run --frozen --extra release check-manifest
 uv build
 uv run --frozen --extra release twine check --strict dist/*
 ```
+
+CI also runs the
+[JavaScript conformance check](conformance/javascript/README.md), both
+evaluation suites, dependency audits (`uv audit` and `npm audit`), a check
+that the GitHub Actions lockfile matches the workflows, and smoke tests of the
+built wheel. [CONTRIBUTING.md](CONTRIBUTING.md) lists the commands.
 
 The distribution includes a PEP 561 `py.typed` marker. Its public annotations
 are checked in strict mode by both Mypy and Pyright.

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -13,9 +12,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Protocol, cast
-
-from jsonschema import Draft202012Validator, FormatChecker
+from typing import Final, Protocol
 
 from experiments._contract_values import array_value as _array
 from experiments._contract_values import integer_value as _integer
@@ -23,6 +20,7 @@ from experiments._contract_values import number_value as _number
 from experiments._contract_values import object_value as _object
 from experiments._contract_values import string_value as _string
 from experiments._schema_validation import SchemaValidator as _SchemaValidator
+from experiments._schema_validation import contract_validator as _contract_validator
 from experiments._schema_validation import schema_errors as _schema_errors
 from itself import ActorType, JsonObject, JsonValue
 
@@ -35,17 +33,7 @@ def _json_objects(values: Sequence[JsonObject]) -> list[JsonValue]:
 
 
 def _load_validator(schema_name: str) -> _SchemaValidator:
-    value = cast(
-        JsonValue,
-        json.loads((_CONTRACT_ROOT / schema_name).read_text(encoding="utf-8")),
-    )
-    if not isinstance(value, dict):
-        raise TypeError(f"contract schema {schema_name} must contain a JSON object")
-    Draft202012Validator.check_schema(value)
-    return cast(
-        _SchemaValidator,
-        Draft202012Validator(value, format_checker=FormatChecker()),
-    )
+    return _contract_validator(_CONTRACT_ROOT / schema_name)
 
 
 def _duplicate_values(values: Sequence[str]) -> tuple[str, ...]:

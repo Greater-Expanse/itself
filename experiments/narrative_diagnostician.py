@@ -5,20 +5,19 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol, cast
-
-from jsonschema import Draft202012Validator, FormatChecker
+from typing import Final, Protocol
 
 from experiments._contract_values import integer_value as _integer
 from experiments._contract_values import number_value as _number
 from experiments._contract_values import object_value as _object
 from experiments._contract_values import string_value as _string
 from experiments._schema_validation import SchemaValidator as _SchemaValidator
+from experiments._schema_validation import contract_schema as _contract_schema
+from experiments._schema_validation import contract_validator as _contract_validator
 from experiments._schema_validation import schema_errors as _schema_errors
 from experiments.diagnostician import (
     DiagnosisRequest,
@@ -60,11 +59,7 @@ class StructuredModelInvoker(Protocol):
 
 
 def _load_schema(path: Path, *, provider_facing: bool = False) -> JsonObject:
-    value = cast(JsonValue, json.loads(path.read_text(encoding="utf-8")))
-    if not isinstance(value, dict):
-        raise TypeError(f"contract schema {path.name} must contain a JSON object")
-    Draft202012Validator.check_schema(value)
-    schema = dict(value)
+    schema = _contract_schema(path)
     if provider_facing:
         for annotation in ("$schema", "$id", "title"):
             schema.pop(annotation, None)
@@ -72,13 +67,7 @@ def _load_schema(path: Path, *, provider_facing: bool = False) -> JsonObject:
 
 
 def _validator(path: Path) -> _SchemaValidator:
-    return cast(
-        _SchemaValidator,
-        Draft202012Validator(
-            _load_schema(path),
-            format_checker=FormatChecker(),
-        ),
-    )
+    return _contract_validator(path)
 
 
 def narrative_assertion_schema() -> JsonObject:

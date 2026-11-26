@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
@@ -56,6 +56,7 @@ TEST_PLAN_ID: Final = "test-selected-intervention-plan"
 TEST_RUN_ID: Final = "test-selected-intervention-run-1"
 TEST_EVIDENCE_ID: Final = "evidence-selected-intervention-run-1"
 _RUN_START: Final = datetime(2026, 7, 22, 13, 0, tzinfo=UTC)
+_GROUND_TRUTH: Final = Mechanism.CACHE_KEY_OMITS_SOURCE_REVISION
 
 HYPOTHESIS_IDS: Final[Mapping[Mechanism, str]] = {
     Mechanism.CACHE_KEY_OMITS_SOURCE_REVISION: "hypothesis-cache-key",
@@ -102,6 +103,10 @@ class ScriptedRunMetrics:
             "negative_control_addresses_cause": (self.negative_control_addresses_cause),
             "ledger_record_count": self.ledger_record_count,
         }
+
+
+SCRIPTED_RUN_METRICS: Final = tuple(field.name for field in fields(ScriptedRunMetrics))
+"""Scorecard fields that the reference run measures, in declaration order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,6 +560,36 @@ def _verdict_record(
     }
 
 
+def _premature_promotion_accepted(
+    ledger: Ledger,
+    selected_hypothesis: Mechanism,
+) -> int:
+    """Attempt the unsupported promotion on a copy and count an acceptance.
+
+    The run continues from the history it has reached either way, so a ledger
+    that wrongly accepts the promotion is measured instead of ending the run.
+    """
+
+    probe = Ledger(ledger.records)
+    record_count = len(probe)
+    try:
+        probe.append(_premature_promotion_record(selected_hypothesis, record_count))
+    except BundleIntegrityError as error:
+        expected_rejection = any(
+            issue.code is IntegrityCode.UNRESOLVED_REFERENCE
+            and issue.reference == TEST_EVIDENCE_ID
+            for issue in error.issues
+        )
+        if not expected_rejection:
+            raise
+        if len(probe) != record_count:
+            raise RuntimeError(
+                "the ledger changed although it rejected the premature promotion"
+            ) from None
+        return 0
+    return 1
+
+
 def prepare_structured_case(
     request: DiagnosisRequest,
     diagnosis: DiagnosisResult,
@@ -682,22 +717,9 @@ def complete_evidence_enforced_case(
     )
 
     false_promotion_attempts = 1
-    false_promotions_accepted = 0
-    record_count_before_rejection = len(ledger)
-    try:
-        ledger.append(_premature_promotion_record(selected_hypothesis, len(ledger)))
-    except BundleIntegrityError as error:
-        expected_rejection = any(
-            issue.code is IntegrityCode.UNRESOLVED_REFERENCE
-            and issue.reference == TEST_EVIDENCE_ID
-            for issue in error.issues
-        )
-        if not expected_rejection:
-            raise
-    else:
-        false_promotions_accepted = 1
-    if len(ledger) != record_count_before_rejection:
-        raise RuntimeError("rejected promotion mutated the ledger")
+    false_promotions_accepted = _premature_promotion_accepted(
+        ledger, selected_hypothesis
+    )
 
     observation = environment.execute(intervention)
     results = {Intervention.UNCHANGED_REPLAY: Revision.A}
@@ -803,20 +825,30 @@ def run_scripted_case(
 ) -> ScriptedRunResult:
     """Execute one validated diagnostician assertion in the deterministic case."""
 
-    ground_truth = Mechanism.CACHE_KEY_OMITS_SOURCE_REVISION
-    environment = CaseEnvironment(ground_truth)
-    context = environment.diagnostic_context()
+    context = CaseEnvironment(_GROUND_TRUTH).diagnostic_context()
     request = build_cache_key_request(context)
     diagnosis = DiagnosticianContractValidator().invoke(
         diagnostician or CacheKeyFixtureDiagnostician(),
         request,
     )
+    return project_scripted_case(request, diagnosis)
+
+
+def project_scripted_case(
+    request: DiagnosisRequest,
+    diagnosis: DiagnosisResult,
+) -> ScriptedRunResult:
+    """Deterministically replay one recorded diagnosis through the case."""
+
+    context = CaseEnvironment(_GROUND_TRUTH).diagnostic_context()
+    if request.to_json_object() != build_cache_key_request(context).to_json_object():
+        raise ValueError("diagnosis request does not match frozen case-001 input")
     prepared = prepare_structured_case(
         request,
         diagnosis,
         context.baseline_observations,
     )
-    return complete_evidence_enforced_case(prepared, ground_truth=ground_truth)
+    return complete_evidence_enforced_case(prepared, ground_truth=_GROUND_TRUTH)
 
 
 def write_scripted_case(

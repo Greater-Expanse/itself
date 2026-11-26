@@ -1,0 +1,26 @@
+{
+  "attempt_id": "narrative-attempt-1",
+  "attempt_report_version": "0.3.0",
+  "comparison_series_id": "case-001-together-gpt-oss-20b-v2-contract-comparison-example",
+  "completed_at": "2026-11-26T12:05:00Z",
+  "failure": {
+    "kind": "response_schema",
+    "response_artifact": {
+      "captured_at": "2026-11-26T12:05:00Z",
+      "digest": {
+        "algorithm": "sha256",
+        "value": "d1d799c25e0bd6d4d070b756defa2ff156a59e8b51f78aade5fccc85390b5588"
+      },
+      "media_type": "text/event-stream",
+      "uri": "attempts/narrative-attempt-1/private/sha256-d1d799c25e0bd6d4d070b756defa2ff156a59e8b51f78aade5fccc85390b5588.bin"
+    },
+    "retryable": false,
+    "status_code": 200
+  },
+  "outcome": "adapter_failed",
+  "profile_id": "narrative-assertion-v0.2.0",
+  "shipped_adapter": {
+    "adapter_id": "openai-compatible-chat-completions",
+    "adapter_version": "0.4.0"
+  }
+}

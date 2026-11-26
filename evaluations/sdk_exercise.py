@@ -346,21 +346,26 @@ def _mutation_root(
 def _artifact_tamper_check(context: ExerciseContext) -> CheckObservation:
     root = _mutation_root(context, "artifact-tamper")
     artifact = root / "artifacts" / "model-assertion.json"
-    artifact.write_bytes(artifact.read_bytes() + b"\n")
+    original = artifact.read_bytes()
+    # Flip one bit so the size still matches and only the digest can differ.
+    # The inventory is verified before the artifact is parsed, so the change
+    # is rejected there even though it also breaks the JSON.
+    tampered = bytes((original[0] ^ 0x01,)) + original[1:]
+    if len(tampered) != len(original) or tampered == original:
+        raise AssertionError("artifact mutation must change bytes, not length")
+    artifact.write_bytes(tampered)
     try:
         EvidenceBundleValidator().validate(root)
     except EvidenceBundleValidationError as error:
-        if not any(
-            detail in str(error) for detail in ("size mismatch", "digest mismatch")
-        ):
+        if "digest mismatch" not in str(error):
             raise AssertionError(f"unexpected artifact rejection: {error}") from error
     else:
         raise AssertionError("tampered artifact bytes were accepted")
     return CheckObservation(
-        summary="Rejected artifact bytes that no longer matched their inventory.",
+        summary="Rejected same-length artifact bytes that no longer matched their digest.",
         details={
-            "mutation": "artifact-byte-append",
-            "rejection_stage": "inventory_size_or_digest",
+            "mutation": "artifact-same-length-byte-change",
+            "rejection_stage": "inventory_digest",
         },
     )
 

@@ -19,6 +19,7 @@ from jsonschema.exceptions import ValidationError
 from ._formats import schema_format_checker
 from ._json import IJsonError, ensure_i_json, strict_json_loads
 from ._json import format_json_path as _format_path
+from ._schema_references import offline_validator, require_local_references
 from .types import JsonObject, JsonValue, StrPath
 
 
@@ -98,18 +99,19 @@ def _compiled(schema_value: JsonValue) -> _CompiledSchema:
         raise TypeError("protocol schema must contain one JSON object")
     schema = schema_value
     Draft202012Validator.check_schema(schema)
+    require_local_references(schema)
     format_checker = schema_format_checker()
     root_fields = {key: value for key, value in schema.items() if key != "oneOf"}
     return _CompiledSchema(
         root=cast(
             _SchemaValidator,
-            Draft202012Validator(schema, format_checker=format_checker),
+            offline_validator(schema, format_checker=format_checker),
         ),
         branches=MappingProxyType(
             {
                 kind: cast(
                     _SchemaValidator,
-                    Draft202012Validator(
+                    offline_validator(
                         {**root_fields, "$ref": reference},
                         format_checker=format_checker,
                     ),
@@ -136,7 +138,10 @@ class ProtocolValidator:
     and reports the branch's own errors.  A schema shaped so that this would
     not be equivalent is applied whole.  Records must also be I-JSON nested at
     most 128 levels deep, so every accepted record can be read back.  The
-    packaged schema is compiled once per process.
+    packaged schema is compiled once per process.  A schema read from
+    ``schema_path`` must resolve every reference within itself: referenced
+    schemas are never retrieved, and a schema that needs one raises
+    ``ValueError``.
     """
 
     def __init__(self, schema_path: StrPath | None = None) -> None:

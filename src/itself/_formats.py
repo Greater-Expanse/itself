@@ -11,6 +11,14 @@ from typing import Final
 
 from jsonschema import FormatChecker
 
+# The date-time rule of RFC 3339, section 5.6.  Its groups are the year, month,
+# day, hour, minute, second, fraction, and the offset's sign, hours, and
+# minutes, which are absent for "Z".
+RFC3339_DATE_TIME: Final = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?"
+    r"(?:[Zz]|([+-])(\d{2}):(\d{2}))"
+)
+
 # The URI-reference rule of RFC 3986, appendix A, one named rule at a time.
 # The pattern uses only syntax that Python and JavaScript read the same way,
 # so the JavaScript conformance runner can use it verbatim.  ABNF strings are

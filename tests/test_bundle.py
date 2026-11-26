@@ -26,16 +26,25 @@ VALID_BUNDLES = sorted((ROOT / "conformance" / "bundles" / "valid").glob("*.json
 INVALID_BUNDLES = sorted((ROOT / "conformance" / "bundles" / "invalid").glob("*.json"))
 
 EXPECTED_CODES = {
+    "blank-transition-authorizer.json": IntegrityCode.INVALID_TRANSITION,
     "blank-transition-subject.json": IntegrityCode.INVALID_TRANSITION,
     "dangling-reference.json": IntegrityCode.UNRESOLVED_REFERENCE,
     "duplicate-id.json": IntegrityCode.DUPLICATE_ID,
+    "evidence-scope-mismatch.json": IntegrityCode.SCOPE_MISMATCH,
     "invalid-transition.json": IntegrityCode.INVALID_TRANSITION,
+    "mixed-evidence-without-contradiction.json": (
+        IntegrityCode.EVIDENCE_RELATION_MISSING
+    ),
     "proto-scope-mismatch.json": IntegrityCode.SCOPE_MISMATCH,
+    "refuted-without-contradiction.json": IntegrityCode.EVIDENCE_RELATION_MISSING,
     "state-drift.json": IntegrityCode.STATE_MISMATCH,
     "test-plan-kind-mismatch.json": IntegrityCode.REFERENCE_KIND_MISMATCH,
+    "transition-before-subject.json": IntegrityCode.SUBJECT_NOT_AVAILABLE,
     "transition-subject-mismatch.json": IntegrityCode.TRANSITION_SUBJECT_MISMATCH,
     "unrelated-evidence.json": IntegrityCode.EVIDENCE_RELATION_MISSING,
     "verdict-after-transition.json": IntegrityCode.REFERENCE_NOT_AVAILABLE,
+    "verdict-before-evidence.json": IntegrityCode.REFERENCE_NOT_AVAILABLE,
+    "verdict-outcome-mismatch.json": IntegrityCode.VERDICT_MISMATCH,
     "wrong-reference-kind.json": IntegrityCode.REFERENCE_KIND_MISMATCH,
 }
 
@@ -147,6 +156,20 @@ def test_invalid_bundle_reports_stable_integrity_code(fixture: Path) -> None:
 
     assert len(issues) == 1
     assert issues[0].code is EXPECTED_CODES[fixture.name]
+
+
+@pytest.mark.parametrize("record", [1, None, "x", [], True, {}])
+def test_a_record_that_is_not_a_valid_object_is_schema_invalid(
+    record: object,
+) -> None:
+    # Callers can pass decoded JSON that the type hints do not describe.
+    records = cast(list[JsonObject], [record])
+
+    issues = BundleValidator().errors(records)
+
+    assert [(issue.code, issue.record_id) for issue in issues] == [
+        (IntegrityCode.SCHEMA_INVALID, "@record[0]")
+    ]
 
 
 def test_validate_raises_with_structured_issues() -> None:
@@ -317,6 +340,35 @@ def test_trusted_authorizers_leave_other_transitions_alone() -> None:
         IntegrityCode.UNTRUSTED_AUTHORIZER,
         IntegrityCode.STATE_MISMATCH,
     }
+
+
+def _refuting_history() -> list[JsonObject]:
+    """Return the history up to its first promotion, turned into a refutation."""
+
+    records = _load_bundle(HISTORY)
+    position = [record["id"] for record in records].index("transition-cache-supported")
+    records = records[: position + 1]
+    evidence = _record(records, "evidence-cache-ablation")
+    cast(list[JsonObject], evidence["relations"])[0]["relation"] = "contradicts"
+    _record(records, "verdict-cache-supported")["outcome"] = "refuted"
+    _record(records, "transition-cache-supported")["to_status"] = "refuted"
+    return records
+
+
+def test_trusted_authorizers_also_constrain_a_refutation() -> None:
+    records = _refuting_history()
+    snapshot = BundleValidator().validate(records)
+
+    issues = BundleValidator(trusted_authorizers={"reviewer-alex"}).errors(records)
+
+    assert snapshot.current_states["claim-cache-cause"] is ClaimStatus.REFUTED
+    assert [(issue.code, issue.record_id, issue.reference) for issue in issues] == [
+        (
+            IntegrityCode.UNTRUSTED_AUTHORIZER,
+            "transition-cache-supported",
+            "default-transition-policy",
+        )
+    ]
 
 
 @pytest.mark.parametrize("value", ["reviewer-alex", [""], ["  "], [3], None])

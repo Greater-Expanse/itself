@@ -3,20 +3,24 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import importlib
 import json
 import os
 import pickle
 import stat
 import traceback
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import Final, NoReturn, cast
 
 import pytest
 
+import itself._artifact_sinks as artifact_sinks_module
+import itself._filesystem as filesystem_module
 import itself.inference as inference_module
 from itself import (
     ADAPTER_ID,
@@ -316,6 +320,8 @@ def test_client_builds_one_captured_schema_validated_request(tmp_path: Path) -> 
     wire_request = transport.requests[0]
     assert wire_request.url == "https://models.example.test/v1/chat/completions"
     assert wire_request.headers["Authorization"] == f"Bearer {SECRET}"
+    # Results record this version, so a change to it is deliberate.
+    assert wire_request.headers["User-Agent"] == "itself-inference/0.4.0"
     assert SECRET not in repr(wire_request)
     assert SECRET.encode() not in wire_request.body
     payload = cast(JsonObject, json.loads(wire_request.body))
@@ -445,7 +451,7 @@ def test_artifact_sink_accepts_identical_concurrent_publication(
         publish_path_no_replace(source, destination)
 
     monkeypatch.setattr(
-        inference_module,
+        artifact_sinks_module,
         "publish_path_no_replace",
         publish_after_competitor,
     )
@@ -459,6 +465,89 @@ def test_artifact_sink_accepts_identical_concurrent_publication(
     artifact = Path(reference.uri.removeprefix("file://"))
     assert artifact.read_bytes() == content
     assert tuple(root.glob(".artifact-*.tmp")) == ()
+
+
+@pytest.mark.parametrize("published", ["before", "concurrently"])
+def test_artifact_sink_refuses_different_bytes_at_the_digest_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published: str,
+) -> None:
+    root = tmp_path / "artifacts"
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    content = b'{"private":true}'
+    impostor = b'{"private":TRUE}'
+    assert len(impostor) == len(content)
+    artifact = root / f"sha256-{hashlib.sha256(content).hexdigest()}.json"
+
+    def plant_impostor() -> None:
+        artifact.write_bytes(impostor)
+        artifact.chmod(0o600)
+
+    if published == "before":
+        plant_impostor()
+    else:
+
+        def publish_after_impostor(source: Path, destination: Path) -> None:
+            plant_impostor()
+            publish_path_no_replace(source, destination)
+
+        monkeypatch.setattr(
+            artifact_sinks_module, "publish_path_no_replace", publish_after_impostor
+        )
+
+    with pytest.raises(OSError, match="content-addressed artifact digest collision"):
+        DirectoryArtifactSink(root).capture(
+            content,
+            media_type="application/json",
+            captured_at=CAPTURED_AT,
+        )
+
+    assert artifact.read_bytes() == impostor
+    assert tuple(root.glob(".artifact-*.tmp")) == ()
+
+
+def test_artifact_sink_completes_when_the_root_cannot_be_synchronized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unsupported_fsync_directory(directory: Path) -> None:
+        raise OSError(errno.EINVAL, os.strerror(errno.EINVAL), str(directory))
+
+    monkeypatch.setattr(
+        filesystem_module, "fsync_directory", unsupported_fsync_directory
+    )
+
+    reference = DirectoryArtifactSink(tmp_path / "artifacts").capture(
+        b"{}", media_type="application/json", captured_at=CAPTURED_AT
+    )
+
+    assert Path(reference.uri.removeprefix("file://")).read_bytes() == b"{}"
+
+
+def test_artifact_sink_synchronizes_the_root_after_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "artifacts"
+    synchronized: list[tuple[Path, tuple[str, ...]]] = []
+
+    def recording_fsync_directory(directory: Path) -> None:
+        synchronized.append(
+            (directory, tuple(sorted(path.name for path in directory.iterdir())))
+        )
+
+    monkeypatch.setattr(filesystem_module, "fsync_directory", recording_fsync_directory)
+    sink = DirectoryArtifactSink(root)
+
+    reference = sink.capture(
+        b"{}", media_type="application/json", captured_at=CAPTURED_AT
+    )
+    sink.capture(b"{}", media_type="application/json", captured_at=CAPTURED_AT)
+
+    # Only a new publication changes the directory, and it is already named.
+    assert synchronized == [(root, (Path(reference.uri).name,))]
 
 
 class NonPosixOs:
@@ -476,7 +565,7 @@ def test_artifact_sink_does_not_require_fchmod_outside_posix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(inference_module, "os", NonPosixOs())
+    monkeypatch.setattr(artifact_sinks_module, "os", NonPosixOs())
 
     reference = DirectoryArtifactSink(tmp_path / "artifacts").capture(
         b"{}",
@@ -613,8 +702,60 @@ def test_authentication_is_runtime_configuration_not_provider_code(
         assert headers[expected_name] == expected_value
 
 
-def test_missing_runtime_credential_fails_before_transport(tmp_path: Path) -> None:
-    client, transport = _client(tmp_path, environment={})
+PACKAGE_ROOT = Path(inference_module.__file__).resolve().parent
+
+
+def _package_locals_holding(error: BaseException, secret: str) -> list[str]:
+    """Name each package frame local in the traceback chain that holds a secret.
+
+    Tools that record tracebacks capture every frame's local variables, so a
+    secret held by one, directly or as a mapping value, would reach them.
+    """
+
+    found: list[str] = []
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        entry = current.__traceback__
+        while entry is not None:
+            frame = entry.tb_frame
+            if Path(frame.f_code.co_filename).resolve().is_relative_to(PACKAGE_ROOT):
+                for name, value in frame.f_locals.items():
+                    texts: list[object] = (
+                        list(cast(Mapping[object, object], value).values())
+                        if isinstance(value, Mapping)
+                        else [value]
+                    )
+                    if any(isinstance(text, str) and secret in text for text in texts):
+                        found.append(f"{frame.f_code.co_name}:{name}")
+            entry = entry.tb_next
+        pending.extend(
+            linked
+            for linked in (current.__cause__, current.__context__)
+            if linked is not None
+        )
+    return found
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"UNRELATED_KEY": SECRET},
+        {"TEST_INFERENCE_KEY": "  ", "UNRELATED_KEY": SECRET},
+    ],
+    ids=["missing", "blank"],
+)
+def test_missing_runtime_credential_fails_before_transport(
+    tmp_path: Path,
+    environment: dict[str, str],
+) -> None:
+    # The environment holds a secret under another name, so the checks below
+    # would see it if the error or its frames kept the environment.
+    client, transport = _client(tmp_path, environment=environment)
 
     with pytest.raises(InferenceError) as captured:
         client.invoke({"question": "test"}, _profile())
@@ -622,7 +763,8 @@ def test_missing_runtime_credential_fails_before_transport(tmp_path: Path) -> No
     assert captured.value.failure is InferenceFailure.CONFIGURATION
     assert captured.value.artifact is None
     assert not transport.requests
-    assert SECRET not in str(captured.value)
+    assert SECRET not in "".join(traceback.format_exception(captured.value))
+    assert _package_locals_holding(captured.value, SECRET) == []
 
 
 @pytest.mark.parametrize(
@@ -646,6 +788,7 @@ def test_malformed_runtime_credential_fails_without_echoing_it(
     assert not captured.value.retryable
     assert not transport.requests
     assert SECRET not in "".join(traceback.format_exception(captured.value))
+    assert _package_locals_holding(captured.value, SECRET) == []
 
 
 @pytest.mark.parametrize(
@@ -931,6 +1074,147 @@ def test_streaming_completion_rejects_conflicting_usage(tmp_path: Path) -> None:
     assert captured.value.failure is InferenceFailure.RESPONSE_USAGE
 
 
+def _choice_event(
+    delta: JsonValue,
+    *,
+    finish_reason: str | None = None,
+    index: int = 0,
+) -> JsonObject:
+    return {
+        "choices": [{"index": index, "finish_reason": finish_reason, "delta": delta}]
+    }
+
+
+CONTENT_EVENT = _choice_event({"content": '{"answer":"four","supported":true}'})
+STOP_EVENT = _choice_event({}, finish_reason="stop")
+DONE = b"data: [DONE]\n\n"
+STREAM_CASES: dict[str, tuple[bytes, InferenceFailure | None, str]] = {
+    "malformed-usage": (
+        _sse_body([CONTENT_EVENT, STOP_EVENT, {"choices": [], "usage": []}]),
+        InferenceFailure.RESPONSE_USAGE,
+        "malformed streaming token usage",
+    ),
+    "multiple-choices": (
+        _sse_body(
+            [
+                {
+                    "choices": [
+                        cast(list[JsonValue], CONTENT_EVENT["choices"])[0],
+                        cast(list[JsonValue], CONTENT_EVENT["choices"])[0],
+                    ]
+                },
+                STOP_EVENT,
+            ]
+        ),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "exactly one completion choice",
+    ),
+    "nonzero-index": (
+        _sse_body(
+            [
+                _choice_event(
+                    {"content": '{"answer":"four","supported":true}'}, index=1
+                ),
+                STOP_EVENT,
+            ]
+        ),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "malformed completion delta",
+    ),
+    "malformed-delta": (
+        _sse_body([_choice_event("not an object"), STOP_EVENT]),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "malformed completion delta",
+    ),
+    "changed-finish-reason": (
+        _sse_body(
+            [CONTENT_EVENT, STOP_EVENT, _choice_event({}, finish_reason="length")]
+        ),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "changed the finish reason",
+    ),
+    "done-without-finish": (
+        _sse_body([CONTENT_EVENT]),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "did not contain one finished completion",
+    ),
+    "finished-without-content": (
+        _sse_body([_choice_event({"role": "assistant"}), STOP_EVENT]),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "did not contain one text response",
+    ),
+    "done-only-in-a-comment": (
+        _sse_body([CONTENT_EVENT, STOP_EVENT], include_done=False)
+        + b": data: [DONE]\n\n",
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "malformed Chat Completions event stream",
+    ),
+    "event-after-done": (
+        _sse_body([CONTENT_EVENT, STOP_EVENT]) + _sse_body([STOP_EVENT]),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "malformed Chat Completions event stream",
+    ),
+    "invalid-utf-8": (
+        _sse_body([CONTENT_EVENT, STOP_EVENT]).replace(b"four", b"fo\xffr"),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "malformed Chat Completions event stream",
+    ),
+    # Framing the parser accepts must still produce the one checked completion.
+    "comments-between-events": (
+        b": keep-alive\n\n"
+        + _sse_body([CONTENT_EVENT], include_done=False).replace(
+            b"data: ", b": note\ndata: "
+        )
+        + b":\n\n"
+        + _sse_body([STOP_EVENT]),
+        None,
+        "",
+    ),
+    "crlf-framing": (
+        _sse_body([CONTENT_EVENT, STOP_EVENT]).replace(b"\n", b"\r\n"),
+        None,
+        "",
+    ),
+    "crlf-without-done": (
+        _sse_body([CONTENT_EVENT, STOP_EVENT], include_done=False).replace(
+            b"\n", b"\r\n"
+        ),
+        InferenceFailure.RESPONSE_ENVELOPE,
+        "malformed Chat Completions event stream",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("body", "failure", "message"),
+    STREAM_CASES.values(),
+    ids=STREAM_CASES,
+)
+def test_streaming_completion_fails_closed(
+    tmp_path: Path,
+    body: bytes,
+    failure: InferenceFailure | None,
+    message: str,
+) -> None:
+    client, _ = _client(
+        tmp_path,
+        endpoint=_endpoint(stream=True),
+        body=body,
+        headers={"Content-Type": "text/event-stream"},
+    )
+
+    if failure is None:
+        result = client.invoke({"question": "test"}, _profile())
+        assert result.value == {"answer": "four", "supported": True}
+        return
+    with pytest.raises(InferenceError, match=message) as captured:
+        client.invoke({"question": "test"}, _profile())
+
+    assert captured.value.failure is failure
+    assert captured.value.artifact is not None
+    assert captured.value.artifact.sha256 == hashlib.sha256(body).hexdigest()
+
+
 @pytest.mark.parametrize(
     "factory",
     [
@@ -953,6 +1237,8 @@ def test_streaming_completion_rejects_conflicting_usage(tmp_path: Path) -> None:
         lambda: _endpoint(base_url="https://models.example.test:0/v1"),
         lambda: _endpoint(base_url="https://models.example.test:65536/v1"),
         lambda: _endpoint(base_url="https://models.example.test:port/v1"),
+        lambda: _endpoint(base_url="https://:443/v1"),
+        lambda: _endpoint(base_url="https:///v1"),
         lambda: _endpoint(resource_path="../chat/completions"),
         lambda: _endpoint(query_parameters={"api-version": "line\nbreak"}),
         lambda: _endpoint(max_output_tokens=0),
@@ -992,6 +1278,37 @@ def test_custom_transport_failures_are_sanitized(tmp_path: Path) -> None:
     assert captured.value.failure is InferenceFailure.TRANSPORT
     assert captured.value.retryable is True
     assert "private transport failure" not in str(captured.value)
+
+
+@dataclass(frozen=True, slots=True)
+class RejectingTransport:
+    error: InferenceError
+
+    def send(self, request: HttpRequest, /) -> NoReturn:
+        del request
+        raise self.error
+
+
+def test_a_transport_error_reaches_the_caller_with_its_status(tmp_path: Path) -> None:
+    error = InferenceError(
+        InferenceFailure.RESPONSE_TOO_LARGE,
+        "inference endpoint response exceeded the configured byte limit",
+        status_code=200,
+    )
+    client = StructuredInferenceClient(
+        endpoint=_endpoint(),
+        artifact_sink=DirectoryArtifactSink(tmp_path / "artifacts"),
+        transport=RejectingTransport(error),
+        environment={"TEST_INFERENCE_KEY": SECRET},
+    )
+
+    with pytest.raises(InferenceError) as captured:
+        client.invoke({"question": "test"}, _profile())
+
+    assert captured.value is error
+    assert captured.value.failure is InferenceFailure.RESPONSE_TOO_LARGE
+    assert captured.value.status_code == 200
+    assert not captured.value.retryable
 
 
 def test_inference_errors_survive_pickling() -> None:
@@ -1043,4 +1360,90 @@ def test_endpoint_deadline_reaches_the_request(tmp_path: Path) -> None:
     client.invoke({"question": "What is two plus two?"}, _profile())
 
     assert transport.requests[0].deadline_seconds == 12.5
-    assert _endpoint().deadline_seconds is None
+
+
+@pytest.mark.parametrize(
+    ("disable", "expected"), [(False, 600.0), (True, None)], ids=["default", "none"]
+)
+def test_endpoint_deadline_defaults_to_ten_minutes_and_none_disables_it(
+    tmp_path: Path, disable: bool, expected: float | None
+) -> None:
+    endpoint = OpenAICompatibleEndpoint(
+        actor_id="model-under-test",
+        base_url="https://models.example.test/v1",
+        model="org/model-1",
+        credential=DEFAULT_CREDENTIAL,
+    )
+    if disable:
+        endpoint = replace(endpoint, deadline_seconds=None)
+    client, transport = _client(tmp_path, endpoint=endpoint)
+
+    client.invoke({"question": "What is two plus two?"}, _profile())
+
+    assert endpoint.deadline_seconds == expected
+    assert transport.requests[0].deadline_seconds == expected
+
+
+INFERENCE_PUBLIC_NAMES: Final = frozenset(
+    {
+        "ADAPTER_ID",
+        "ADAPTER_VERSION",
+        "ArtifactReference",
+        "ArtifactSink",
+        "DirectoryArtifactSink",
+        "EnvironmentCredential",
+        "HttpRequest",
+        "HttpResponse",
+        "HttpTransport",
+        "InferenceError",
+        "InferenceFailure",
+        "InferenceIdentity",
+        "InferenceUsage",
+        "OpenAICompatibleEndpoint",
+        "StructuredInferenceAdapter",
+        "StructuredInferenceClient",
+        "StructuredInferenceResult",
+        "StructuredOutputMode",
+        "StructuredOutputProfile",
+        "UrllibHttpTransport",
+        "build_chat_completions_payload",
+    }
+)
+MOVED_INFERENCE_NAMES: Final = (
+    ("itself._artifact_sinks", "ArtifactReference"),
+    ("itself._artifact_sinks", "ArtifactSink"),
+    ("itself._artifact_sinks", "DirectoryArtifactSink"),
+    ("itself._http_transport", "HttpRequest"),
+    ("itself._http_transport", "HttpResponse"),
+    ("itself._http_transport", "HttpTransport"),
+    ("itself._http_transport", "UrllibHttpTransport"),
+    ("itself._inference_errors", "InferenceError"),
+    ("itself._inference_errors", "InferenceFailure"),
+)
+
+
+def test_inference_module_keeps_its_public_names() -> None:
+    public = {
+        name
+        for name, value in vars(inference_module).items()
+        if not name.startswith("_")
+        and (
+            isinstance(value, str)
+            or getattr(value, "__module__", None) == inference_module.__name__
+        )
+    }
+
+    assert public == INFERENCE_PUBLIC_NAMES
+
+
+@pytest.mark.parametrize(("module_name", "name"), MOVED_INFERENCE_NAMES)
+def test_moved_inference_names_are_the_objects_their_modules_define(
+    module_name: str,
+    name: str,
+) -> None:
+    value: object = getattr(inference_module, name)
+
+    assert value is getattr(importlib.import_module(module_name), name)
+    # Pickles, tracebacks, and reprs still name the public module.
+    assert getattr(value, "__module__", None) == "itself.inference"
+    assert pickle.loads(pickle.dumps(value)) is value

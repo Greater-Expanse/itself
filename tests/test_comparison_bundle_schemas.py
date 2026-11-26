@@ -14,17 +14,18 @@ from jsonschema.exceptions import ValidationError
 from itself import JsonObject, JsonValue
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_ROOT = ROOT / "experiments" / "contracts" / "v1"
+CONTRACTS = ROOT / "experiments" / "contracts"
+CONTRACT_ROOT = CONTRACTS / "v1"
 
 
 class _SchemaValidator(Protocol):
     def iter_errors(self, instance: JsonValue) -> Iterator[ValidationError]: ...
 
 
-def _validator(name: str) -> _SchemaValidator:
+def _validator(name: str, *, contract_root: Path = CONTRACT_ROOT) -> _SchemaValidator:
     value = cast(
         JsonValue,
-        json.loads((CONTRACT_ROOT / name).read_text(encoding="utf-8")),
+        json.loads((contract_root / name).read_text(encoding="utf-8")),
     )
     assert isinstance(value, dict)
     Draft202012Validator.check_schema(value)
@@ -198,3 +199,42 @@ def test_comparison_attempt_report_schema_rejects_private_error_detail() -> None
     }
 
     assert list(_validator("comparison-attempt-report.schema.json").iter_errors(report))
+
+
+def _structured_failure_report(contract: str, profile_id: str) -> JsonObject:
+    report: JsonObject = {
+        "attempt_report_version": "0.2.0" if contract == "v1" else "0.3.0",
+        "comparison_series_id": "case-001-comparison",
+        "attempt_id": "structured-attempt-1",
+        "profile_id": profile_id,
+        "outcome": "adapter_failed",
+        "completed_at": "2026-11-26T20:00:00Z",
+        "failure": {
+            "kind": "assertion_contract",
+            "retryable": False,
+            "status_code": 200,
+        },
+    }
+    if contract == "v2":
+        report["shipped_adapter"] = {
+            "adapter_id": "openai-compatible-chat-completions",
+            "adapter_version": "0.4.0",
+        }
+    return report
+
+
+def _attempt_report_issues(contract: str, profile_id: str) -> list[ValidationError]:
+    validator = _validator(
+        "comparison-attempt-report.schema.json",
+        contract_root=CONTRACTS / contract,
+    )
+    return list(validator.iter_errors(_structured_failure_report(contract, profile_id)))
+
+
+def test_only_the_v2_attempt_report_names_the_prompted_uniqueness_profile() -> None:
+    for contract in ("v1", "v2"):
+        assert not _attempt_report_issues(contract, "diagnosis-assertion-v0.3.0")
+
+    assert not _attempt_report_issues("v2", "diagnosis-assertion-v0.4.0")
+    issues = _attempt_report_issues("v1", "diagnosis-assertion-v0.4.0")
+    assert [tuple(issue.absolute_path) for issue in issues] == [("profile_id",)]

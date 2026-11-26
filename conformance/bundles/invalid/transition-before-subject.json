@@ -1,0 +1,39 @@
+[
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "status_transition",
+    "id": "transition-cache-testable",
+    "created_at": "2026-07-22T12:01:00Z",
+    "created_by": {
+      "id": "diagnostician-model",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "subject_ref": "claim-cache-cause",
+    "from_status": "proposed",
+    "to_status": "testable",
+    "authorized_by": {
+      "id": "diagnostician-model",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "reason": "A transition cannot precede the claim it moves."
+  },
+  {
+    "protocol_version": "0.1.0-alpha.3",
+    "kind": "claim",
+    "id": "claim-cache-cause",
+    "created_at": "2026-07-22T12:00:00Z",
+    "created_by": {
+      "id": "diagnostician-model",
+      "actor_type": "model",
+      "role": "proposer"
+    },
+    "proposition": "A stale cache causes the observed verification failure.",
+    "claim_type": "causal",
+    "status": "proposed",
+    "scope": {
+      "description": "Controlled cache-failure case, harness version 1"
+    }
+  }
+]

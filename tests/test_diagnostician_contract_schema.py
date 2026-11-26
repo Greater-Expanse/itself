@@ -12,6 +12,7 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
+from experiments._schema_validation import contract_schema, contract_validator
 from itself import JsonObject, JsonValue
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,3 +120,14 @@ def test_result_carries_an_artifact_reference_not_inline_raw_output() -> None:
 
     with pytest.raises(ValidationError):
         _validator("diagnosis-result.schema.json").validate(result)
+
+
+@pytest.mark.parametrize("schema_path", SCHEMA_PATHS, ids=lambda path: path.name)
+def test_each_contract_schema_is_compiled_once_and_copied_on_request(
+    schema_path: Path,
+) -> None:
+    assert contract_validator(schema_path) is contract_validator(schema_path)
+
+    first = contract_schema(schema_path)
+    first["title"] = "changed by a caller"
+    assert contract_schema(schema_path) == _load_object(schema_path)

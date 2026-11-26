@@ -19,6 +19,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final, cast
 
+import itself.inference as shipped_inference
+from experiments._schema_validation import contract_schema
 from experiments.diagnostician import (
     CONTRACT_VERSION,
     DiagnosisContractError,
@@ -61,9 +63,30 @@ from itself.inference import (
 
 ADAPTER_ID: Final = "openai-chat-completions"
 ADAPTER_VERSION: Final = "0.2.0"
+# Registered manifests record the binding identity above, but the shipped
+# ``itself.inference`` client sends every request, and no registered result
+# names it.  This binding version was re-verified offline against the shipped
+# adapter named here, and a test pins the pairing, so a change to the shipped
+# client cannot run under the old binding version without being re-verified.
+SHIPPED_ADAPTER_ID: Final = "openai-compatible-chat-completions"
+SHIPPED_ADAPTER_VERSION: Final = "0.4.0"
 PROTOCOL_ID: Final = "openai-chat-completions"
 SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_2_0"
 CONSTRAINED_SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_3_0"
+PROMPTED_UNIQUENESS_SCHEMA_NAME: Final = "itself_diagnosis_assertion_v0_4_0"
+# The structured diagnosis profiles.  V0.3.0 constrains expected observations
+# to registered values; v0.4.0 does too, but sends its schema without the
+# ``uniqueItems`` keyword on ``retained_hypothesis_ids`` and states that
+# requirement in its system prompt instead.  The returned assertion is still
+# decoded against the unchanged contract, which refuses a repeated identifier.
+DIAGNOSIS_PROFILE_ID: Final = "diagnosis-assertion-v0.2.0"
+CONSTRAINED_PROFILE_ID: Final = "diagnosis-assertion-v0.3.0"
+PROMPTED_UNIQUENESS_PROFILE_ID: Final = "diagnosis-assertion-v0.4.0"
+DIAGNOSIS_PROFILE_IDS: Final = (
+    DIAGNOSIS_PROFILE_ID,
+    CONSTRAINED_PROFILE_ID,
+    PROMPTED_UNIQUENESS_PROFILE_ID,
+)
 
 _CONTRACT_ROOT: Final = Path(__file__).resolve().parent / "contracts" / "v1"
 _ASSERTION_SCHEMA_PATH: Final = _CONTRACT_ROOT / "diagnosis-assertion.schema.json"
@@ -80,6 +103,7 @@ _SYSTEM_PROMPT: Final = """You are a causal diagnostician operating under an evi
 Return only the requested non-authoritative JSON assertion. Use only hypothesis and test identifiers supplied in the request. Retain at least one hypothesis, select exactly one available test, and provide exactly one falsifiable prediction for that selected test for every retained hypothesis.
 
 Do not claim that a test ran. Do not emit evidence, a verdict, a state transition, execution metadata, or private chain-of-thought. The public explanation should state the concise basis for the assertion and why the selected test is useful."""
+_UNIQUENESS_INSTRUCTION: Final = "List each identifier in retained_hypothesis_ids once."
 
 
 class ModelAdapterFailure(StrEnum):
@@ -187,8 +211,108 @@ def _adapter_error(error: InferenceError) -> ModelAdapterError:
 
 
 @dataclass(frozen=True, slots=True)
+class ShippedAdapterIdentity:
+    """The id and version that the shipped ``itself.inference`` client reports."""
+
+    adapter_id: str
+    adapter_version: str
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("adapter_id", self.adapter_id),
+            ("adapter_version", self.adapter_version),
+        ):
+            if not value or value != value.strip():
+                raise ValueError(
+                    f"shipped {name} must be non-empty without outer space"
+                )
+
+    def to_json_object(self) -> JsonObject:
+        """Return the identity as a study record holds it."""
+
+        return {"adapter_id": self.adapter_id, "adapter_version": self.adapter_version}
+
+    @classmethod
+    def from_json_object(cls, value: JsonValue, field: str) -> ShippedAdapterIdentity:
+        """Read an identity that a study record pins or records."""
+
+        if not isinstance(value, dict):
+            raise TypeError(f"{field} must be a JSON object")
+        adapter_id = value.get("adapter_id")
+        adapter_version = value.get("adapter_version")
+        if not isinstance(adapter_id, str) or not isinstance(adapter_version, str):
+            raise TypeError(f"{field} must hold string adapter_id and adapter_version")
+        return cls(adapter_id=adapter_id, adapter_version=adapter_version)
+
+
+def running_shipped_adapter() -> ShippedAdapterIdentity:
+    """Return the identity of the shipped client in this process, read now.
+
+    The shipped client stamps these module values on each result it returns
+    and sends its version in each request's User-Agent, so they name the
+    client that executes a request.  ``SHIPPED_ADAPTER_VERSION`` instead
+    names the client this binding version was last verified against.
+    """
+
+    return ShippedAdapterIdentity(
+        adapter_id=shipped_inference.ADAPTER_ID,
+        adapter_version=shipped_inference.ADAPTER_VERSION,
+    )
+
+
+class StatusObservingTransport:
+    """Send through another transport and keep the last response status.
+
+    The shipped client names a status only when it is not 2xx, so a v2 study
+    record takes it from here, where every response the transport returns
+    passes, including one whose status lies outside 100-599.  A response the
+    transport rejects after its headers arrived, such as one over the byte
+    limit, passes as an ``InferenceError`` naming that status, which is kept
+    the same way.
+    """
+
+    __slots__ = ("_request_sent", "_status_code", "_transport")
+
+    def __init__(self, transport: HttpTransport) -> None:
+        self._transport: HttpTransport = transport
+        self._request_sent = False
+        self._status_code: int | None = None
+
+    @property
+    def request_sent(self) -> bool:
+        """Whether a request has been handed to the wrapped transport."""
+
+        return self._request_sent
+
+    @property
+    def status_code(self) -> int | None:
+        """Return the last observed status, or ``None`` if none was observed."""
+
+        return self._status_code
+
+    def send(self, request: HttpRequest, /) -> HttpResponse:
+        """Send one request and remember the status of its response."""
+
+        self._request_sent = True
+        try:
+            response = self._transport.send(request)
+        except InferenceError as error:
+            if error.status_code is not None:
+                self._status_code = error.status_code
+            raise
+        self._status_code = response.status_code
+        return response
+
+
+@dataclass(frozen=True, slots=True)
 class OpenAIChatEndpoint:
-    """Legacy trial configuration bound to the generic compatible endpoint."""
+    """Legacy trial configuration bound to the generic compatible endpoint.
+
+    ``deadline_seconds`` bounds a whole request, where ``timeout_seconds``
+    bounds each read.  It defaults to ``None`` rather than the shipped
+    client's default, because a v1 manifest registers no deadline and a
+    deadline it does not record would change how its requests run.
+    """
 
     actor_id: str
     base_url: str
@@ -205,6 +329,7 @@ class OpenAIChatEndpoint:
         default_factory=_empty_body,
         repr=False,
     )
+    deadline_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if _IDENTIFIER_PATTERN.fullmatch(self.actor_id) is None:
@@ -249,6 +374,7 @@ class OpenAIChatEndpoint:
             stream=self.stream,
             extra_headers=headers,
             extra_body=body,
+            deadline_seconds=self.deadline_seconds,
         )
         object.__setattr__(self, "base_url", compatible.base_url)
         object.__setattr__(
@@ -281,14 +407,12 @@ class OpenAIChatEndpoint:
             stream=self.stream,
             extra_headers=self.extra_headers,
             extra_body=self.extra_body,
+            deadline_seconds=self.deadline_seconds,
         )
 
 
 def _load_model_schema() -> JsonObject:
-    value = cast(JsonValue, json.loads(_ASSERTION_SCHEMA_PATH.read_text("utf-8")))
-    if not isinstance(value, dict):
-        raise TypeError("diagnosis assertion schema must contain an object")
-    schema = deepcopy(value)
+    schema = contract_schema(_ASSERTION_SCHEMA_PATH)
     for annotation in ("$schema", "$id", "title"):
         schema.pop(annotation, None)
     return schema
@@ -327,12 +451,48 @@ def model_assertion_schema(
     return schema
 
 
+def _without_unique_retained_ids(schema: JsonObject) -> JsonObject:
+    properties = cast(JsonObject, schema["properties"])
+    retained = cast(JsonObject, properties["retained_hypothesis_ids"])
+    del retained["uniqueItems"]
+    return schema
+
+
+def _selected_profile_id(profile_id: str | None, values: tuple[str, ...]) -> str:
+    if profile_id is None:
+        return CONSTRAINED_PROFILE_ID if values else DIAGNOSIS_PROFILE_ID
+    if profile_id not in DIAGNOSIS_PROFILE_IDS:
+        raise ValueError(
+            f"unknown diagnosis output profile {profile_id!r}; expected one of "
+            + ", ".join(DIAGNOSIS_PROFILE_IDS)
+        )
+    if profile_id == DIAGNOSIS_PROFILE_ID and values:
+        raise ValueError(f"{profile_id} does not register expected observation values")
+    if profile_id != DIAGNOSIS_PROFILE_ID and not values:
+        raise ValueError(
+            f"{profile_id} requires registered expected observation values"
+        )
+    return profile_id
+
+
 def diagnosis_output_profile(
     expected_observation_values: Sequence[str] = (),
+    *,
+    profile_id: str | None = None,
 ) -> StructuredOutputProfile:
-    """Return the strict structured-output profile for diagnosis assertions."""
+    """Return the strict structured-output profile for diagnosis assertions.
+
+    Without ``profile_id`` the profile is ``diagnosis-assertion-v0.2.0``, or
+    ``diagnosis-assertion-v0.3.0`` when expected observation values are
+    registered.  ``diagnosis-assertion-v0.4.0`` also requires them; it is
+    v0.3.0 with ``uniqueItems`` removed from the schema sent to the provider
+    and the requirement stated in the system prompt instead.  An unknown
+    identifier, or one inconsistent with the values, raises ``ValueError``.
+    """
 
     values = _expected_observation_values(expected_observation_values)
+    selected = _selected_profile_id(profile_id, values)
+    schema = model_assertion_schema(values)
     if values:
         rendered_values = json.dumps(
             values,
@@ -346,14 +506,16 @@ def diagnosis_output_profile(
             "additional words. Put explanatory prose in falsified_when or "
             "public_explanation."
         )
-        profile_id = "diagnosis-assertion-v0.3.0"
         schema_name = CONSTRAINED_SCHEMA_NAME
+        if selected == PROMPTED_UNIQUENESS_PROFILE_ID:
+            system_prompt += "\n\n" + _UNIQUENESS_INSTRUCTION
+            schema_name = PROMPTED_UNIQUENESS_SCHEMA_NAME
+            schema = _without_unique_retained_ids(schema)
     else:
         system_prompt = _SYSTEM_PROMPT
-        profile_id = "diagnosis-assertion-v0.2.0"
         schema_name = SCHEMA_NAME
     return StructuredOutputProfile(
-        profile_id=profile_id,
+        profile_id=selected,
         schema_name=schema_name,
         system_prompt=system_prompt,
         user_instruction=(
@@ -361,7 +523,7 @@ def diagnosis_output_profile(
             "Respond only with JSON matching the supplied schema."
         ),
         input_label="DIAGNOSIS REQUEST",
-        schema=model_assertion_schema(values),
+        schema=schema,
     )
 
 

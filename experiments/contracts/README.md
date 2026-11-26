@@ -73,6 +73,58 @@ observation, and applying the rule that determines what the evidence supports.
   produce a conforming assertion.
 - [`v1/examples/`](v1/examples/) contains valid language-neutral fixtures.
 
+## Study contract versions
+
+The manifests, bundle manifests, and attempt reports above are study records.
+Each declares its document version, and that version alone chooses the
+schemas that validate it; a reader refuses a version it does not know. The
+diagnosis and narrative contracts are what a model sees, so they have one
+version, in `v1/`, under every study contract.
+
+Study contract v2, document version `0.3.0`, adds what v1 cannot record. A
+v1 record loses a status outside 100–599, cannot bound a whole request, names
+only the binding and not the shipped client that sent the request, quarantines
+a harness failure instead of publishing it, and cannot ask a provider for token
+usage on a stream, which some providers report only when asked. v2
+records:
+
+- the HTTP status the transport observed, unclamped, including that of a
+  response the transport rejected after its headers arrived, or `null`
+  when no status is known, as when no response arrived;
+- a request deadline, `execution.deadline_seconds`, beside the per-read
+  timeout;
+- the shipped `itself.inference` client that executes requests, pinned in the
+  manifest as `diagnostician.shipped_adapter` and recorded in every bundle
+  manifest and attempt report;
+- a `runner_failed` outcome for a failure of the harness after a request was
+  sent, with the captured response and a sanitized one-line error;
+- whether a stream asks for token usage, `generation.stream_include_usage`,
+  which sends `stream_options` and is part of the bound prompt payload.
+
+v2 holds only the six study-record schemas that change:
+
+- [`v2/trial-manifest.schema.json`](v2/trial-manifest.schema.json) and
+  [`v2/comparison-manifest.schema.json`](v2/comparison-manifest.schema.json)
+  add the shipped-client pin, `stream`, `stream_include_usage`, and
+  `deadline_seconds`.
+- [`v2/trial-bundle.schema.json`](v2/trial-bundle.schema.json) and
+  [`v2/comparison-bundle.schema.json`](v2/comparison-bundle.schema.json) add
+  the recorded shipped client and the `runner_failed` outcome.
+- [`v2/trial-attempt-report.schema.json`](v2/trial-attempt-report.schema.json)
+  and
+  [`v2/comparison-attempt-report.schema.json`](v2/comparison-attempt-report.schema.json)
+  add the recorded shipped client, the unclamped status, and the runner-failure
+  record. The v2 comparison attempt report also names the
+  `diagnosis-assertion-v0.4.0` test-plan profile.
+- [`v2/examples/`](v2/examples/) contains valid v2 manifests, made by the
+  harness builders, and one attempt report of each kind.
+
+v1 remains valid and verifiable. Case 001 comparison study versions 1 to 5
+use it: their manifests still validate and bind, their reports re-render byte
+for byte, and a v1 manifest still runs with no deadline, a status recorded only
+for an HTTP-status failure and clamped to 100–599, quarantine for a runner
+failure, and no usage request. Study versions 6 and 7 are registered under v2.
+
 The contract version is separate from the Claim and Evidence Protocol version.
 Changing the provider boundary does not necessarily change the ledger protocol,
 and vice versa.
@@ -100,6 +152,11 @@ The model-facing assertion schema makes every field required for compatibility
 with strict structured-output implementations. The otherwise optional
 `expressed_confidence` field is represented as a number or `null`. An adapter
 maps `null` to an absent confidence value when it constructs a result.
+
+The `diagnosis-assertion-v0.4.0` profile sends that schema without the
+`uniqueItems` keyword on `retained_hypothesis_ids` and states the requirement
+in its system prompt instead. The contract itself is unchanged: every returned
+assertion is still decoded against it, so a repeated identifier is refused.
 
 The narrative profile uses a JSON envelope only to make the selected closed-set
 hypothesis and declared confidence directly scoreable. It does not add

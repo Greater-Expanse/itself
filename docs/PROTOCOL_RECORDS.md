@@ -89,26 +89,42 @@ cross-record references, kinds, ordering constraints, and replayed state.
 Every record declares its own actors, and the protocol binds no identifier to
 an identity, so a validator cannot tell whether an identifier that calls itself
 `software` belongs to a policy engine or to a model. When a deployment knows
-which actor ids may settle claims, it can list them, and the validators then
-refuse every evidence-backed transition whose `authorized_by` declares any
-other id:
+which actor ids may settle claims, it can list them in a `ValidationPolicy`.
+The policy is a check of the reference SDK, outside `v0alpha2` conformance, and
+without one the validators accept exactly what the protocol accepts:
 
 ```python
-from itself import BundleValidator, EvidenceBundleValidator, Ledger
+from itself import (
+    BundleValidator,
+    EvidenceBundleValidator,
+    Ledger,
+    ValidationPolicy,
+)
 
-trusted = {"release-policy", "reviewer-alex"}
-trusted_ledger = Ledger(validator=BundleValidator(trusted_authorizers=trusted))
-bundle_validator = EvidenceBundleValidator(trusted_authorizers=trusted)
+policy = ValidationPolicy(trusted_authorizers={"release-policy", "reviewer-alex"})
+trusted_ledger = Ledger(validator=BundleValidator(policy=policy))
+bundle_validator = EvidenceBundleValidator(policy=policy)
 ```
 
-A refused transition is reported with the integrity code
-`untrusted_authorizer` and does not apply. The restriction covers the
-evidence-backed statuses in `EVIDENCE_BACKED_STATUSES`: `supported`,
-`refuted`, `inconclusive`, `mixed_evidence`, and `corroborated_within_scope`.
-Transitions to `testable`, `under_test`, `blocked`, and the other states that
-need no evidence are not restricted, and an empty list refuses every
-evidence-backed transition. Without `trusted_authorizers`, validation accepts
-any authorizer whose declared type and role the protocol allows, as before.
+`trusted_authorizers=` on either validator is shorthand for a policy with only
+that list, and passing it together with `policy=` raises `ValueError`.
+
+With a list, the validators refuse a transition whose `authorized_by` declares
+any other id when it moves a subject into or out of an evidence-backed status,
+one of `EVIDENCE_BACKED_STATUSES`: `supported`, `refuted`, `inconclusive`,
+`mixed_evidence`, and `corroborated_within_scope`. The refusal is reported as
+`untrusted_authorizer`, and the transition does not apply. So an unlisted actor
+can neither promote a claim nor demote a supported one to `stale` or
+`invalidated`. Transitions between the other states, such as `testable` to
+`under_test`, are not restricted, and an empty list refuses every transition
+into or out of an evidence-backed status.
+
+A list also refuses an actor id declared with more than one `actor_type`, in
+any record's `created_by` or any decision's or transition's `authorized_by`.
+The refusal is reported once per id as `actor_type_conflict`, on the first
+record where the second type appears. Otherwise, a model could
+claim a listed software id in its own records and the trust list would not
+notice.
 
 The list compares the ids that records declare, and it establishes no
 identity. Any writer that can append records can declare a trusted id, so the
@@ -117,6 +133,40 @@ records under those ids, for example a service that appends every
 evidence-backed transition itself. On the command line, pass
 `--trusted-authorizer ID` once per id to the `ledger`, `receipt`, and `bundle`
 commands.
+
+## Require supported reliance and unexpired support
+
+A policy has two more opt-in checks, which also apply to every validator that
+accepts one:
+
+```python
+from datetime import UTC, datetime
+
+policy = ValidationPolicy(
+    require_supported_reliance=True,
+    as_of=datetime(2026, 8, 1, tzinfo=UTC),
+)
+```
+
+`require_supported_reliance` refuses an `approved` or `executed` decision whose
+`relied_on_claim_refs` names a claim whose replayed status, at the decision's
+position in the history, is anything other than `supported` or
+`corroborated_within_scope`. The refusal is reported as `unsupported_reliance`.
+A later promotion does not repair an earlier decision, and references declared
+external are skipped, because their status is not in the history. The schema
+makes `relied_on_claim_refs` optional, so a decision that names no claims is
+not refused.
+
+`as_of`, a timezone-aware datetime, checks each subject that is `supported` or
+`corroborated_within_scope` at the end of the history. It reports
+`expired_support` when the subject's own scope `valid_until` is at or before
+`as_of`. It does the same for any evidence cited by the transition that gave
+the subject its current status, when that evidence's `expires_at` or scope
+`valid_until` is at or before `as_of`. Timestamps are compared as instants,
+whatever their offsets. A naive datetime raises `ValueError`. On the command
+line, the same checks are `--require-supported-reliance` and
+`--as-of TIMESTAMP`, an RFC 3339 date-time with an offset, on every command
+that accepts `--trusted-authorizer`.
 
 ## Record a test and its evidence
 

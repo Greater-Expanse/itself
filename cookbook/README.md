@@ -66,7 +66,9 @@ The model assertion has a deliberately narrow contract:
 The model does not supply the command. A repository owner chooses that command
 in reviewed CI configuration. The runner rejects unknown assertion fields
 before starting a process, executes the configured argument vector without a
-shell, and compares the observed exit code with the declared expectation.
+shell, and compares the observed exit code with the declared expectation. A
+correct expectation supports the assertion, but only the repository's passing
+exit code, `0` unless `--passing-exit-code` says otherwise, approves the action.
 
 This separation is the point of the recipe:
 
@@ -103,9 +105,11 @@ test, evidence, verdict, decision, ledger, and receipt boundaries.
 
 ## CI security and privacy
 
-The GitHub examples use read-only token permissions, immutable action commit
-pins, and the `pull_request` event. They do not use `pull_request_target` or
-send secrets to code from an untrusted change. See GitHub's
+The GitHub examples use read-only token permissions and immutable action
+commit pins. The gate example runs on the `pull_request` event; the
+verification and publishing examples are started manually, with
+`workflow_dispatch`. None uses `pull_request_target` or sends secrets to code
+from an untrusted change. See GitHub's
 [secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 before adapting a workflow with elevated permissions or self-hosted runners.
 

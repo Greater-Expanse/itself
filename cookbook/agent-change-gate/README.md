@@ -42,19 +42,68 @@ adapter before execution.
 
 ## Outcomes
 
+The runner answers two separate questions. The model's expected exit code
+decides whether its assertion is supported. The repository's passing exit code,
+set with `--passing-exit-code` and `0` by default, decides whether the action
+may proceed. A model that correctly predicts a failing check has made a true
+assertion about a change that still fails.
+
 | Observation | Claim state | Decision | Runner status |
 | --- | --- | --- | ---: |
-| Exit code matches the model's expectation | `supported` | `approved` | `0` |
-| Exit code differs | `refuted` | `rejected` | `1` |
+| Exit code matches the model's expectation and is the passing exit code | `supported` | `approved` | `0` |
+| Exit code matches the model's expectation but is not the passing exit code | `supported` | `rejected` | `1` |
+| Exit code differs from the model's expectation | `refuted` | `rejected` | `1` |
 | The check cannot produce an exit code | `inconclusive` | `deferred` | `2` |
 
+A check that times out, cannot start, or is ended by a signal has no exit code.
+The timeout is `--timeout-seconds`, 900 by default.
 Invalid input or an inability to record the result also returns `2`, but does
 not fabricate a deferred bundle. In every case, a nonzero status keeps the CI
 gate closed.
 
+The check runs without the GitHub Actions workflow-command files
+(`GITHUB_ENV`, `GITHUB_OUTPUT`, `GITHUB_PATH`, `GITHUB_STATE`, and
+`GITHUB_STEP_SUMMARY`) in its environment, and the GitHub wrapper fails the
+step that runs the gate with the gate's own status rather than passing it to a
+later step.
+
 An approved Itself decision does not merge a change. It supplies a validated
 decision record and successful job status that the code host's branch or merge
 policy may use as one required condition.
+
+The runner validates what it writes with the reference SDK's opt-in
+[validation policy](../../docs/PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions).
+It trusts only its own policy actor, `ci-assurance-policy`, to authorize the
+claim's final transition, and it requires an approved decision to rely only
+on a claim that is supported when the decision is recorded. A verifier can
+apply the same checks:
+
+```bash
+uv run --frozen itself bundle validate OUTPUT/bundle \
+  --trusted-authorizer ci-assurance-policy --require-supported-reliance
+```
+
+Because a trust list also refuses one actor id declared with two actor types,
+the runner exits with status `2`, writing nothing, when `--model-actor-id`
+names one of its own actors, `ci-check-runner` or `ci-assurance-policy`.
+
+## Run the gate from code the change cannot edit
+
+The checked-in wrappers demonstrate the recipe; they do not protect it. Under
+`pull_request`, the workflow file, `run.py`, the assertion fixture, the test
+suite, and the `.` install of Itself all come from the change being gated, so
+that change can rewrite any of them and approve itself. Removing the
+workflow-command variables from the check's environment does not change this:
+the checked code runs as the same runner user.
+
+A real deployment must:
+
+- run the gate from a protected ref, such as a required workflow or a reusable
+  workflow pinned to the base branch, so the gate's workflow and `run.py` are
+  not taken from the change;
+- install a pinned `itself` version rather than the checked-out source; and
+- take the assertion from the agent's output, not from a file the change can
+  edit.
 
 ## What the example establishes
 

@@ -21,6 +21,7 @@ from itself import (
     Actor,
     ActorRole,
     ActorType,
+    BundleValidator,
     ClaimType,
     EvidenceBundleBuilder,
     EvidenceBundleFile,
@@ -127,12 +128,18 @@ def _sample(
 ) -> EvaluationCheck:
     check_started = monotonic_ns()
     try:
+        # Construct every validator and builder outside the timed regions so
+        # the measurements reflect record count, not construction cost.
+        ledger_validator = BundleValidator()
+        receipt_validator = ReasoningReceiptValidator()
+        bundle_validator = EvidenceBundleValidator()
+        bundle_builder = EvidenceBundleBuilder(validator=bundle_validator)
         records, construction_ns = _timed(
             lambda: _records(size),
             monotonic_ns,
         )
         ledger, ledger_validation_ns = _timed(
-            lambda: Ledger(records),
+            lambda: Ledger(records, validator=ledger_validator),
             monotonic_ns,
         )
 
@@ -162,7 +169,7 @@ def _sample(
             monotonic_ns,
         )
         _, receipt_validation_ns = _timed(
-            lambda: ReasoningReceiptValidator().validate_against_ledger(
+            lambda: receipt_validator.validate_against_ledger(
                 receipt,
                 ledger,
             ),
@@ -179,7 +186,7 @@ def _sample(
         )
         bundle_path = staging / "artifacts" / f"records-{size}"
         bundle, bundle_build_ns = _timed(
-            lambda: EvidenceBundleBuilder().build(
+            lambda: bundle_builder.build(
                 bundle_path,
                 ledger=ledger,
                 title=f"Synthetic capacity observation: {size} records",
@@ -196,7 +203,7 @@ def _sample(
             monotonic_ns,
         )
         verified, bundle_validation_ns = _timed(
-            lambda: EvidenceBundleValidator().validate(bundle.path),
+            lambda: bundle_validator.validate(bundle.path),
             monotonic_ns,
         )
         if len(verified.ledger) != size:

@@ -130,42 +130,49 @@ loopback host.
 - accepted finish-state declarations for compatible local servers;
 - bounded Server-Sent Event streaming for endpoints that require it;
 - non-secret extra headers and JSON request fields;
-- an optional `deadline_seconds` for the whole request, beside the per-read
-  `timeout_seconds`;
+- a `deadline_seconds` for the whole request, ten minutes unless set, beside
+  the per-read `timeout_seconds`;
 - a replaceable synchronous HTTP transport with no implicit retry.
 
 `base_url` and `resource_path` must be printable ASCII without spaces or
 control characters: encode an international host name with IDNA and other
-characters with percent-encoding first. Extra headers cannot set `Host`,
-`Content-Length`, or `Transfer-Encoding`, which the transport owns. A URL or
-header value that HTTP cannot carry is a configuration failure, never a
-retryable transport failure.
+characters with percent-encoding first. `base_url` must name a host and must
+not contain credentials, a query, or a fragment, even an empty `?` or `#`
+marker, because the resource path is appended to it. Extra headers cannot set
+`Host`, `Content-Length`, or `Transfer-Encoding`, which the transport owns;
+`Accept`, `Content-Type`, and `User-Agent`, which the adapter owns; or the
+header that carries the credential. A URL or header value that HTTP cannot
+carry is a configuration failure, never a retryable transport failure.
 
 The built-in transport does not follow redirects. It returns a 3xx response to
 the client as an HTTP-status failure, so authentication headers are never
 forwarded to a redirect target. A custom transport owns the same obligation.
 
-Requests to loopback hosts always connect directly, even when `HTTP_PROXY` or
-`HTTPS_PROXY` is set, so traffic for a local server never passes through a
-proxy. Requests to other hosts use the proxy that Python's `urllib` selects
-from `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY`, or from the operating
-system's settings when those variables are unset; many networks reach hosted
-endpoints only through such a proxy. An HTTPS request crosses a proxy as a
-`CONNECT` tunnel, so the proxy sees the host and port but not the headers or
-body. The built-in transport sends only `http` and `https` URLs.
+A loopback host is `localhost`, a name ending in `.localhost`, either of them
+with one trailing dot, or a loopback address literal such as `127.0.0.1` or
+`[::1]`. Requests to loopback hosts always connect directly, even when
+`HTTP_PROXY` or `HTTPS_PROXY` is set, so traffic for a local server never
+passes through a proxy. Requests to other hosts use the proxy that Python's
+`urllib` selects from `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY`, or from the
+operating system's settings when those variables are unset; many networks
+reach hosted endpoints only through such a proxy. An HTTPS request crosses a
+proxy as a `CONNECT` tunnel, so the proxy sees the host and port but not the
+headers or body. The built-in transport sends only `http` and `https` URLs.
 
 `timeout_seconds` bounds each connection attempt and each read, not the whole
 request. A server that keeps sending, for example keep-alive comments on a
 stalled event stream or an endless run of chunked trailer lines, never trips
-it. Set `deadline_seconds` to bound the request as a whole: once that much
-time has passed, the built-in transport shuts the connection down and reports
-a retryable transport failure. The deadline runs from the moment the socket
+it. `deadline_seconds` bounds the request as a whole: once that much time has
+passed, the built-in transport shuts the connection down and reports a
+retryable transport failure. The deadline runs from the moment the socket
 connects, so a proxy's `CONNECT` exchange and the TLS handshake count against
 it. Each connection attempt is bounded by `timeout_seconds`, and host name
 resolution by neither setting. Both durations must be positive and at most
-`threading.TIMEOUT_MAX`. The deadline is off by default, and a request with a
-deadline trusts exactly the certificates a request without one does. A custom
-transport receives it as `HttpRequest.deadline_seconds`.
+`threading.TIMEOUT_MAX`. The deadline is 600 seconds unless the endpoint sets
+another; `deadline_seconds=None` turns it off for an endpoint whose requests
+may legitimately run longer. A request with a deadline trusts exactly the
+certificates a request without one does. A custom transport receives the
+deadline as `HttpRequest.deadline_seconds`.
 
 For example, an endpoint whose supplied URL is already complete can use:
 
@@ -202,14 +209,22 @@ endpoint = OpenAICompatibleEndpoint(
 ```
 
 Streaming does not weaken the evidence boundary. The transport keeps at most
-its configured response-byte limit of body bytes, the artifact sink captures
+its response-byte limit of body bytes (`max_response_bytes` on
+`UrllibHttpTransport`, 2,000,000 by default), the artifact sink captures
 the exact event stream before interpretation, and the client then assembles its
 text locally. Chunked trailer lines, which `http.client` discards, do not count
-toward that limit, so a deployment that talks to untrusted servers should also
-set `deadline_seconds`.
+toward that limit, so a deployment that talks to untrusted servers should keep
+a `deadline_seconds` rather than turning it off.
 It requires one terminal `[DONE]` marker, one completion choice, a stable model
 identity and finish reason, and internally consistent token usage when usage is
 reported. It does not expose partial output as a successful result.
+
+A provider may report token usage on a stream only when the request asks for
+it; otherwise every event can carry `"usage": null`, and the result has no
+token counts. To ask, pass
+`extra_body={"stream_options": {"include_usage": True}}`. A provider that
+honors it sends a last chunk with `"choices": []` and a usage object, which the
+client reads.
 
 ## Structured-output modes
 
@@ -248,6 +263,19 @@ bytes through the configured `ArtifactSink`. A successful
 refusal, incomplete-generation, envelope, JSON, schema, usage, and artifact
 failures. Only transport, rate-limit, and server failures are marked retryable;
 the client itself never retries.
+
+`InferenceError.status_code` holds the response's HTTP status when one is
+known. Every HTTP-status failure has one. So does a failure after the built-in
+transport received a response's headers: a body over the byte limit or one
+that ends before its declared length, a body read that fails or times out, and
+a deadline that passes while the body is read. A failure before the status
+line arrived, such as a refused connection or a deadline that passes first,
+has `None`, and one while the headers were still arriving may have either.
+The status never sets the failure class or whether it is retryable, so
+a `response_too_large` failure can carry `200`; classify a failure by
+`failure`, not by whether it has a status. A custom transport may give the
+status of a response it rejects as the `status_code` of the `InferenceError` it
+raises, which the client passes on unchanged; nothing requires it to.
 
 Response bodies and low-level transport details are kept out of exception text.
 If a response exists, its artifact reference remains attached to the error for

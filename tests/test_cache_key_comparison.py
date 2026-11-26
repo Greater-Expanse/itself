@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+import experiments.cases.cache_key_comparison as comparison_case
 from experiments.cases.cache_key_comparison import (
     COMPARATIVE_TASK,
     NARRATIVE_ATTEMPT_ID,
@@ -35,7 +36,7 @@ from experiments.cases.cache_key_scripted_run import (
 )
 from experiments.diagnostician import DiagnosisRequest, DiagnosisResult
 from experiments.narrative_diagnostician import NarrativeResult
-from itself import ClaimStatus, JsonObject
+from itself import ClaimStatus, JsonObject, Ledger, build_reasoning_receipt
 from itself.receipts import ReasoningReceiptValidator
 
 
@@ -319,3 +320,21 @@ def test_every_branch_receipt_recomputes_against_its_ledger() -> None:
             branch.ledger,
         )
         assert branch.scorecard.receipt_recomputes
+
+
+def test_receipt_recomputes_measures_each_branch_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def drifted_receipt(ledger: Ledger) -> JsonObject:
+        return build_reasoning_receipt(Ledger(ledger.records[:-1]))
+
+    monkeypatch.setattr(comparison_case, "build_reasoning_receipt", drifted_receipt)
+
+    result = run_comparative_case()
+
+    for branch in (
+        result.narrative,
+        result.structured_without_testing,
+        result.evidence_enforced,
+    ):
+        assert branch.scorecard.receipt_recomputes is False

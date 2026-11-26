@@ -8,10 +8,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import os
+import re
 import shlex
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -25,6 +29,7 @@ from itself import (
     ActorType,
     Authority,
     AuthorityType,
+    BundleValidator,
     ClaimStatus,
     ClaimType,
     DecisionDisposition,
@@ -33,6 +38,7 @@ from itself import (
     EvidenceBundleBuilder,
     EvidenceBundleFile,
     EvidenceBundleFileRole,
+    EvidenceBundleValidator,
     EvidenceRelation,
     EvidenceRelationType,
     EvidenceType,
@@ -45,6 +51,7 @@ from itself import (
     TestCost,
     TestDesign,
     TestStatus,
+    ValidationPolicy,
     VerdictOutcome,
     artifact_reference_record,
     canonical_bundle_json,
@@ -63,9 +70,29 @@ CHECK_ARTIFACT_PATH: Final = "artifacts/check-result.json"
 CLAIM_ID: Final = "claim-agent-change-check"
 EVIDENCE_ID: Final = "evidence-ci-check"
 VERDICT_ID: Final = "verdict-agent-change-check"
+OPERATOR_ACTOR_ID: Final = "ci-check-runner"
+EVALUATOR_ACTOR_ID: Final = "ci-assurance-policy"
+# The runner's policy actor is the only one it trusts to settle the claim, and
+# it approves an action only on a claim that is supported when it decides.
+VALIDATION_POLICY: Final = ValidationPolicy(
+    trusted_authorizers=(EVALUATOR_ACTOR_ID,),
+    require_supported_reliance=True,
+)
 MAX_ASSERTION_BYTES: Final = 64 * 1024
 MAX_COMMAND_ARGUMENTS: Final = 128
 MAX_COMMAND_BYTES: Final = 32 * 1024
+# GitHub Actions workflow-command files. A process that can write them can set
+# later steps' environment, outputs, path, state, and job summary, so the
+# repository-owned check runs without them.
+WORKFLOW_COMMAND_FILES: Final = frozenset(
+    {
+        "GITHUB_ENV",
+        "GITHUB_OUTPUT",
+        "GITHUB_PATH",
+        "GITHUB_STATE",
+        "GITHUB_STEP_SUMMARY",
+    }
+)
 
 
 class AssertionFormatError(ValueError):
@@ -143,6 +170,9 @@ def _load_assertion(path: Path) -> tuple[ModelAssertion, bytes]:
         )
     except json.JSONDecodeError as error:
         raise AssertionFormatError(f"{path} is not valid JSON: {error}") from error
+    except RecursionError:
+        # Exit 1 is the gate's rejection, so a parser crash must not reach it.
+        raise AssertionFormatError(f"{path} is nested too deeply to parse") from None
     if not isinstance(value, dict):
         raise AssertionFormatError(f"{path} must contain one JSON object")
 
@@ -210,6 +240,14 @@ def _command(arguments: Sequence[str]) -> tuple[str, ...]:
     return command
 
 
+def _check_environment() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in WORKFLOW_COMMAND_FILES
+    }
+
+
 def _execute(command: tuple[str, ...], timeout_seconds: float) -> CheckObservation:
     started_at = datetime.now(UTC)
     started_ns = time.monotonic_ns()
@@ -222,8 +260,15 @@ def _execute(command: tuple[str, ...], timeout_seconds: float) -> CheckObservati
             check=False,
             shell=False,
             timeout=timeout_seconds,
+            env=_check_environment(),
         )
-        observed_exit_code = completed.returncode
+        # A negative return code names the signal that ended the process,
+        # which therefore produced no exit code.
+        if completed.returncode < 0:
+            test_status = TestStatus.FAILED
+            execution_failure = "terminated_by_signal"
+        else:
+            observed_exit_code = completed.returncode
     except subprocess.TimeoutExpired:
         test_status = TestStatus.FAILED
         execution_failure = "timeout"
@@ -252,7 +297,14 @@ def _execute(command: tuple[str, ...], timeout_seconds: float) -> CheckObservati
 def _outcome(
     assertion: ModelAssertion,
     observation: CheckObservation,
+    passing_exit_code: int,
 ) -> AssuranceOutcome:
+    """Judge the assertion by its prediction and the action by repository policy.
+
+    A correct prediction supports the claim whatever code it predicts, but only
+    the repository's passing exit code approves the action.
+    """
+
     if observation.observed_exit_code is None:
         return AssuranceOutcome(
             relation=EvidenceRelationType.CONTEXTUALIZES,
@@ -266,6 +318,20 @@ def _outcome(
             ),
         )
     if observation.observed_exit_code == assertion.expected_exit_code:
+        if observation.observed_exit_code != passing_exit_code:
+            return AssuranceOutcome(
+                relation=EvidenceRelationType.SUPPORTS,
+                verdict=VerdictOutcome.SUPPORTED,
+                claim_status=ClaimStatus.SUPPORTED,
+                disposition=DecisionDisposition.REJECTED,
+                gate_exit_code=1,
+                rationale=(
+                    "The repository-owned check returned the exit code declared "
+                    "by the model assertion, so the assertion is supported, but "
+                    "that is not the repository's passing exit code, so the "
+                    "action is rejected."
+                ),
+            )
         return AssuranceOutcome(
             relation=EvidenceRelationType.SUPPORTS,
             verdict=VerdictOutcome.SUPPORTED,
@@ -274,7 +340,8 @@ def _outcome(
             gate_exit_code=0,
             rationale=(
                 "The repository-owned check returned the exit code declared "
-                "by the model assertion."
+                "by the model assertion, which is the repository's passing "
+                "exit code."
             ),
         )
     return AssuranceOutcome(
@@ -352,13 +419,13 @@ def _build_ledger(
         implementation_ref=model_implementation,
     )
     operator = Actor(
-        actor_id="ci-check-runner",
+        actor_id=OPERATOR_ACTOR_ID,
         actor_type=ActorType.SOFTWARE,
         role=ActorRole.OPERATOR,
         implementation_ref="itself-cookbook-agent-change-gate@1",
     )
     evaluator = Actor(
-        actor_id="ci-assurance-policy",
+        actor_id=EVALUATOR_ACTOR_ID,
         actor_type=ActorType.SOFTWARE,
         role=ActorRole.EVALUATOR,
         implementation_ref="itself-cookbook-exit-code-policy@1",
@@ -525,7 +592,28 @@ def _build_ledger(
             public_rationale=outcome.rationale,
         ),
     )
-    return Ledger(records)
+    return Ledger(records, validator=BundleValidator(policy=VALIDATION_POLICY))
+
+
+def _escaped_line(text: str) -> str:
+    """Escape every control or separator character so text stays on one line."""
+
+    return "".join(
+        f"\\u{ord(character):04x}"
+        if unicodedata.category(character) in {"Cc", "Zl", "Zp"}
+        else character
+        for character in text
+    )
+
+
+def _code_span(text: str) -> str:
+    """Render untrusted text as one Markdown code span that adds no structure."""
+
+    line = _escaped_line(text)
+    longest_run = max((len(run) for run in re.findall(r"`+", line)), default=0)
+    fence = "`" * (longest_run + 1)
+    # CommonMark strips one space from each side of a padded code span.
+    return f"{fence} {line} {fence}"
 
 
 def _summary(
@@ -535,6 +623,7 @@ def _summary(
     source_revision: str,
     observation: CheckObservation,
     outcome: AssuranceOutcome,
+    passing_exit_code: int,
     bundle_id: str,
 ) -> str:
     observed = (
@@ -548,11 +637,13 @@ def _summary(
             "",
             f"- Decision: `{outcome.disposition.value}`",
             f"- Assertion state: `{outcome.claim_status.value}`",
-            f"- Model assertion: {assertion.text}",
+            # The assertion is model output, which must not add summary lines.
+            f"- Model assertion: {_code_span(assertion.text)}",
             f"- External check: {check_name}",
             f"- Command: `{shlex.join(observation.command)}`",
             f"- Expected exit code: `{assertion.expected_exit_code}`",
             f"- Observed exit code: `{observed}`",
+            f"- Passing exit code: `{passing_exit_code}`",
             f"- Source revision: `{source_revision}`",
             f"- Evidence bundle: `{bundle_id}`",
             "",
@@ -573,6 +664,7 @@ def _write_outputs(
     model_implementation: str | None,
     observation: CheckObservation,
     outcome: AssuranceOutcome,
+    passing_exit_code: int,
 ) -> str:
     if output.exists() or output.is_symlink():
         raise FileExistsError(f"output path already exists: {output}")
@@ -594,7 +686,9 @@ def _write_outputs(
         outcome=outcome,
         result_content=result_content,
     )
-    verified = EvidenceBundleBuilder().build(
+    verified = EvidenceBundleBuilder(
+        validator=EvidenceBundleValidator(policy=VALIDATION_POLICY)
+    ).build(
         output / "bundle",
         ledger=ledger,
         title=f"Agent-change assurance: {check_name}",
@@ -634,6 +728,7 @@ def _write_outputs(
         source_revision=source_revision,
         observation=observation,
         outcome=outcome,
+        passing_exit_code=passing_exit_code,
         bundle_id=bundle_id,
     )
     (output / "summary.md").write_text(summary, encoding="utf-8")
@@ -649,8 +744,22 @@ def _write_outputs(
 
 def _positive_float(value: str) -> float:
     parsed = float(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be greater than zero")
+    # NaN compares false with everything and infinity never expires, so either
+    # would silently disable the timeout.
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return parsed
+
+
+def _exit_code(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "must be an integer from 0 through 255"
+        ) from error
+    if not 0 <= parsed <= 255:
+        raise argparse.ArgumentTypeError("must be an integer from 0 through 255")
     return parsed
 
 
@@ -666,6 +775,15 @@ def _parser() -> argparse.ArgumentParser:
         "--timeout-seconds",
         type=_positive_float,
         default=900.0,
+    )
+    parser.add_argument(
+        "--passing-exit-code",
+        type=_exit_code,
+        default=0,
+        help=(
+            "the check's exit code that repository policy treats as passing; "
+            "only this code can approve the action (default: 0)"
+        ),
     )
     parser.add_argument(
         "command",
@@ -686,8 +804,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = cast(Path, args.output)
         if output.exists() or output.is_symlink():
             raise FileExistsError(f"output path already exists: {output}")
+        passing_exit_code = cast(int, args.passing_exit_code)
         observation = _execute(command, cast(float, args.timeout_seconds))
-        outcome = _outcome(assertion, observation)
+        outcome = _outcome(assertion, observation, passing_exit_code)
         bundle_id = _write_outputs(
             output=output,
             assertion=assertion,
@@ -698,6 +817,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             model_implementation=cast(str | None, args.model_implementation),
             observation=observation,
             outcome=outcome,
+            passing_exit_code=passing_exit_code,
         )
     except (AssertionFormatError, FileExistsError, OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

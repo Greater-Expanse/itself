@@ -13,8 +13,10 @@ from collections.abc import Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final, cast
 
+from experiments._study_contracts import V2_CONTRACT, StudyContract
 from experiments.comparison_bundles import (
     ComparisonBundleValidator,
     VerifiedComparisonBundle,
@@ -27,6 +29,7 @@ from itself._filesystem import write_file_exclusive
 
 from .cache_key_comparison import ComparisonCondition, build_comparison_request
 from .cache_key_comparison_study import (
+    CURRENT_STUDY_VERSIONS,
     MAX_OUTPUT_TOKENS,
     REPLICATE_COUNT,
     STUDY_TARGETS_BY_VERSION,
@@ -39,6 +42,10 @@ from .cache_key_comparison_study import (
 from .cache_key_omission import CaseEnvironment, Mechanism
 
 REPORT_VERSION: Final = "0.3.0"
+# A report on a v2 study counts runner failures apart from adapter failures
+# and records the v2 design settings, so its JSON shape has its own version.
+V2_REPORT_VERSION: Final = "0.4.0"
+_RUNNER_FAILED: Final = "runner_failed"
 
 _BASE_VALID_METRICS: Final = (
     "model_primary_is_ground_truth",
@@ -140,17 +147,24 @@ def _failed_projection(
 ) -> tuple[JsonObject, JsonObject | None]:
     report = verified.attempt_report
     failure = _object(report["failure"], "failure")
+    outcome = _string(verified.bundle_manifest["outcome"], "outcome")
+    failure_summary: JsonObject = {
+        "kind": failure["kind"],
+        "retryable": failure["retryable"],
+        "status_code": failure["status_code"],
+    }
+    if outcome == _RUNNER_FAILED:
+        # Only the exception type is reported: its message stays in the
+        # bundle, since a harness error may quote part of a model response.
+        error = _object(failure["error"], "failure.error")
+        failure_summary["error_type"] = error["type"]
     projection: JsonObject = {
         "target_id": target_id,
         "replicate_index": verified.bundle_manifest["replicate_index"],
         "bundle_id": verified.bundle_manifest["bundle_id"],
-        "outcome": "adapter_failed",
+        "outcome": outcome,
         "failed_attempt_id": report["attempt_id"],
-        "failure": {
-            "kind": failure["kind"],
-            "retryable": failure["retryable"],
-            "status_code": failure["status_code"],
-        },
+        "failure": failure_summary,
     }
     artifact_value = failure.get("response_artifact")
     if artifact_value is None:
@@ -188,10 +202,12 @@ def _scorecard(
 
 def _failure_counts(
     observations: Sequence[JsonObject],
+    *,
+    outcome: str = "adapter_failed",
 ) -> list[JsonValue]:
     counts: Counter[tuple[str, str]] = Counter()
     for observation in observations:
-        if observation["outcome"] != "adapter_failed":
+        if observation["outcome"] != outcome:
             continue
         failure = _object(observation["failure"], "failure")
         counts[
@@ -212,6 +228,42 @@ def _failure_counts(
 
 def _count_true(scorecards: Sequence[JsonObject], field: str) -> int:
     return sum(_boolean(scorecard[field], field) for scorecard in scorecards)
+
+
+def _outcome_count(observations: Sequence[JsonObject], outcome: str) -> int:
+    return sum(observation["outcome"] == outcome for observation in observations)
+
+
+def _failure_fields(
+    observations: Sequence[JsonObject],
+    *,
+    records_runner_failures: bool,
+) -> JsonObject:
+    """Return the failure counts of a summary or of the totals.
+
+    A v1 study can stop only on an adapter failure.  A v2 study also records
+    runner failures, which are counted apart: ``failed_replicates`` and
+    ``failures`` then still describe adapter failures alone.
+    """
+
+    fields: JsonObject = {
+        "failed_replicates": (
+            _outcome_count(observations, "adapter_failed")
+            if records_runner_failures
+            else len(observations) - _outcome_count(observations, "completed")
+        ),
+        "failures": _failure_counts(observations),
+    }
+    if records_runner_failures:
+        fields["runner_failed_replicates"] = _outcome_count(
+            observations,
+            _RUNNER_FAILED,
+        )
+        fields["runner_failures"] = _failure_counts(
+            observations,
+            outcome=_RUNNER_FAILED,
+        )
+    return fields
 
 
 def _target_summary(
@@ -308,8 +360,10 @@ def _target_summary(
         "checkpoint_status": target.checkpoint_status,
         "registered_replicates": REPLICATE_COUNT,
         "completed_replicates": len(completed),
-        "failed_replicates": len(observations) - len(completed),
-        "failures": _failure_counts(observations),
+        **_failure_fields(
+            observations,
+            records_runner_failures=target.contract is V2_CONTRACT,
+        ),
         "completed_metrics": metrics,
     }
 
@@ -319,12 +373,13 @@ def _totals(
     target_summaries: Sequence[JsonObject],
     *,
     prediction_metrics_valid: bool = False,
+    records_runner_failures: bool = False,
 ) -> JsonObject:
-    completed = sum(
-        observation["outcome"] == "completed" for observation in observations
+    completed = _outcome_count(observations, "completed")
+    failure_fields = _failure_fields(
+        observations,
+        records_runner_failures=records_runner_failures,
     )
-    failures = len(observations) - completed
-    failure_counts = _failure_counts(observations)
     completed_metrics = [
         _object(summary["completed_metrics"], "completed_metrics")
         for summary in target_summaries
@@ -332,9 +387,10 @@ def _totals(
     totals: JsonObject = {
         "registered_replicates": len(observations),
         "completed_replicates": completed,
-        "failed_replicates": failures,
+        "failed_replicates": failure_fields.pop("failed_replicates"),
         "completed_condition_branches": completed * len(ComparisonCondition),
-        "failures": failure_counts,
+        "failures": failure_fields.pop("failures"),
+        **failure_fields,
         "narrative_primary_is_ground_truth": sum(
             _integer(
                 metrics["narrative_primary_is_ground_truth"],
@@ -462,6 +518,155 @@ def _provider_control(
     }
 
 
+def _stream(targets: Sequence[ComparisonStudyTarget]) -> bool:
+    modes = {target.stream for target in targets}
+    if len(modes) != 1:
+        raise ValueError("study targets do not share one streaming mode")
+    return modes.pop()
+
+
+def _contract(targets: Sequence[ComparisonStudyTarget]) -> StudyContract:
+    contracts = {target.contract for target in targets}
+    if len(contracts) != 1:
+        raise ValueError("study targets do not share one study contract")
+    return contracts.pop()
+
+
+def _v2_design(targets: Sequence[ComparisonStudyTarget]) -> JsonObject:
+    """Return the v2 settings that a v2 study's targets must share."""
+
+    deadlines = {target.deadline_seconds for target in targets}
+    usage_modes = {target.stream_include_usage for target in targets}
+    shipped_adapters = {target.shipped_adapter for target in targets}
+    if len(deadlines) != 1 or len(usage_modes) != 1 or len(shipped_adapters) != 1:
+        raise ValueError(
+            "v2 study targets do not share one deadline, stream-usage "
+            "request, and shipped client"
+        )
+    shipped_adapter = shipped_adapters.pop()
+    if shipped_adapter is None:
+        raise ValueError("a v2 study target must pin its shipped client")
+    return {
+        "deadline_seconds": deadlines.pop(),
+        "stream_include_usage": usage_modes.pop(),
+        "shipped_adapter": shipped_adapter.to_json_object(),
+    }
+
+
+def _design(targets: Sequence[ComparisonStudyTarget]) -> JsonObject:
+    """Return the registered design that one study version's targets share."""
+
+    design: JsonObject = {
+        "target_count": len(targets),
+        "replicates_per_target": REPLICATE_COUNT,
+        "temperature": TEMPERATURE,
+        "top_p": TOP_P,
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "timeout_seconds": TIMEOUT_SECONDS,
+        "stream": _stream(targets),
+        "automatic_retry": False,
+        "repair": False,
+        "fallback": False,
+        "provider_control": _provider_control(targets),
+    }
+    if _contract(targets) is V2_CONTRACT:
+        design.update(_v2_design(targets))
+    return design
+
+
+def _limitations(
+    targets: Sequence[ComparisonStudyTarget],
+    *,
+    study_version: str,
+    prediction_metrics_valid: bool,
+) -> list[JsonValue]:
+    """Return the report limitations, naming each hosted-only model family."""
+
+    hosted_only_families = dict.fromkeys(
+        target.model_family
+        for target in targets
+        if target.checkpoint_status == "hosted_only"
+    )
+    return [
+        "This report describes one transparent diagnosis problem with a fixed set of possible causes.",
+        "Five runs per model are too few to estimate how that model behaves in general.",
+        "Provider and adapter failures record execution behavior; they are not scored as wrong diagnoses.",
+        "Behavioral counts use only runs in which both requested model outputs satisfied their contracts.",
+        *(
+            []
+            if prediction_metrics_valid
+            else [
+                "Prediction correctness and resulting verdict states are invalidated by a representation mismatch."
+            ]
+        ),
+        *(
+            [
+                "V3 stopped on an attempt-profile receipt defect; no v3 output is reused in v4."
+            ]
+            if study_version == "4"
+            else []
+        ),
+        *(
+            [
+                "V5 fixes one provider as controlled infrastructure; provider identity is provenance only.",
+                "No v4 model output or scorecard is reused in v5.",
+            ]
+            if study_version == "5"
+            else []
+        ),
+        *(
+            [
+                (
+                    "V6 fixes one provider as controlled infrastructure; provider "
+                    "identity is provenance only."
+                ),
+                (
+                    "V6 differs from v5 in provider, in one model, and in study "
+                    "contract; the two are not pooled or compared."
+                ),
+                "No model output or scorecard from an earlier version is reused in v6.",
+                (
+                    "Harness failures after a request was sent are counted apart "
+                    "from provider and model-output failures; they are not scored "
+                    "as wrong diagnoses."
+                ),
+            ]
+            if study_version == "6"
+            else []
+        ),
+        *(
+            [
+                (
+                    "V7 fixes one provider as controlled infrastructure; provider "
+                    "identity is provenance only."
+                ),
+                (
+                    "V7 repeats v6's design with a different test-plan output "
+                    "profile; v5, v6, and v7 are not pooled or compared."
+                ),
+                (
+                    "V7's test-plan schema omits the uniqueItems keyword; its "
+                    "prompt states the requirement, and a plan that repeats an "
+                    "identifier is refused as an assertion_contract failure."
+                ),
+                "No model output or scorecard from an earlier version is reused in v7.",
+                (
+                    "Harness failures after a request was sent are counted apart "
+                    "from provider and model-output failures; they are not scored "
+                    "as wrong diagnoses."
+                ),
+            ]
+            if study_version == "7"
+            else []
+        ),
+        *(
+            f"{family} is a hosted-only comparator, not an open-weight result."
+            for family in hosted_only_families
+        ),
+        "No composite truth, trust, or reasoning score is calculated.",
+    ]
+
+
 def _registered_manifest_time(
     target: ComparisonStudyTarget,
     manifest: JsonObject,
@@ -580,29 +785,21 @@ def build_comparison_report(
     target_summary_values: list[JsonValue] = [summary for summary in target_summaries]
     observation_values: list[JsonValue] = [observation for observation in observations]
     anomaly_values: list[JsonValue] = [anomaly for anomaly in anomalies]
+    records_runner_failures = _contract(targets) is V2_CONTRACT
     return {
-        "report_version": REPORT_VERSION,
+        "report_version": (
+            V2_REPORT_VERSION if records_runner_failures else REPORT_VERSION
+        ),
         "study_version": study_version,
         "case_id": request.case_id,
         "registered_at": registered_at,
         "reported_at": _timestamp(reported_at),
-        "design": {
-            "target_count": len(targets),
-            "replicates_per_target": REPLICATE_COUNT,
-            "temperature": TEMPERATURE,
-            "top_p": TOP_P,
-            "max_output_tokens": MAX_OUTPUT_TOKENS,
-            "timeout_seconds": TIMEOUT_SECONDS,
-            "stream": True,
-            "automatic_retry": False,
-            "repair": False,
-            "fallback": False,
-            "provider_control": _provider_control(targets),
-        },
+        "design": _design(targets),
         "totals": _totals(
             observations,
             target_summaries,
             prediction_metrics_valid=prediction_metrics_valid,
+            records_runner_failures=records_runner_failures,
         ),
         "metric_validity": _metric_validity(
             study_version=study_version,
@@ -611,36 +808,11 @@ def build_comparison_report(
         "target_summaries": target_summary_values,
         "replicates": observation_values,
         "metadata_anomalies": anomaly_values,
-        "limitations": [
-            "This report describes one transparent diagnosis problem with a fixed set of possible causes.",
-            "Five runs per model are too few to estimate how that model behaves in general.",
-            "Provider and adapter failures record execution behavior; they are not scored as wrong diagnoses.",
-            "Behavioral counts use only runs in which both requested model outputs satisfied their contracts.",
-            *(
-                []
-                if prediction_metrics_valid
-                else [
-                    "Prediction correctness and resulting verdict states are invalidated by a representation mismatch."
-                ]
-            ),
-            *(
-                [
-                    "V3 stopped on an attempt-profile receipt defect; no v3 output is reused in v4."
-                ]
-                if study_version == "4"
-                else []
-            ),
-            *(
-                [
-                    "V5 fixes one provider as controlled infrastructure; provider identity is provenance only.",
-                    "No v4 model output or scorecard is reused in v5.",
-                ]
-                if study_version == "5"
-                else []
-            ),
-            "Qwen 3.7 Plus is a hosted-only comparator, not an open-weight result.",
-            "No composite truth, trust, or reasoning score is calculated.",
-        ],
+        "limitations": _limitations(
+            targets,
+            study_version=study_version,
+            prediction_metrics_valid=prediction_metrics_valid,
+        ),
     }
 
 
@@ -653,9 +825,15 @@ def _fraction(summary: JsonObject, field: str) -> str:
 
 def _failure_label(summary: JsonObject) -> str:
     failures = _objects(summary["failures"], "failures")
-    if not failures:
+    # Only a v2 report has runner failures; they are labelled apart.
+    runner_failures = _objects(summary.get("runner_failures", []), "runner_failures")
+    if not failures and not runner_failures:
         return "none"
-    return "; ".join(_failure_description(failure) for failure in failures)
+    descriptions = [_failure_description(failure) for failure in failures]
+    descriptions.extend(
+        f"harness: {_failure_description(failure)}" for failure in runner_failures
+    )
+    return "; ".join(descriptions)
 
 
 def _failure_description(failure: JsonObject) -> str:
@@ -675,9 +853,29 @@ def _failure_description(failure: JsonObject) -> str:
             "endpoint rejected the request because its rate limit was reached",
             "endpoint rejected the requests because its rate limit was reached",
         ),
+        "http_status": (
+            "endpoint refused the request with an HTTP error status",
+            "endpoint refused the requests with an HTTP error status",
+        ),
         "response_schema": (
             "response did not match the required JSON shape",
             "responses did not match the required JSON shape",
+        ),
+        "response_usage": (
+            "response did not report valid token usage",
+            "responses did not report valid token usage",
+        ),
+        "transport": (
+            "request failed in transport, timed out, or passed its deadline",
+            "requests failed in transport, timed out, or passed their deadline",
+        ),
+        "runner_error": (
+            "harness failed after the request was sent",
+            "harness failed after the requests were sent",
+        ),
+        "interrupted": (
+            "run was interrupted after the request was sent",
+            "runs were interrupted after the requests were sent",
         ),
     }
     singular_failure, plural_failure = failure_labels.get(
@@ -696,6 +894,72 @@ def _status_counts_label(value: JsonValue) -> str:
     return ", ".join(
         f"{_integer(count, f'ground_truth_final_statuses.{status}')} {status}"
         for status, count in sorted(statuses.items())
+    )
+
+
+# How each provider-controlled study version was controlled, in its report.
+_CONTROLLED_STUDY_TEXT: Final = MappingProxyType(
+    {
+        "5": (
+            "V5 fixes one provider and one compatible base endpoint across "
+            "all three model targets. Calls are executed round-robin by "
+            "replicate index to distribute temporal serving variation. "
+            "Provider identity is not a behavioral metric, and no v4 "
+            "model output or scorecard is reused."
+        ),
+        "6": (
+            "V6 fixes one provider and one compatible base endpoint across all three "
+            "model targets. Calls are executed round-robin by replicate index to "
+            "distribute temporal serving variation. Provider identity is not a "
+            "behavioral metric, and no model output or scorecard from an earlier "
+            "version is reused. V6 differs from v5 in provider, in one model, and in "
+            "study contract, so the two results are not pooled or compared."
+        ),
+        "7": (
+            "V7 fixes one provider and one compatible base endpoint across all three "
+            "model targets. Calls are executed round-robin by replicate index to "
+            "distribute temporal serving variation. Provider identity is not a "
+            "behavioral metric, and no model output or scorecard from an earlier "
+            "version is reused. V7 repeats v6's design with a test-plan output "
+            "profile whose schema omits the uniqueItems keyword, so v5, v6, and v7 "
+            "results are not pooled or compared."
+        ),
+    }
+)
+
+
+def _seconds_label(value: JsonValue) -> str:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("deadline_seconds must be a number or null")
+    return f"{value:g}"
+
+
+def _v2_design_text(study_version: str, design: JsonObject) -> str:
+    """State the study contract v2 settings that a report's design carries."""
+
+    deadline = design["deadline_seconds"]
+    deadline_clause = (
+        "no request had a deadline"
+        if deadline is None
+        else f"every request had a {_seconds_label(deadline)}-second deadline"
+    )
+    usage_clause = (
+        "every stream asked the provider to report its token usage"
+        if _boolean(design["stream_include_usage"], "stream_include_usage")
+        else "no stream asked the provider to report its token usage"
+    )
+    shipped = _object(design["shipped_adapter"], "shipped_adapter")
+    adapter_id = _string(shipped["adapter_id"], "shipped_adapter.adapter_id")
+    adapter_version = _string(
+        shipped["adapter_version"],
+        "shipped_adapter.adapter_version",
+    )
+    return (
+        f"V{study_version} ran under study contract v2: {deadline_clause}, "
+        f"{usage_clause}, and every manifest pinned Itself's shipped client, "
+        f"`{adapter_id}` `{adapter_version}`. A failure of the harness after a "
+        "request was sent is counted apart from provider and model-output "
+        "failures and is not scored as a wrong diagnosis."
     )
 
 
@@ -729,6 +993,12 @@ def render_markdown(report: JsonObject) -> str:
     completed = _integer(totals["completed_replicates"], "completed_replicates")
     registered = _integer(totals["registered_replicates"], "registered_replicates")
     failed = registered - completed
+    # Only a v2 report counts runner failures; with none, the text is unchanged.
+    runner_failed = _integer(
+        totals.get("runner_failed_replicates", 0),
+        "runner_failed_replicates",
+    )
+    adapter_failed = failed - runner_failed
     target_count = len(summaries)
     target_word = (
         ("model" if target_count == 1 else "models")
@@ -765,12 +1035,24 @@ def render_markdown(report: JsonObject) -> str:
             "We scheduled that two-call, three-path procedure "
             f"{registered} times across {target_count} {target_word}."
         )
+    stopped_sentence = (
+        (
+            f"Of the other {failed}, {adapter_failed} stopped on an explicit "
+            f"provider or model-output failure and {runner_failed} on a failure "
+            "of the harness itself after a request was sent."
+        )
+        if runner_failed
+        else (
+            f"The other {failed} stopped on an explicit provider or "
+            "model-output failure."
+        )
+    )
     completion_sentence = (
         (
             f"Of those planned runs, {completed} completed both model calls and "
-            f"all three paths. The other {failed} stopped on an explicit provider or "
-            "model-output failure. Itself preserved what happened and did not "
-            "retry, rewrite a response, or substitute a replacement run."
+            f"all three paths. {stopped_sentence} Itself preserved what happened "
+            "and did not retry, rewrite a response, or substitute a replacement "
+            "run."
         )
         if failed
         else (
@@ -786,7 +1068,7 @@ def render_markdown(report: JsonObject) -> str:
         "represented predicted outcomes differently"
     )
     lines = [f"# Case 001 comparison study v{study_version}"]
-    if study_version in {"2", "4"}:
+    if study_version not in CURRENT_STUDY_VERSIONS:
         lines.extend(
             [
                 "",
@@ -941,11 +1223,31 @@ def render_markdown(report: JsonObject) -> str:
             "integration result instead of being silently converted into "
             "valid-looking data."
         )
-        if failed
+        if adapter_failed
         else ("No run crossed the model-output contract boundary with invalid data.")
     )
+    if runner_failed:
+        incomplete_run_context += (
+            " A failure of the harness after a request was sent was recorded as "
+            "its own outcome, with any captured response, and not as a provider "
+            "or model-output failure."
+        )
     failure_observation = (
         (
+            f"- {adapter_failed} {'run' if adapter_failed == 1 else 'runs'} "
+            "stopped on provider or model-output "
+            f"failures and {runner_failed} on harness failures after a request "
+            "was sent. Those failures remain visible, are counted separately, "
+            "and are not counted as wrong diagnoses or replaced with new samples."
+        )
+        if runner_failed
+        else (
+            "- 1 run stopped on a provider or model-output failure. That "
+            "failure remains visible and is not counted as a wrong diagnosis or "
+            "replaced with a new sample."
+        )
+        if failed == 1
+        else (
             f"- {failed} runs stopped on provider or model-output failures. Those "
             "failures remain visible and are not counted as wrong diagnoses or "
             "replaced with new samples."
@@ -1028,7 +1330,7 @@ def render_markdown(report: JsonObject) -> str:
                 "",
                 (
                     "## How the experiment was controlled"
-                    if study_version == "5"
+                    if study_version in _CONTROLLED_STUDY_TEXT
                     else "## How the measurement was corrected"
                 ),
                 "",
@@ -1040,23 +1342,20 @@ def render_markdown(report: JsonObject) -> str:
                     "parser or post-hoc reinterpretation."
                 ),
                 "",
-                (
-                    "V5 fixes one provider and one compatible base endpoint across "
-                    "all three model targets. Calls are executed round-robin by "
-                    "replicate index to distribute temporal serving variation. "
-                    "Provider identity is not a behavioral metric, and no v4 "
-                    "model output or scorecard is reused."
-                    if study_version == "5"
-                    else (
+                _CONTROLLED_STUDY_TEXT.get(
+                    study_version,
+                    (
                         "V3 stopped after ten registered replicates when "
                         "failed-attempt receipts were found not to bind the "
                         "manifest's structured profile. The binding validator was "
                         "corrected before v4 registration, and no v3 output was "
                         "reused."
-                    )
+                    ),
                 ),
             ]
         )
+        if isinstance(design_value, dict) and "shipped_adapter" in design_value:
+            lines.extend(["", _v2_design_text(study_version, design_value)])
     else:
         lines.extend(
             [
@@ -1221,6 +1520,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "json_output": cast(str, args.json_output),
                 "markdown_output": cast(str, args.markdown_output),
                 "registered_replicates": totals["registered_replicates"],
+                **(
+                    {"runner_failed_replicates": totals["runner_failed_replicates"]}
+                    if "runner_failed_replicates" in totals
+                    else {}
+                ),
             },
             indent=2,
             sort_keys=True,

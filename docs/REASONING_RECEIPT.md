@@ -108,7 +108,16 @@ most 128 MiB; these are the default evidence-bundle ceilings. `receipt generate
 When a source ledger declares external references, pass the same repeated
 `--external-ref ID` arguments during generation and ledger-bound validation.
 Both commands also accept repeated `--trusted-authorizer ID` arguments, which
-refuse evidence-backed transitions authorized by any other declared actor id;
-see the [protocol-record guide](PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions).
-`receipt validate` checks them while it replays the ledger, so it accepts the
-option only together with `--ledger`.
+refuse transitions into or out of an evidence-backed status that any other
+declared actor id authorizes, and an id declared with two actor types; see the
+[protocol-record guide](PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions).
+They accept `--require-supported-reliance` and `--as-of TIMESTAMP` as well; see
+[supported reliance and unexpired support](PROTOCOL_RECORDS.md#require-supported-reliance-and-unexpired-support).
+`receipt validate` checks all of these while it replays the ledger, so it
+accepts them only together with `--ledger`.
+
+`receipt generate` without `--output`, like `ledger replay` and `ledger summary`
+with `--format json`, writes JSON to standard output with DEL, the C1 control
+characters, U+2028, and U+2029 escaped as `\uXXXX`. The parsed value is the
+same, and other non-ASCII text is printed as it is. A receipt written with
+`--output` keeps the store's canonical bytes.

@@ -48,6 +48,20 @@ model calls already selected the known cause in every completed run.
 Read the [current result report](../results/current/2026-07-24-case-001-comparison-v5.md)
 for the complete observations and limitations.
 
+The November 2026 v6 study ran the same procedure through a different provider
+under study contract v2. Five of 15 runs completed, all for one model; the
+provider refused the test-plan request for the other two. Its
+[report](../results/current/2026-11-26-case-001-comparison-v6.md) is not
+pooled with or compared to v5.
+
+The v7 study, also from November 2026, repeated v6 with a test-plan schema the
+provider accepts for all three models. Fourteen of 15 runs completed, and one
+stopped on a test plan that broke the diagnosis contract. In every completed
+run the application kept the model answer provisional until the external check
+ran and accepted no unsupported answer as confirmed. Its
+[report](../results/current/2026-11-26-case-001-comparison-v7.md) is not
+pooled with or compared to v5 or v6.
+
 ## Explore further
 
 - [Deterministic case design](DESIGN.md) explains the workflow, competing
@@ -56,5 +70,9 @@ for the complete observations and limitations.
   treatments, controls, measurements, and limitations.
 - [`manifests/v5/`](manifests/v5/) contains the exact preregistered July 2026
   model and generation configurations.
+- [`manifests/v6/`](manifests/v6/) contains the exact preregistered November
+  2026 configurations, under study contract v2.
+- [`manifests/v7/`](manifests/v7/) contains the exact preregistered v7
+  configurations, which repeat v6's with a different test-plan output profile.
 - [`../cases/`](../cases/) contains the executable environment, runners, and
   report generator.

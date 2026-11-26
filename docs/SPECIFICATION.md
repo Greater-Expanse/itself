@@ -107,34 +107,27 @@ Authority describes the issuer and basis of a record. It is not a universal rank
 
 ## 6. Epistemic states
 
-```text
-proposed
-    ├──→ testable
-    ├──→ blocked
-    └──→ withdrawn
+A status transition MUST follow one of these 37 edges. Any other pair of
+statuses, including a status to itself, is not allowed.
 
-testable
-    ├──→ under_test
-    ├──→ blocked
-    └──→ withdrawn
+| From | Allowed next statuses |
+| --- | --- |
+| `proposed` | `testable`, `blocked`, `withdrawn` |
+| `testable` | `under_test`, `blocked`, `withdrawn` |
+| `blocked` | `testable`, `withdrawn` |
+| `under_test` | `supported`, `refuted`, `inconclusive`, `mixed_evidence`, `blocked` |
+| `supported` | `corroborated_within_scope`, `under_test`, `mixed_evidence`, `stale`, `invalidated` |
+| `refuted` | `under_test`, `stale`, `invalidated` |
+| `inconclusive` | `under_test`, `stale`, `invalidated` |
+| `mixed_evidence` | `under_test`, `supported`, `refuted`, `inconclusive`, `stale`, `invalidated` |
+| `corroborated_within_scope` | `under_test`, `mixed_evidence`, `stale`, `invalidated` |
+| `stale` | `under_test`, `invalidated` |
+| `invalidated` | `under_test` |
+| `withdrawn` | none; withdrawal is final |
 
-under_test
-    ├──→ supported
-    ├──→ refuted
-    ├──→ inconclusive
-    └──→ mixed_evidence
-
-supported
-    ├──→ corroborated_within_scope
-    ├──→ under_test
-    ├──→ mixed_evidence
-    ├──→ stale
-    └──→ invalidated
-
-refuted, inconclusive, mixed_evidence,
-corroborated_within_scope, blocked, or stale
-    └──→ may be reopened only through an allowed transition
-```
+`conformance/transitions.json` lists the same edges for conformance runners,
+and both reference runners check every ordered pair of the twelve statuses
+against it.
 
 `corroborated_within_scope` is intentionally scoped. The protocol contains no universal `true` status.
 
@@ -211,12 +204,23 @@ Each record declares its actors' types rather than binding them to an
 identity, so `v0alpha2` validation does not detect one identifier declared as
 a model in one record and as software in another. Deployments that rely on the
 model-authorization rule in section 6 need identity controls outside the
-protocol. The reference SDK's bundle and ledger validators accept a list of the
-actor identifiers a deployment trusts to authorize evidence-backed transitions,
-and they refuse such a transition when its `authorized_by` declares any other
-identifier. The list compares declared identifiers, so it constrains a history
-only when the path that writes records controls which writers emit records
-under the listed identifiers.
+protocol.
+
+The reference SDK's bundle and ledger validators accept an optional validation
+policy for such deployments. The policy is reference-SDK behaviour outside
+`v0alpha2` conformance: it adds no requirement of this specification, a
+conforming validator need not implement it, and without one the reference
+validators accept exactly the histories section 11 accepts. A policy may name
+the actor identifiers a deployment trusts to authorize transitions. The
+validators then refuse a transition into or out of an evidence-backed status
+when its `authorized_by` declares any other identifier, and refuse an
+identifier declared with more than one `actor_type` anywhere in the history.
+The list compares declared identifiers, so it constrains a history only when
+the path that writes records controls which writers emit records under the
+listed identifiers. A policy may also refuse an approved or executed decision
+that relies on a claim not supported or corroborated within scope when the
+decision is recorded, and may refuse, at a stated time, support whose scope or
+current evidence has expired by then.
 
 ## 11. Conformance
 
@@ -292,14 +296,26 @@ mutating in-memory or persisted state. References resolve against that
 candidate history, so records that cite each other arrive in the same batch.
 Records already accepted into an in-memory ledger are private copies that the
 ledger never exposes, so the reference ledger re-checks cross-record integrity
-across the whole history and applies the schema only to new records; the reference store re-validates the
-stored history each time it loads the file. The store writes a replacement
-file in the destination directory and atomically replaces the previous file only
-after validation and file synchronization succeed.
+across the whole history and applies the schema only to new records. The
+reference store re-checks cross-record integrity across the whole stored
+history each time it reads the file. It also decodes the stored records and
+applies the schema to them, unless the same store instance last validated or
+wrote exactly those bytes, identified by their SHA-256; any byte difference
+takes the full path. The store writes a replacement file in the destination
+directory and atomically replaces the previous file only after validation and
+file synchronization succeed, then synchronizes the directory where the
+filesystem supports it. Before it replaces the file, the reference store
+confirms that the path is still the regular file it read, with the same
+device, inode, size, and modification time, or is still absent; otherwise the
+append fails and leaves the other writer's file in place rather than
+discarding its records.
 
 This profile provides deterministic local persistence and failure atomicity for
-a single writer. It does not define concurrent-write coordination,
-cryptographic tamper evidence, remote durability, or database transactions.
+a single writer. The identity check turns most interleaved appends into errors
+instead of lost updates, but it is not a lock: a replacement made between the
+final check and the rename still goes undetected. The profile does not define
+concurrent-write coordination, cryptographic tamper evidence, remote
+durability, or database transactions.
 
 ## 12. Non-goals for `v0alpha2`
 

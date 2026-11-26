@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+import experiments.cases.cache_key_scripted_run as scripted_run
 from experiments.cases.cache_key_diagnostician import (
     CacheKeyFixtureDiagnostician,
     build_cache_key_request,
@@ -233,3 +234,46 @@ def test_external_evidence_can_correct_a_wrong_primary_assertion() -> None:
         ]
         is ClaimStatus.SUPPORTED
     )
+
+
+def _accepted_promotion_stand_in(
+    selected_hypothesis: Mechanism,
+    position: int,
+) -> JsonObject:
+    """Return a record the ledger accepts in place of the premature promotion."""
+
+    del selected_hypothesis
+    created_at = f"2026-07-22T13:00:{position:02d}Z"
+    return {
+        "protocol_version": "0.1.0-alpha.3",
+        "kind": "artifact_reference",
+        "id": "artifact-accepted-promotion-stand-in",
+        "created_at": created_at,
+        "created_by": {
+            "id": "case-001-promotion-policy",
+            "actor_type": "software",
+            "role": "evaluator",
+        },
+        "uri": "artifacts/stand-in.json",
+        "media_type": "application/json",
+        "title": "A record accepted where the promotion should be refused",
+        "digest": {"algorithm": "sha256", "value": "0" * 64},
+        "captured_at": created_at,
+    }
+
+
+def test_an_accepted_premature_promotion_is_counted_and_the_run_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = run_scripted_case()
+    monkeypatch.setattr(
+        scripted_run, "_premature_promotion_record", _accepted_promotion_stand_in
+    )
+
+    result = run_scripted_case()
+
+    assert result.metrics.false_promotion_attempts == 1
+    assert result.metrics.false_promotions_accepted == 1
+    # The run continues from the history it had reached, so the recorded
+    # ledger is the one a correct SDK produces.
+    assert result.ledger.records == expected.ledger.records

@@ -26,3 +26,7 @@ The command verifies that the supplied bundle is internally coherent and has
 not changed relative to its manifest. It does not prove that the producer
 observed reality honestly, that its evaluator was competent, or that the
 declared evidence is sufficient for your policy.
+
+To apply rules of your own at this boundary, add `--trusted-authorizer`,
+`--require-supported-reliance`, or `--as-of`. See
+[Enforce a validation policy](../../README.md#enforce-a-validation-policy).

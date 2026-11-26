@@ -13,6 +13,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final, Protocol, cast
@@ -173,21 +174,28 @@ class EvaluationReportValidationError(ValueError):
     """Raised when an evaluation report violates its versioned contract."""
 
 
+@cache
+def _report_validator() -> _SchemaValidator:
+    """Return the report-schema validator, compiled once per process."""
+
+    value = cast(
+        JsonValue,
+        json.loads(_REPORT_SCHEMA_PATH.read_text(encoding="utf-8")),
+    )
+    if not isinstance(value, dict):
+        raise TypeError("evaluation report schema must contain a JSON object")
+    Draft202012Validator.check_schema(value)
+    return cast(
+        _SchemaValidator,
+        Draft202012Validator(value, format_checker=FormatChecker()),
+    )
+
+
 class EvaluationReportValidator:
     """Validate evaluation reports against the repository contract."""
 
     def __init__(self) -> None:
-        value = cast(
-            JsonValue,
-            json.loads(_REPORT_SCHEMA_PATH.read_text(encoding="utf-8")),
-        )
-        if not isinstance(value, dict):
-            raise TypeError("evaluation report schema must contain a JSON object")
-        Draft202012Validator.check_schema(value)
-        self._validator = cast(
-            _SchemaValidator,
-            Draft202012Validator(value, format_checker=FormatChecker()),
-        )
+        self._validator = _report_validator()
 
     def errors(self, report: JsonValue) -> list[str]:
         """Return stable, human-readable report validation errors."""

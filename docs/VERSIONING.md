@@ -35,18 +35,31 @@ roles, identity derivation, artifact-binding rules, and required files are
 immutable within that version. Bundle-format compatibility is independent of
 the Python builder and validator API versions.
 
+### Inference adapters
+
+Every inference result records the identifier and version of the adapter that
+produced it. The Chat Completions adapter is
+`openai-compatible-chat-completions` `0.4.0`, and the decision-model adapter is
+`systemone-compatible-decisions` `0.2.0`. Both are independent of the Python
+distribution version.
+
 ### Diagnostician exchange
 
-Provider-neutral diagnosis requests and results declare `contract_version`.
-Changes that would make a previously conforming message invalid, or change its
-interpretation, receive a new contract version.
+The research harness under `experiments/`, which is not part of the installed
+package, defines a provider-neutral diagnosis exchange. Its requests and
+results declare `contract_version`. Changes that would make a previously
+conforming message invalid, or change its interpretation, receive a new
+contract version.
 
 Contract `0.2.0` is intentionally incompatible with `0.1.0`. It renames the
 model-output concept from an ambiguous commercial term to **model assertion**:
-Python callers use `DiagnosisAssertion`, `NarrativeAssertion`, and
-`DiagnosisResult.assertion`; JSON messages use the `assertion` property; and
-schema filenames use `*-assertion.schema.json`. No compatibility aliases are
-provided because this remains a pre-1.0 surface.
+the harness's Python callers use `DiagnosisAssertion`, `NarrativeAssertion`,
+and `DiagnosisResult.assertion`; JSON messages use the `assertion` property;
+and schema filenames use `*-assertion.schema.json`. No compatibility aliases
+are provided because this remains a pre-1.0 surface.
+
+The harness's study records are versioned separately, as study contracts v1
+and v2; see the [contracts guide](../experiments/contracts/README.md).
 
 ## Published schema identifiers
 
@@ -92,7 +105,10 @@ A release must:
 3. pass tests, strict type checks, lint, formatting, and package-build checks;
 4. include the schemas, `py.typed` marker, and license in built artifacts;
 5. verify that any published schema line matches the packaged bytes;
-6. use the Git tag `v` followed by the normalized distribution version, such
+6. check the decision-model adapter against the latest hosted Jev, with the
+   model `jev-latest` and its default settings, and name the version it
+   resolved to in the [decision-model guide](DECISION_MODELS.md);
+7. use the Git tag `v` followed by the normalized distribution version, such
    as `v0.2.0`.
 
 Publishing a GitHub release for that tag runs the release workflow. It refuses
