@@ -8,10 +8,16 @@ Itself is an open-source, provider-neutral assurance SDK for AI agents and
 AI-driven workflows. It makes model assertions independently testable before
 an application acts on them.
 
-> **New in 0.2: decision models.** Itself sends typed questions to decision
-> models, also called System One models, including TypeSafe's Jev. It records
-> each decision as a testable prediction and measures whether option order
-> changed it. See [Connect a decision model](#connect-a-decision-model).
+> **New in 0.3: validation policies.** A `ValidationPolicy` states the rules a
+> deployment adds to protocol conformance: which actors may settle a claim,
+> whether an approved decision may rely on a claim the history does not
+> support, and whether that support has expired. The protocol and its schemas
+> are unchanged. See
+> [Enforce a validation policy](#enforce-a-validation-policy), and read the
+> [changelog](CHANGELOG.md) before upgrading from 0.2.
+>
+> Decision models, added in 0.2, are covered in
+> [Connect a decision model](#connect-a-decision-model).
 
 Use Itself when an agent reviews code, diagnoses a failed build, opens a pull or
 merge request, recommends a remediation, or participates in an automated
@@ -295,6 +301,46 @@ the canonical schema before it reaches a ledger. See
 [the protocol-record guide](docs/PROTOCOL_RECORDS.md) for the complete
 lifecycle API and its deliberate boundaries.
 
+### Enforce a validation policy
+
+Protocol conformance establishes that a history is well formed. A deployment
+usually needs more before it acts: only named actors may settle a claim, an
+approved decision may rely only on claims the history supports, and that
+support must not have expired. A `ValidationPolicy` states those rules once,
+and every validator that accepts one applies them:
+
+```python
+from datetime import UTC, datetime
+from pathlib import Path
+
+from itself import EvidenceBundleValidator, ValidationPolicy
+
+policy = ValidationPolicy(
+    trusted_authorizers={"case-001-promotion-policy"},
+    require_supported_reliance=True,
+    as_of=datetime(2026, 12, 1, tzinfo=UTC),
+)
+bundle = EvidenceBundleValidator(policy=policy).validate(
+    Path("examples/cache-key-diagnosis/bundle")
+)
+```
+
+The `ledger`, `receipt`, and `bundle` commands take the same three checks:
+
+```bash
+uv run --frozen itself bundle validate examples/cache-key-diagnosis/bundle \
+  --trusted-authorizer case-001-promotion-policy \
+  --require-supported-reliance \
+  --as-of 2026-12-01T00:00:00Z
+```
+
+Each check is opt-in. Without a policy, the validators accept exactly what the
+`v0alpha2` protocol accepts. A trust list compares the actor ids that records
+declare and does not establish identity, so it protects a ledger only when the
+write path controls who may append under those ids. See
+[the protocol-record guide](docs/PROTOCOL_RECORDS.md#restrict-who-may-authorize-evidence-backed-transitions)
+for each rule and its limits.
+
 ## Connect a model endpoint
 
 The installable adapter accepts any endpoint implementing the relevant
@@ -349,8 +395,9 @@ for models that require streaming; their exact bytes are captured before local
 assembly. Strict JSON Schema, JSON-object, and prompted-JSON capabilities are
 explicit modes; every response is still strictly parsed and locally
 schema-validated. Authenticated endpoints require HTTPS, and the built-in
-transport does not follow redirects. There is no implicit retry, repair, or
-capability fallback.
+transport does not follow redirects. Each request has an overall deadline, ten
+minutes unless the endpoint sets another. There is no implicit retry, repair,
+or capability fallback.
 
 See the [inference guide](docs/INFERENCE.md) for configuration patterns,
 guarantees, and the boundary for native provider protocols.
