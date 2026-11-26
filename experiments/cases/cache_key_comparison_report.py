@@ -828,6 +828,10 @@ def _failure_description(failure: JsonObject) -> str:
             "endpoint rejected the request because its rate limit was reached",
             "endpoint rejected the requests because its rate limit was reached",
         ),
+        "http_status": (
+            "endpoint refused the request with an HTTP error status",
+            "endpoint refused the requests with an HTTP error status",
+        ),
         "response_schema": (
             "response did not match the required JSON shape",
             "responses did not match the required JSON shape",

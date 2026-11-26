@@ -3,7 +3,7 @@
 This directory separates the current research result from earlier engineering
 observations and superseded study versions.
 
-## Current result
+## Current results
 
 ### Case 001 comparison study v5 — July 2026
 
@@ -19,11 +19,25 @@ leaderboard or proof of general causal reasoning. Its opening section explains
 the incident, the two model calls, and the three application paths before
 presenting any measurements.
 
+### Case 001 comparison study v6 — November 2026
+
+V6 applied the same investigation to GLM 5.2, MiniMax M3.1 Flash, and Qwen 3.7
+Plus through one Together AI endpoint, under study contract v2. It scheduled
+five runs per model. The five GLM 5.2 runs completed. The provider refused the
+test-plan request for the other two models with HTTP 400, so their ten runs
+stopped there and are retained as failed runs.
+
+- [Human-readable report](current/2026-11-26-case-001-comparison-v6.md)
+- [Machine-readable report](current/2026-11-26-case-001-comparison-v6.json)
+
+V6 differs from v5 in provider, in one model, and in the study contract. The
+two results are not pooled or compared.
+
 ## What is publicly verifiable
 
-The checked-in JSON report contains the validated scorecards, run identifiers,
+Each checked-in JSON report contains the validated scorecards, run identifiers,
 failure classes, model provenance, metric-validity declarations, and response
-digests used for its counts. The Markdown report is deterministically rendered
+digests used for its counts. Each Markdown report is deterministically rendered
 from that data.
 
 Private model-response content is not published. Consequently, a fresh clone
@@ -49,5 +63,5 @@ defects are part of the research record:
 - [first adapter-conformance observation](archive/2026-07-22-together-case-001.md)
   — one early endpoint integration smoke test.
 
-Archived results are not pooled into the v5 measurements or presented as
+Archived results are not pooled into the v5 or v6 measurements or presented as
 current product guidance.

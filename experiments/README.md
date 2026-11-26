@@ -64,6 +64,12 @@ reasoning, cross-domain transfer, or model rankings.
 See the [human-readable report](results/current/2026-07-24-case-001-comparison-v5.md)
 and [machine-readable report](results/current/2026-07-24-case-001-comparison-v5.json).
 
+V6, in November 2026, ran the same procedure through a different provider under
+study contract v2. Its five GLM 5.2 runs completed; the provider refused the
+test-plan request for the other two models, and those ten runs are retained as
+failed runs. See the [v6 report](results/current/2026-11-26-case-001-comparison-v6.md).
+It is not pooled with or compared to v5.
+
 ## Exercise the evidence path without a model provider
 
 The deterministic reference workflow executes the case, applies the external
@@ -122,7 +128,7 @@ The [comparative methodology](001-cache-key-omission/COMPARATIVE_STUDY.md)
 defines the treatments, controls, measurements, and limitations. The exact v5
 model and generation configurations are retained under
 [`001-cache-key-omission/manifests/v5/`](001-cache-key-omission/manifests/v5/).
-V6, registered under study contract v2 and not yet run, is retained under
+The v6 configurations, registered under study contract v2, are retained under
 [`001-cache-key-omission/manifests/v6/`](001-cache-key-omission/manifests/v6/).
 
 Each registered manifest set can be checked without a network call:

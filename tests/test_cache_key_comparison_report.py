@@ -411,11 +411,27 @@ def test_the_current_study_version_carries_no_historical_banner() -> None:
 
 
 @pytest.mark.parametrize(
+    ("count", "label"),
+    [
+        (1, "1 test-plan request: endpoint refused the request"),
+        (5, "5 test-plan requests: endpoint refused the requests"),
+    ],
+)
+def test_a_refused_request_is_labelled_in_words(count: int, label: str) -> None:
+    description = report_module._failure_description(
+        {"attempt_id": "structured-attempt-1", "count": count, "kind": "http_status"}
+    )
+
+    assert description == f"{label} with an HTTP error status (`http_status`)"
+
+
+@pytest.mark.parametrize(
     "name",
     [
         "archive/2026-07-24-case-001-comparison-v2",
         "archive/2026-07-24-case-001-comparison-v4",
         "current/2026-07-24-case-001-comparison-v5",
+        "current/2026-11-26-case-001-comparison-v6",
     ],
 )
 def test_committed_reports_are_reproduced_from_their_targets(name: str) -> None:

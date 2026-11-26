@@ -29,10 +29,22 @@ reconstructability for this incident. It is not evidence that the workflow
 improves model accuracy or transfers to other tasks. Earlier registrations and
 superseded results are explained under [Study history](#study-history).
 
-V6 is registered and has not yet run. It measures v5's model versions where
-Together AI serves them, under study contract v2. It differs from v5 in
-provider, in one model, and in the study contract, so its result will not be
-pooled with or compared to v5's.
+V6 completed on 2026-11-26. It registered five runs for each of three models
+through one Together AI endpoint, under study contract v2. Five runs completed
+both model requests and all three application paths, all of them for GLM 5.2.
+The other ten stopped at the test-plan request: the provider refused it with
+HTTP 400 for MiniMax M3.1 Flash and for Qwen 3.7 Plus, so neither model
+produced an investigation plan. No run was retried or replaced, and every
+registered slot produced an immutable bundle that passed Itself's validators.
+
+The [v6 report](../results/current/2026-11-26-case-001-comparison-v6.md) is
+therefore a behavioral result for one model and a record of failure
+preservation for the other two: each refusal is kept with its HTTP status and
+the provider's response, which stays private. For MiniMax M3.1 Flash that
+response says the provider's structured-output grammar does not implement the
+`uniqueItems` keyword, which the test-plan schema uses; for Qwen 3.7 Plus it
+gives no specific reason. V6 differs from v5 in provider, in one model, and in
+the study contract, so the two results are not pooled or compared.
 
 ## Question
 
@@ -224,8 +236,8 @@ record as a failed replicate; it is not retried or replaced.
 Every v6 target has five registered replicates: 15 paired replicates, 30 model
 attempts, and 45 projected condition branches in total. Execution is
 round-robin by replicate index in the registered target order—GLM 5.2,
-MiniMax M3.1 Flash, then Qwen 3.7 Plus. All three manifests are frozen under
-[`manifests/v6`](manifests/v6).
+MiniMax M3.1 Flash, then Qwen 3.7 Plus. All three manifests were frozen under
+[`manifests/v6`](manifests/v6) before execution.
 
 ## Registered generation profile
 
@@ -364,10 +376,14 @@ part of the research record:
   historical observation set, not a provider comparison.
 - V5 used a fresh, provider-controlled three-model matrix. It did not filter or
   reuse v4 model outputs or scorecards.
-- V6 registers v5's model versions where Together AI serves them, with
+- V6 registered v5's model versions where Together AI served them, with
   MiniMax M3.1 Flash in place of MiniMax M3, as the first study under study
-  contract v2. It is a fresh run that reuses no earlier output, and it is not
-  pooled with or compared to v5. It is registered and has not yet run.
+  contract v2. Five of 15 runs completed, all for GLM 5.2; the provider refused
+  the test-plan request for the other two models with HTTP 400, and those ten
+  runs are retained as failed runs. Its
+  [report](../results/current/2026-11-26-case-001-comparison-v6.md) is a
+  fresh result that reuses no earlier output and is not pooled with or
+  compared to v5.
 
 The immutable registrations are retained under [`manifests/`](manifests/).
 
@@ -399,6 +415,9 @@ The immutable registrations are retained under [`manifests/`](manifests/).
   replicate.
 - V6's 600-second deadline can stop a slow response that v5's profile, which
   had no deadline, would have let finish.
+- V6 was registered without first checking that each endpoint's structured
+  output accepts both output schemas. Only GLM 5.2 completed any run, so v6
+  holds no behavioral measurement for MiniMax M3.1 Flash or Qwen 3.7 Plus.
 - One case, a small provider/model cohort, and five replicates per cell cannot
   support a general claim.
 
